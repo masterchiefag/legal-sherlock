@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 
 const REVIEW_OPTIONS = [
     { status: 'relevant', label: 'Relevant', color: '#10b981', key: 'r' },
@@ -31,10 +31,12 @@ function DocumentReview({ addToast }) {
 
             if (docRes.ok) {
                 setDoc(docData);
-                // Set current review status from latest review
                 if (docData.reviews?.length > 0) {
                     setReviewStatus(docData.reviews[0].status);
                     setNotes(docData.reviews[0].notes || '');
+                } else {
+                    setReviewStatus('pending');
+                    setNotes('');
                 }
             }
             setAllTags(tagsData);
@@ -44,16 +46,14 @@ function DocumentReview({ addToast }) {
         setLoading(false);
     }, [id]);
 
-    useEffect(() => { loadDocument(); }, [loadDocument]);
+    useEffect(() => { setLoading(true); loadDocument(); }, [loadDocument]);
 
     // Keyboard shortcuts
     useEffect(() => {
         const handler = (e) => {
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
             const option = REVIEW_OPTIONS.find(o => o.key === e.key);
-            if (option) {
-                handleReview(option.status);
-            }
+            if (option) handleReview(option.status);
         };
         window.addEventListener('keydown', handler);
         return () => window.removeEventListener('keydown', handler);
@@ -167,6 +167,8 @@ function DocumentReview({ addToast }) {
         );
     }
 
+    const isEmail = doc.doc_type === 'email';
+
     return (
         <div className="doc-viewer fade-in">
             {/* Text Viewer */}
@@ -187,6 +189,45 @@ function DocumentReview({ addToast }) {
                     />
                 </div>
 
+                {/* Email header bar */}
+                {isEmail && (
+                    <div style={{
+                        padding: '16px 20px',
+                        background: 'var(--bg-tertiary)',
+                        borderRadius: 'var(--radius-md)',
+                        marginBottom: '16px',
+                        fontSize: '13px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px',
+                        border: '1px solid var(--border-secondary)'
+                    }}>
+                        <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>
+                            {doc.email_subject || '(no subject)'}
+                        </div>
+                        <div className="flex gap-8">
+                            <span style={{ color: 'var(--text-tertiary)', minWidth: '40px' }}>From</span>
+                            <span style={{ color: 'var(--text-secondary)' }}>{doc.email_from || '—'}</span>
+                        </div>
+                        <div className="flex gap-8">
+                            <span style={{ color: 'var(--text-tertiary)', minWidth: '40px' }}>To</span>
+                            <span style={{ color: 'var(--text-secondary)' }}>{doc.email_to || '—'}</span>
+                        </div>
+                        {doc.email_cc && (
+                            <div className="flex gap-8">
+                                <span style={{ color: 'var(--text-tertiary)', minWidth: '40px' }}>CC</span>
+                                <span style={{ color: 'var(--text-secondary)' }}>{doc.email_cc}</span>
+                            </div>
+                        )}
+                        <div className="flex gap-8">
+                            <span style={{ color: 'var(--text-tertiary)', minWidth: '40px' }}>Date</span>
+                            <span style={{ color: 'var(--text-secondary)' }}>
+                                {doc.email_date ? new Date(doc.email_date).toLocaleString() : '—'}
+                            </span>
+                        </div>
+                    </div>
+                )}
+
                 {highlightedText ? (
                     <div className="doc-text-content" dangerouslySetInnerHTML={{ __html: highlightedText }} />
                 ) : (
@@ -198,21 +239,25 @@ function DocumentReview({ addToast }) {
 
             {/* Sidebar */}
             <div className="doc-sidebar-panel">
-                {/* Document Info */}
+                {/* Document / Email Info */}
                 <div className="doc-sidebar-section">
-                    <h3>Document Info</h3>
+                    <h3>{isEmail ? 'Email Info' : 'Document Info'}</h3>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '13px' }}>
                         <div className="flex justify-between">
                             <span className="text-muted">Name</span>
-                            <span style={{ color: 'var(--text-primary)', fontWeight: 500, textAlign: 'right', maxWidth: '200px', wordBreak: 'break-word' }}>{doc.original_name}</span>
+                            <span style={{ color: 'var(--text-primary)', fontWeight: 500, textAlign: 'right', maxWidth: '200px', wordBreak: 'break-word' }}>
+                                {isEmail ? (doc.email_subject || doc.original_name) : doc.original_name}
+                            </span>
                         </div>
+                        {isEmail && (
+                            <div className="flex justify-between">
+                                <span className="text-muted">Type</span>
+                                <span style={{ color: 'var(--text-accent)' }}>✉ Email</span>
+                            </div>
+                        )}
                         <div className="flex justify-between">
                             <span className="text-muted">Size</span>
                             <span style={{ color: 'var(--text-primary)' }}>{formatSize(doc.size_bytes)}</span>
-                        </div>
-                        <div className="flex justify-between">
-                            <span className="text-muted">Type</span>
-                            <span style={{ color: 'var(--text-primary)' }}>{doc.mime_type}</span>
                         </div>
                         <div className="flex justify-between">
                             <span className="text-muted">Uploaded</span>
@@ -224,6 +269,93 @@ function DocumentReview({ addToast }) {
                         </div>
                     </div>
                 </div>
+
+                {/* Email Thread */}
+                {doc.thread && doc.thread.length > 1 && (
+                    <div className="doc-sidebar-section">
+                        <h3>Thread ({doc.thread.length} emails)</h3>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            {doc.thread.map((t, i) => (
+                                <Link
+                                    key={t.id}
+                                    to={`/documents/${t.id}`}
+                                    style={{
+                                        display: 'block',
+                                        padding: '10px 12px',
+                                        borderRadius: 'var(--radius-sm)',
+                                        background: t.id === id ? 'rgba(59, 130, 246, 0.1)' : 'var(--bg-tertiary)',
+                                        border: `1px solid ${t.id === id ? 'var(--border-active)' : 'var(--border-secondary)'}`,
+                                        textDecoration: 'none',
+                                        transition: 'all 150ms ease',
+                                    }}
+                                    onMouseEnter={e => { if (t.id !== id) e.currentTarget.style.borderColor = 'var(--border-primary)'; }}
+                                    onMouseLeave={e => { if (t.id !== id) e.currentTarget.style.borderColor = 'var(--border-secondary)'; }}
+                                >
+                                    <div style={{ fontSize: '12px', fontWeight: 600, color: t.id === id ? 'var(--text-accent)' : 'var(--text-primary)', marginBottom: '2px' }}>
+                                        {t.email_subject || t.original_name}
+                                    </div>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                        {t.email_from?.split('<')[0].trim()} • {t.email_date ? new Date(t.email_date).toLocaleDateString() : ''}
+                                    </div>
+                                </Link>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
+                {/* Attachments */}
+                {doc.attachments && doc.attachments.length > 0 && (
+                    <div className="doc-sidebar-section">
+                        <h3>Attachments ({doc.attachments.length})</h3>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                            {doc.attachments.map(att => {
+                                const ext = att.original_name?.split('.').pop().toLowerCase() || '';
+                                return (
+                                    <Link
+                                        key={att.id}
+                                        to={`/documents/${att.id}`}
+                                        style={{ textDecoration: 'none' }}
+                                    >
+                                        <div className="file-item" style={{ cursor: 'pointer' }}>
+                                            <div className={`file-icon ${ext}`}>{ext || '?'}</div>
+                                            <div className="file-info">
+                                                <div className="file-name">{att.original_name}</div>
+                                                <div className="file-meta">{formatSize(att.size_bytes)}</div>
+                                            </div>
+                                        </div>
+                                    </Link>
+                                );
+                            })}
+                        </div>
+                    </div>
+                )}
+
+                {/* Parent email (if this is an attachment) */}
+                {doc.parent && (
+                    <div className="doc-sidebar-section">
+                        <h3>Parent Email</h3>
+                        <Link
+                            to={`/documents/${doc.parent.id}`}
+                            style={{
+                                display: 'block',
+                                padding: '10px 12px',
+                                borderRadius: 'var(--radius-sm)',
+                                background: 'var(--bg-tertiary)',
+                                border: '1px solid var(--border-secondary)',
+                                textDecoration: 'none',
+                            }}
+                        >
+                            <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-accent)', marginBottom: '2px' }}>
+                                ✉ {doc.parent.email_subject || doc.parent.original_name}
+                            </div>
+                            {doc.parent.email_from && (
+                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                    From: {doc.parent.email_from.split('<')[0].trim()}
+                                </div>
+                            )}
+                        </Link>
+                    </div>
+                )}
 
                 {/* Review Status */}
                 <div className="doc-sidebar-section">
@@ -297,9 +429,7 @@ function DocumentReview({ addToast }) {
                                 </button>
                             );
                         })}
-                        {allTags.length === 0 && (
-                            <span className="text-sm text-muted">No tags created yet</span>
-                        )}
+                        {allTags.length === 0 && <span className="text-sm text-muted">No tags created yet</span>}
                     </div>
                 </div>
 

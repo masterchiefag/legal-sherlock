@@ -10,6 +10,7 @@ function Search() {
 
     // Filters
     const [reviewStatus, setReviewStatus] = useState('');
+    const [docType, setDocType] = useState('');
     const [dateFrom, setDateFrom] = useState('');
     const [dateTo, setDateTo] = useState('');
 
@@ -45,6 +46,7 @@ function Search() {
 
         const params = new URLSearchParams({ q: query, page, limit: 15 });
         if (reviewStatus) params.set('review_status', reviewStatus);
+        if (docType) params.set('doc_type', docType);
         if (dateFrom) params.set('date_from', dateFrom);
         if (dateTo) params.set('date_to', dateTo);
 
@@ -58,7 +60,7 @@ function Search() {
         }
 
         setLoading(false);
-    }, [query, reviewStatus, dateFrom, dateTo]);
+    }, [query, reviewStatus, docType, dateFrom, dateTo]);
 
     const handleKeyDown = (e) => {
         if (e.key === 'Enter') doSearch();
@@ -69,6 +71,31 @@ function Search() {
         setSearched(false);
         setResults([]);
         setPagination(null);
+    };
+
+    const getDocIcon = (doc) => {
+        if (doc.doc_type === 'email') return '✉';
+        const ext = doc.original_name?.split('.').pop().toLowerCase();
+        if (ext === 'pdf') return '📄';
+        if (ext === 'docx') return '📝';
+        return '📋';
+    };
+
+    const getDisplayName = (doc) => {
+        if (doc.doc_type === 'email' && doc.email_subject) {
+            return doc.email_subject;
+        }
+        return doc.original_name;
+    };
+
+    const getSubline = (doc) => {
+        if (doc.doc_type === 'email') {
+            const parts = [];
+            if (doc.email_from) parts.push(`From: ${doc.email_from.split('<')[0].trim()}`);
+            if (doc.email_date) parts.push(new Date(doc.email_date).toLocaleDateString());
+            return parts.join(' • ');
+        }
+        return null;
     };
 
     return (
@@ -82,7 +109,7 @@ function Search() {
                 <input
                     type="text"
                     className="input search-input"
-                    placeholder="Search documents by content or name…"
+                    placeholder="Search documents by content, subject, or sender…"
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     onKeyDown={handleKeyDown}
@@ -99,14 +126,15 @@ function Search() {
                     <option value="not_relevant">Not Relevant</option>
                     <option value="privileged">Privileged</option>
                 </select>
-                <input type="date" className="input" style={{ width: 'auto', padding: '8px 14px', fontSize: '13px' }} value={dateFrom} onChange={e => setDateFrom(e.target.value)} placeholder="From" />
-                <input type="date" className="input" style={{ width: 'auto', padding: '8px 14px', fontSize: '13px' }} value={dateTo} onChange={e => setDateTo(e.target.value)} placeholder="To" />
-                <button className="btn btn-primary" onClick={() => doSearch()}>
-                    Search
-                </button>
-                {searched && (
-                    <button className="btn btn-ghost" onClick={clearSearch}>Clear</button>
-                )}
+                <select className="filter-select" value={docType} onChange={e => setDocType(e.target.value)}>
+                    <option value="">All Types</option>
+                    <option value="email">Emails</option>
+                    <option value="file">Files</option>
+                </select>
+                <input type="date" className="input" style={{ width: 'auto', padding: '8px 14px', fontSize: '13px' }} value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
+                <input type="date" className="input" style={{ width: 'auto', padding: '8px 14px', fontSize: '13px' }} value={dateTo} onChange={e => setDateTo(e.target.value)} />
+                <button className="btn btn-primary" onClick={() => doSearch()}>Search</button>
+                {searched && <button className="btn btn-ghost" onClick={clearSearch}>Clear</button>}
             </div>
 
             {/* Search Results */}
@@ -117,17 +145,37 @@ function Search() {
                     ) : results.length > 0 ? (
                         <>
                             <div className="text-sm text-muted mb-16">
-                                {pagination.total} result(s) found for "<strong style={{ color: 'var(--text-primary)' }}>{query}</strong>"
+                                {pagination.total} result(s) for "<strong style={{ color: 'var(--text-primary)' }}>{query}</strong>"
                             </div>
                             <div className="search-results">
                                 {results.map(r => (
                                     <div key={r.id} className="search-result-card" onClick={() => navigate(`/documents/${r.id}`)}>
-                                        <div className="search-result-title">{r.original_name}</div>
+                                        <div className="flex items-center gap-8">
+                                            <span style={{ fontSize: '18px' }}>{getDocIcon(r)}</span>
+                                            <div style={{ flex: 1 }}>
+                                                <div className="search-result-title">{getDisplayName(r)}</div>
+                                                {getSubline(r) && (
+                                                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{getSubline(r)}</div>
+                                                )}
+                                            </div>
+                                        </div>
                                         <div className="search-result-snippet" dangerouslySetInnerHTML={{ __html: r.snippet || 'No preview available' }} />
                                         <div className="search-result-meta">
                                             <span>{formatSize(r.size_bytes)}</span>
                                             <span>•</span>
                                             <span>{new Date(r.uploaded_at).toLocaleDateString()}</span>
+                                            {r.doc_type === 'email' && r.attachment_count > 0 && (
+                                                <>
+                                                    <span>•</span>
+                                                    <span>📎 {r.attachment_count} attachment{r.attachment_count > 1 ? 's' : ''}</span>
+                                                </>
+                                            )}
+                                            {r.doc_type === 'email' && r.thread_count > 1 && (
+                                                <>
+                                                    <span>•</span>
+                                                    <span>🔗 {r.thread_count} in thread</span>
+                                                </>
+                                            )}
                                             {r.tags?.length > 0 && (
                                                 <>
                                                     <span>•</span>
@@ -175,19 +223,27 @@ function Search() {
                                 <table className="data-table">
                                     <thead>
                                         <tr>
-                                            <th>Name</th>
+                                            <th></th>
+                                            <th>Name / Subject</th>
+                                            <th>From</th>
                                             <th>Size</th>
                                             <th>Status</th>
                                             <th>Review</th>
-                                            <th>Tags</th>
-                                            <th>Uploaded</th>
+                                            <th>Date</th>
                                         </tr>
                                     </thead>
                                     <tbody>
                                         {documents.map(doc => (
                                             <tr key={doc.id} onClick={() => navigate(`/documents/${doc.id}`)}>
+                                                <td style={{ width: '30px', textAlign: 'center', fontSize: '16px' }}>{getDocIcon(doc)}</td>
                                                 <td className="doc-name" style={{ maxWidth: '300px' }}>
-                                                    <span className="truncate" style={{ display: 'block' }}>{doc.original_name}</span>
+                                                    <span className="truncate" style={{ display: 'block' }}>{getDisplayName(doc)}</span>
+                                                    {doc.doc_type === 'email' && doc.attachment_count > 0 && (
+                                                        <span className="text-sm text-muted">📎 {doc.attachment_count}</span>
+                                                    )}
+                                                </td>
+                                                <td className="text-sm truncate" style={{ maxWidth: '180px', color: 'var(--text-secondary)' }}>
+                                                    {doc.email_from ? doc.email_from.split('<')[0].trim() : '—'}
                                                 </td>
                                                 <td>{formatSize(doc.size_bytes)}</td>
                                                 <td><span className={`status-badge ${doc.status}`}>{doc.status}</span></td>
@@ -196,10 +252,11 @@ function Search() {
                                                         {(doc.review_status || 'pending').replace('_', ' ')}
                                                     </span>
                                                 </td>
-                                                <td style={{ maxWidth: '200px' }}>
-                                                    <span className="truncate text-sm text-muted" style={{ display: 'block' }}>{doc.tag_names || '—'}</span>
+                                                <td className="text-muted text-sm">
+                                                    {doc.email_date
+                                                        ? new Date(doc.email_date).toLocaleDateString()
+                                                        : new Date(doc.uploaded_at).toLocaleDateString()}
                                                 </td>
-                                                <td className="text-muted">{new Date(doc.uploaded_at).toLocaleDateString()}</td>
                                             </tr>
                                         ))}
                                     </tbody>

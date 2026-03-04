@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../db.js';
 import { extractText } from '../lib/extract.js';
+import { parseEml } from '../lib/eml-parser.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
@@ -23,7 +24,7 @@ const upload = multer({
     storage,
     limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
     fileFilter: (req, file, cb) => {
-        const allowed = ['.pdf', '.docx', '.txt', '.csv', '.md'];
+        const allowed = ['.pdf', '.docx', '.txt', '.csv', '.md', '.eml'];
         const ext = path.extname(file.originalname).toLowerCase();
         if (allowed.includes(ext)) {
             cb(null, true);
@@ -35,37 +36,195 @@ const upload = multer({
 
 const router = express.Router();
 
+// ═══════════════════════════════════════════════════
+// Threading algorithm
+// ═══════════════════════════════════════════════════
+function resolveThreadId(messageId, inReplyTo, references) {
+    // 1. Check if any existing email has the same thread by looking up In-Reply-To
+    if (inReplyTo) {
+        const parent = db.prepare('SELECT thread_id FROM documents WHERE message_id = ?').get(inReplyTo);
+        if (parent?.thread_id) return parent.thread_id;
+    }
+
+    // 2. Check References header (walk backwards for most recent ancestor first)
+    if (references) {
+        const refIds = references.split(/\s+/).filter(Boolean).reverse();
+        for (const refId of refIds) {
+            const ref = db.prepare('SELECT thread_id FROM documents WHERE message_id = ?').get(refId);
+            if (ref?.thread_id) return ref.thread_id;
+        }
+    }
+
+    // 3. Check if any existing email references *our* message_id (late arrival scenario)
+    if (messageId) {
+        const child = db.prepare(
+            "SELECT thread_id FROM documents WHERE in_reply_to = ? OR email_references LIKE ? LIMIT 1"
+        ).get(messageId, `%${messageId}%`);
+        if (child?.thread_id) return child.thread_id;
+    }
+
+    // 4. New thread
+    return uuidv4();
+}
+
+function backfillThread(threadId, messageId, references) {
+    // If we're creating a new thread but other emails reference us or
+    // share references, unify them under this thread_id
+    if (!messageId && !references) return;
+
+    const idsToCheck = [messageId, ...(references || '').split(/\s+/)].filter(Boolean);
+    for (const refId of idsToCheck) {
+        // Find orphan emails that reference any of these IDs
+        const orphans = db.prepare(
+            "SELECT id, thread_id FROM documents WHERE (message_id = ? OR in_reply_to = ? OR email_references LIKE ?) AND (thread_id IS NULL OR thread_id != ?)"
+        ).all(refId, refId, `%${refId}%`, threadId);
+
+        for (const orphan of orphans) {
+            // Unify: update this orphan and all emails in its old thread
+            if (orphan.thread_id) {
+                db.prepare('UPDATE documents SET thread_id = ? WHERE thread_id = ?').run(threadId, orphan.thread_id);
+            } else {
+                db.prepare('UPDATE documents SET thread_id = ? WHERE id = ?').run(threadId, orphan.id);
+            }
+        }
+    }
+}
+
+// ═══════════════════════════════════════════════════
+// EML processing pipeline
+// ═══════════════════════════════════════════════════
+async function processEmlFile(file) {
+    const results = [];
+    const emailId = path.basename(file.filename, path.extname(file.filename));
+
+    try {
+        const eml = await parseEml(file.path);
+
+        // Resolve thread
+        const threadId = resolveThreadId(eml.messageId, eml.inReplyTo, eml.references);
+
+        // Insert email document
+        db.prepare(`
+      INSERT INTO documents (
+        id, filename, original_name, mime_type, size_bytes, text_content, status,
+        doc_type, thread_id, message_id, in_reply_to, email_references,
+        email_from, email_to, email_cc, email_subject, email_date
+      ) VALUES (?, ?, ?, ?, ?, ?, 'ready',
+        'email', ?, ?, ?, ?,
+        ?, ?, ?, ?, ?)
+    `).run(
+            emailId, file.filename, file.originalname, 'message/rfc822', file.size, eml.textBody,
+            threadId, eml.messageId, eml.inReplyTo, eml.references,
+            eml.from, eml.to, eml.cc, eml.subject, eml.date
+        );
+
+        // Backfill thread for late arrivals
+        backfillThread(threadId, eml.messageId, eml.references);
+
+        results.push({
+            id: emailId,
+            name: file.originalname,
+            status: 'ready',
+            size: file.size,
+            doc_type: 'email',
+            subject: eml.subject,
+            from: eml.from,
+            thread_id: threadId,
+            attachments: [],
+        });
+
+        // Process attachments
+        for (const att of eml.attachments) {
+            const attId = uuidv4();
+            const attExt = path.extname(att.filename) || '.bin';
+            const attFilename = `${attId}${attExt}`;
+            const attPath = path.join(UPLOADS_DIR, attFilename);
+
+            // Save attachment to disk
+            fs.writeFileSync(attPath, att.content);
+
+            // Extract text from attachment
+            let attText = '';
+            try {
+                attText = await extractText(attPath, att.contentType);
+            } catch (e) {
+                attText = `[Could not extract text: ${e.message}]`;
+            }
+
+            // Insert attachment document linked to parent email
+            db.prepare(`
+        INSERT INTO documents (
+          id, filename, original_name, mime_type, size_bytes, text_content, status,
+          doc_type, parent_id, thread_id
+        ) VALUES (?, ?, ?, ?, ?, ?, 'ready',
+          'attachment', ?, ?)
+      `).run(attId, attFilename, att.filename, att.contentType, att.size, attText, emailId, threadId);
+
+            results[results.length - 1].attachments.push({
+                id: attId,
+                name: att.filename,
+                size: att.size,
+                content_type: att.contentType,
+            });
+        }
+
+        return results;
+    } catch (err) {
+        // Mark as error if parsing fails
+        try {
+            db.prepare(`
+        INSERT INTO documents (id, filename, original_name, mime_type, size_bytes, status, doc_type)
+        VALUES (?, ?, ?, 'message/rfc822', ?, 'error', 'email')
+      `).run(emailId, file.filename, file.originalname, file.size);
+        } catch (_) { /* ignore if already inserted */ }
+
+        return [{ id: emailId, name: file.originalname, status: 'error', error: err.message, doc_type: 'email' }];
+    }
+}
+
+// ═══════════════════════════════════════════════════
+// Regular file processing (PDF, DOCX, TXT, etc.)
+// ═══════════════════════════════════════════════════
+async function processRegularFile(file) {
+    const id = path.basename(file.filename, path.extname(file.filename));
+
+    db.prepare(`
+    INSERT INTO documents (id, filename, original_name, mime_type, size_bytes, status, doc_type)
+    VALUES (?, ?, ?, ?, ?, 'processing', 'file')
+  `).run(id, file.filename, file.originalname, file.mimetype, file.size);
+
+    try {
+        const text = await extractText(file.path, file.mimetype);
+        db.prepare(`UPDATE documents SET text_content = ?, status = 'ready' WHERE id = ?`).run(text, id);
+        return [{ id, name: file.originalname, status: 'ready', size: file.size, doc_type: 'file' }];
+    } catch (err) {
+        db.prepare(`UPDATE documents SET status = 'error' WHERE id = ?`).run(id);
+        return [{ id, name: file.originalname, status: 'error', error: err.message, doc_type: 'file' }];
+    }
+}
+
+// ═══════════════════════════════════════════════════
+// Routes
+// ═══════════════════════════════════════════════════
+
 // Upload documents (supports multiple files)
 router.post('/upload', upload.array('files', 50), async (req, res) => {
     try {
-        const results = [];
+        const allResults = [];
 
         for (const file of req.files) {
-            const id = path.basename(file.filename, path.extname(file.filename));
+            const ext = path.extname(file.originalname).toLowerCase();
 
-            // Insert document with processing status
-            db.prepare(`
-        INSERT INTO documents (id, filename, original_name, mime_type, size_bytes, status)
-        VALUES (?, ?, ?, ?, ?, 'processing')
-      `).run(id, file.filename, file.originalname, file.mimetype, file.size);
-
-            // Extract text
-            try {
-                const text = await extractText(file.path, file.mimetype);
-                db.prepare(`
-          UPDATE documents SET text_content = ?, status = 'ready' WHERE id = ?
-        `).run(text, id);
-
-                results.push({ id, name: file.originalname, status: 'ready', size: file.size });
-            } catch (err) {
-                db.prepare(`
-          UPDATE documents SET status = 'error' WHERE id = ?
-        `).run(id);
-                results.push({ id, name: file.originalname, status: 'error', error: err.message });
+            if (ext === '.eml') {
+                const emlResults = await processEmlFile(file);
+                allResults.push(...emlResults);
+            } else {
+                const fileResults = await processRegularFile(file);
+                allResults.push(...fileResults);
             }
         }
 
-        res.json({ uploaded: results.length, documents: results });
+        res.json({ uploaded: allResults.length, documents: allResults });
     } catch (err) {
         res.status(500).json({ error: err.message });
     }
@@ -81,14 +240,15 @@ router.get('/', (req, res) => {
             order = 'desc',
             status,
             tag,
+            doc_type,
         } = req.query;
 
         const offset = (parseInt(page) - 1) * parseInt(limit);
-        const allowedSorts = ['uploaded_at', 'original_name', 'size_bytes'];
+        const allowedSorts = ['uploaded_at', 'original_name', 'size_bytes', 'email_date'];
         const sortCol = allowedSorts.includes(sort) ? sort : 'uploaded_at';
         const sortOrder = order === 'asc' ? 'ASC' : 'DESC';
 
-        let where = 'WHERE 1=1';
+        let where = "WHERE 1=1 AND (d.doc_type != 'attachment' OR d.doc_type IS NULL)";
         const params = [];
 
         if (status) {
@@ -99,6 +259,11 @@ router.get('/', (req, res) => {
         if (tag) {
             where += ' AND d.id IN (SELECT document_id FROM document_tags WHERE tag_id = ?)';
             params.push(tag);
+        }
+
+        if (doc_type) {
+            where += ' AND d.doc_type = ?';
+            params.push(doc_type);
         }
 
         const countRow = db.prepare(`
@@ -112,7 +277,9 @@ router.get('/', (req, res) => {
          WHERE dt.document_id = d.id) as tag_names,
         (SELECT dr.status FROM document_reviews dr
          WHERE dr.document_id = d.id
-         ORDER BY dr.reviewed_at DESC LIMIT 1) as review_status
+         ORDER BY dr.reviewed_at DESC LIMIT 1) as review_status,
+        (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
+        (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email') as thread_count
       FROM documents d
       ${where}
       ORDER BY d.${sortCol} ${sortOrder}
@@ -133,7 +300,7 @@ router.get('/', (req, res) => {
     }
 });
 
-// Get single document
+// Get single document with thread + attachments
 router.get('/:id', (req, res) => {
     try {
         const doc = db.prepare(`
@@ -152,12 +319,35 @@ router.get('/:id', (req, res) => {
         if (!doc) return res.status(404).json({ error: 'Document not found' });
 
         // Parse JSON arrays
-        doc.tags = JSON.parse(doc.tags || '[]');
-        doc.reviews = JSON.parse(doc.reviews || '[]');
+        doc.tags = JSON.parse(doc.tags || '[]').filter(t => t.id !== null);
+        doc.reviews = JSON.parse(doc.reviews || '[]').filter(r => r.id !== null);
 
-        // Filter out null entries
-        doc.tags = doc.tags.filter(t => t.id !== null);
-        doc.reviews = doc.reviews.filter(r => r.id !== null);
+        // If email, fetch thread siblings
+        if (doc.thread_id) {
+            doc.thread = db.prepare(`
+        SELECT id, original_name, email_from, email_to, email_subject, email_date, doc_type
+        FROM documents
+        WHERE thread_id = ? AND doc_type = 'email'
+        ORDER BY email_date ASC
+      `).all(doc.thread_id);
+        } else {
+            doc.thread = [];
+        }
+
+        // Fetch child attachments
+        doc.attachments = db.prepare(`
+      SELECT id, original_name, mime_type, size_bytes, filename
+      FROM documents
+      WHERE parent_id = ?
+    `).all(req.params.id);
+
+        // If this IS an attachment, fetch parent info
+        if (doc.parent_id) {
+            doc.parent = db.prepare(`
+        SELECT id, original_name, email_subject, email_from
+        FROM documents WHERE id = ?
+      `).get(doc.parent_id);
+        }
 
         res.json(doc);
     } catch (err) {
@@ -165,17 +355,24 @@ router.get('/:id', (req, res) => {
     }
 });
 
-// Delete document
+// Delete document (and its children)
 router.delete('/:id', (req, res) => {
     try {
         const doc = db.prepare('SELECT filename FROM documents WHERE id = ?').get(req.params.id);
         if (!doc) return res.status(404).json({ error: 'Document not found' });
 
-        // Delete file
+        // Delete child attachment files
+        const children = db.prepare('SELECT filename FROM documents WHERE parent_id = ?').all(req.params.id);
+        for (const child of children) {
+            const childPath = path.join(UPLOADS_DIR, child.filename);
+            if (fs.existsSync(childPath)) fs.unlinkSync(childPath);
+        }
+        db.prepare('DELETE FROM documents WHERE parent_id = ?').run(req.params.id);
+
+        // Delete parent file
         const filePath = path.join(UPLOADS_DIR, doc.filename);
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
-        // Delete from db (cascades to tags and reviews)
         db.prepare('DELETE FROM documents WHERE id = ?').run(req.params.id);
 
         res.json({ deleted: true });

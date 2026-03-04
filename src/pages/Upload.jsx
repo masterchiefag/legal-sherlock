@@ -10,7 +10,7 @@ function Upload({ addToast }) {
     const handleFiles = useCallback((fileList) => {
         const newFiles = Array.from(fileList).filter(f => {
             const ext = f.name.split('.').pop().toLowerCase();
-            return ['pdf', 'docx', 'txt', 'csv', 'md'].includes(ext);
+            return ['pdf', 'docx', 'txt', 'csv', 'md', 'eml'].includes(ext);
         });
         setFiles(prev => [...prev, ...newFiles]);
         setResults([]);
@@ -86,7 +86,7 @@ function Upload({ addToast }) {
                     ref={inputRef}
                     type="file"
                     multiple
-                    accept=".pdf,.docx,.txt,.csv,.md"
+                    accept=".pdf,.docx,.txt,.csv,.md,.eml"
                     onChange={(e) => handleFiles(e.target.files)}
                     style={{ display: 'none' }}
                 />
@@ -99,7 +99,7 @@ function Upload({ addToast }) {
                     <strong>Drop files here</strong> or click to browse
                 </p>
                 <p className="dropzone-sub">
-                    Supports PDF, DOCX, TXT, CSV, MD — up to 50MB each
+                    Supports PDF, DOCX, TXT, CSV, MD, EML — up to 50MB each
                 </p>
             </div>
 

@@ -15,6 +15,7 @@ router.get('/', (req, res) => {
             tags,
             date_from,
             date_to,
+            doc_type,
         } = req.query;
 
         const offset = (parseInt(page) - 1) * parseInt(limit);
@@ -34,9 +35,17 @@ router.get('/', (req, res) => {
         let filterWhere = '';
         const filterParams = [];
 
+        // Hide attachments from top-level results
+        filterWhere += " AND (d.doc_type != 'attachment' OR d.doc_type IS NULL)";
+
         if (status) {
             filterWhere += ' AND d.status = ?';
             filterParams.push(status);
+        }
+
+        if (doc_type) {
+            filterWhere += ' AND d.doc_type = ?';
+            filterParams.push(doc_type);
         }
 
         if (review_status) {
@@ -83,7 +92,9 @@ router.get('/', (req, res) => {
       SELECT
         d.*,
         snippet(documents_fts, 1, '<mark>', '</mark>', '…', 40) as snippet,
-        rank
+        rank,
+        (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
+        (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email') as thread_count
       FROM documents_fts fts
       JOIN documents d ON d.rowid = fts.rowid
       WHERE documents_fts MATCH ?

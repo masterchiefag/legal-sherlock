@@ -29,31 +29,6 @@ db.exec(`
     status TEXT DEFAULT 'pending' CHECK(status IN ('pending','processing','ready','error'))
   );
 
-  CREATE VIRTUAL TABLE IF NOT EXISTS documents_fts USING fts5(
-    original_name,
-    text_content,
-    content='documents',
-    content_rowid='rowid'
-  );
-
-  -- Triggers to keep FTS in sync
-  CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
-    INSERT INTO documents_fts(rowid, original_name, text_content)
-    VALUES (new.rowid, new.original_name, new.text_content);
-  END;
-
-  CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
-    INSERT INTO documents_fts(documents_fts, rowid, original_name, text_content)
-    VALUES ('delete', old.rowid, old.original_name, old.text_content);
-  END;
-
-  CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
-    INSERT INTO documents_fts(documents_fts, rowid, original_name, text_content)
-    VALUES ('delete', old.rowid, old.original_name, old.text_content);
-    INSERT INTO documents_fts(rowid, original_name, text_content)
-    VALUES (new.rowid, new.original_name, new.text_content);
-  END;
-
   CREATE TABLE IF NOT EXISTS tags (
     id TEXT PRIMARY KEY,
     name TEXT NOT NULL UNIQUE,
@@ -78,6 +53,94 @@ db.exec(`
     reviewed_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
   );
+`);
+
+// ═══════════════════════════════════════════════════
+// Migration: Add email-specific columns
+// ═══════════════════════════════════════════════════
+function columnExists(table, column) {
+  const cols = db.prepare(`PRAGMA table_info(${table})`).all();
+  return cols.some(c => c.name === column);
+}
+
+const emailMigrations = [
+  { col: 'doc_type', type: "TEXT DEFAULT 'file'" },
+  { col: 'parent_id', type: 'TEXT' },
+  { col: 'thread_id', type: 'TEXT' },
+  { col: 'message_id', type: 'TEXT' },
+  { col: 'in_reply_to', type: 'TEXT' },
+  { col: 'email_references', type: 'TEXT' },
+  { col: 'email_from', type: 'TEXT' },
+  { col: 'email_to', type: 'TEXT' },
+  { col: 'email_cc', type: 'TEXT' },
+  { col: 'email_subject', type: 'TEXT' },
+  { col: 'email_date', type: 'TEXT' },
+];
+
+for (const { col, type } of emailMigrations) {
+  if (!columnExists('documents', col)) {
+    db.exec(`ALTER TABLE documents ADD COLUMN ${col} ${type}`);
+    console.log(`✦ Migration: added column documents.${col}`);
+  }
+}
+
+// Create index on message_id for fast threading lookups
+db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_message_id ON documents(message_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_thread_id ON documents(thread_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_parent_id ON documents(parent_id)`);
+
+// ═══════════════════════════════════════════════════
+// Rebuild FTS to include email fields
+// ═══════════════════════════════════════════════════
+
+// Drop old FTS table and triggers, recreate with email fields
+const ftsColumns = db.prepare("PRAGMA table_info(documents_fts)").all().map(c => c.name);
+const needsFtsRebuild = !ftsColumns.includes('email_subject');
+
+if (needsFtsRebuild) {
+  console.log('✦ Rebuilding FTS index to include email fields...');
+  db.exec(`
+    DROP TRIGGER IF EXISTS documents_ai;
+    DROP TRIGGER IF EXISTS documents_ad;
+    DROP TRIGGER IF EXISTS documents_au;
+    DROP TABLE IF EXISTS documents_fts;
+
+    CREATE VIRTUAL TABLE documents_fts USING fts5(
+      original_name,
+      text_content,
+      email_subject,
+      email_from,
+      email_to,
+      content='documents',
+      content_rowid='rowid'
+    );
+
+    -- Populate FTS from existing data
+    INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
+    SELECT rowid, original_name, COALESCE(text_content,''), COALESCE(email_subject,''), COALESCE(email_from,''), COALESCE(email_to,'')
+    FROM documents;
+  `);
+  console.log('✦ FTS index rebuilt.');
+}
+
+// Always ensure triggers exist (idempotent)
+db.exec(`
+  CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
+    INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
+    VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
+    INSERT INTO documents_fts(documents_fts, rowid, original_name, text_content, email_subject, email_from, email_to)
+    VALUES ('delete', old.rowid, old.original_name, COALESCE(old.text_content,''), COALESCE(old.email_subject,''), COALESCE(old.email_from,''), COALESCE(old.email_to,''));
+  END;
+
+  CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
+    INSERT INTO documents_fts(documents_fts, rowid, original_name, text_content, email_subject, email_from, email_to)
+    VALUES ('delete', old.rowid, old.original_name, COALESCE(old.text_content,''), COALESCE(old.email_subject,''), COALESCE(old.email_from,''), COALESCE(old.email_to,''));
+    INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
+    VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
+  END;
 `);
 
 export default db;
