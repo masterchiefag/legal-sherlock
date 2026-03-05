@@ -28,7 +28,7 @@ function App() {
             {/* Sidebar */}
             <aside className="sidebar">
                 <div className="sidebar-brand">
-                    <h1>Disco</h1>
+                    <h1>Sherlock</h1>
                     <div className="brand-sub">eDiscovery Platform</div>
                 </div>
                 <nav className="sidebar-nav">
@@ -59,7 +59,7 @@ function App() {
                 </nav>
                 <div style={{ padding: '16px 12px', borderTop: '1px solid var(--border-secondary)' }}>
                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textAlign: 'center' }}>
-                        v1.0 — Sparse Shuttle
+                        v1.0 — Sherlock
                     </div>
                 </div>
             </aside>

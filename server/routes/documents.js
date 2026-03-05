@@ -7,6 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import db from '../db.js';
 import { extractText } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
+import { parsePst } from '../lib/pst-parser.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
@@ -22,9 +23,9 @@ const storage = multer.diskStorage({
 
 const upload = multer({
     storage,
-    limits: { fileSize: 50 * 1024 * 1024 }, // 50MB
+    limits: { fileSize: 500 * 1024 * 1024 }, // 500MB (PST files can be large)
     fileFilter: (req, file, cb) => {
-        const allowed = ['.pdf', '.docx', '.txt', '.csv', '.md', '.eml'];
+        const allowed = ['.pdf', '.docx', '.txt', '.csv', '.md', '.eml', '.pst'];
         const ext = path.extname(file.originalname).toLowerCase();
         if (allowed.includes(ext)) {
             cb(null, true);
@@ -91,20 +92,27 @@ function backfillThread(threadId, messageId, references) {
 }
 
 // ═══════════════════════════════════════════════════
-// EML processing pipeline
+// Shared: insert a parsed email + its attachments
 // ═══════════════════════════════════════════════════
-async function processEmlFile(file) {
-    const results = [];
-    const emailId = path.basename(file.filename, path.extname(file.filename));
+async function processEmailData(eml, emailId, filename, originalName, sizeBytes) {
+    const result = {
+        id: emailId,
+        name: originalName,
+        status: 'ready',
+        size: sizeBytes,
+        doc_type: 'email',
+        subject: eml.subject,
+        from: eml.from,
+        thread_id: null,
+        attachments: [],
+    };
 
-    try {
-        const eml = await parseEml(file.path);
+    // Resolve thread
+    const threadId = resolveThreadId(eml.messageId, eml.inReplyTo, eml.references);
+    result.thread_id = threadId;
 
-        // Resolve thread
-        const threadId = resolveThreadId(eml.messageId, eml.inReplyTo, eml.references);
-
-        // Insert email document
-        db.prepare(`
+    // Insert email document
+    db.prepare(`
       INSERT INTO documents (
         id, filename, original_name, mime_type, size_bytes, text_content, status,
         doc_type, thread_id, message_id, in_reply_to, email_references,
@@ -113,73 +121,93 @@ async function processEmlFile(file) {
         'email', ?, ?, ?, ?,
         ?, ?, ?, ?, ?)
     `).run(
-            emailId, file.filename, file.originalname, 'message/rfc822', file.size, eml.textBody,
-            threadId, eml.messageId, eml.inReplyTo, eml.references,
-            eml.from, eml.to, eml.cc, eml.subject, eml.date
-        );
+        emailId, filename, originalName, 'message/rfc822', sizeBytes, eml.textBody,
+        threadId, eml.messageId, eml.inReplyTo, eml.references,
+        eml.from, eml.to, eml.cc, eml.subject, eml.date
+    );
 
-        // Backfill thread for late arrivals
-        backfillThread(threadId, eml.messageId, eml.references);
+    // Backfill thread for late arrivals
+    backfillThread(threadId, eml.messageId, eml.references);
 
-        results.push({
-            id: emailId,
-            name: file.originalname,
-            status: 'ready',
-            size: file.size,
-            doc_type: 'email',
-            subject: eml.subject,
-            from: eml.from,
-            thread_id: threadId,
-            attachments: [],
-        });
+    // Process attachments
+    for (const att of eml.attachments) {
+        const attId = uuidv4();
+        const attExt = path.extname(att.filename) || '.bin';
+        const attFilename = `${attId}${attExt}`;
+        const attPath = path.join(UPLOADS_DIR, attFilename);
 
-        // Process attachments
-        for (const att of eml.attachments) {
-            const attId = uuidv4();
-            const attExt = path.extname(att.filename) || '.bin';
-            const attFilename = `${attId}${attExt}`;
-            const attPath = path.join(UPLOADS_DIR, attFilename);
+        fs.writeFileSync(attPath, att.content);
 
-            // Save attachment to disk
-            fs.writeFileSync(attPath, att.content);
-
-            // Extract text from attachment
-            let attText = '';
-            try {
-                attText = await extractText(attPath, att.contentType);
-            } catch (e) {
-                attText = `[Could not extract text: ${e.message}]`;
-            }
-
-            // Insert attachment document linked to parent email
-            db.prepare(`
-        INSERT INTO documents (
-          id, filename, original_name, mime_type, size_bytes, text_content, status,
-          doc_type, parent_id, thread_id
-        ) VALUES (?, ?, ?, ?, ?, ?, 'ready',
-          'attachment', ?, ?)
-      `).run(attId, attFilename, att.filename, att.contentType, att.size, attText, emailId, threadId);
-
-            results[results.length - 1].attachments.push({
-                id: attId,
-                name: att.filename,
-                size: att.size,
-                content_type: att.contentType,
-            });
+        let attText = '';
+        try {
+            attText = await extractText(attPath, att.contentType);
+        } catch (e) {
+            attText = `[Could not extract text: ${e.message}]`;
         }
 
-        return results;
+        db.prepare(`
+          INSERT INTO documents (
+            id, filename, original_name, mime_type, size_bytes, text_content, status,
+            doc_type, parent_id, thread_id
+          ) VALUES (?, ?, ?, ?, ?, ?, 'ready',
+            'attachment', ?, ?)
+        `).run(attId, attFilename, att.filename, att.contentType, att.size, attText, emailId, threadId);
+
+        result.attachments.push({ id: attId, name: att.filename, size: att.size, content_type: att.contentType });
+    }
+
+    return result;
+}
+
+// ═══════════════════════════════════════════════════
+// EML processing pipeline
+// ═══════════════════════════════════════════════════
+async function processEmlFile(file) {
+    const emailId = path.basename(file.filename, path.extname(file.filename));
+    try {
+        const eml = await parseEml(file.path);
+        const result = await processEmailData(eml, emailId, file.filename, file.originalname, file.size);
+        return [result];
     } catch (err) {
-        // Mark as error if parsing fails
         try {
             db.prepare(`
-        INSERT INTO documents (id, filename, original_name, mime_type, size_bytes, status, doc_type)
-        VALUES (?, ?, ?, 'message/rfc822', ?, 'error', 'email')
-      `).run(emailId, file.filename, file.originalname, file.size);
-        } catch (_) { /* ignore if already inserted */ }
-
+              INSERT INTO documents (id, filename, original_name, mime_type, size_bytes, status, doc_type)
+              VALUES (?, ?, ?, 'message/rfc822', ?, 'error', 'email')
+            `).run(emailId, file.filename, file.originalname, file.size);
+        } catch (_) { /* ignore */ }
         return [{ id: emailId, name: file.originalname, status: 'error', error: err.message, doc_type: 'email' }];
     }
+}
+
+// ═══════════════════════════════════════════════════
+// PST processing pipeline
+// ═══════════════════════════════════════════════════
+async function processPstFile(file) {
+    const results = [];
+    try {
+        const emails = parsePst(file.path);
+        console.log(`✦ PST file contains ${emails.length} email(s)`);
+
+        for (let i = 0; i < emails.length; i++) {
+            const eml = emails[i];
+            const emailId = uuidv4();
+            const emailFilename = `${emailId}.pst-msg`;
+            try {
+                const result = await processEmailData(
+                    eml, emailId, emailFilename,
+                    `${file.originalname} — ${eml.subject || `Message ${i + 1}`}`,
+                    eml.textBody?.length || 0
+                );
+                results.push(result);
+            } catch (err) {
+                console.error(`⚠ Failed to process PST email ${i}: ${err.message}`);
+                results.push({ id: emailId, name: eml.subject || `Message ${i + 1}`, status: 'error', error: err.message, doc_type: 'email' });
+            }
+        }
+    } catch (err) {
+        results.push({ id: uuidv4(), name: file.originalname, status: 'error', error: `PST parse failed: ${err.message}`, doc_type: 'email' });
+    }
+    return results;
 }
 
 // ═══════════════════════════════════════════════════
@@ -218,6 +246,9 @@ router.post('/upload', upload.array('files', 50), async (req, res) => {
             if (ext === '.eml') {
                 const emlResults = await processEmlFile(file);
                 allResults.push(...emlResults);
+            } else if (ext === '.pst') {
+                const pstResults = await processPstFile(file);
+                allResults.push(...pstResults);
             } else {
                 const fileResults = await processRegularFile(file);
                 allResults.push(...fileResults);
