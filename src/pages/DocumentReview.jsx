@@ -19,6 +19,7 @@ function DocumentReview({ addToast }) {
     const [newTagName, setNewTagName] = useState('');
     const [showNewTag, setShowNewTag] = useState(false);
     const [textSearch, setTextSearch] = useState('');
+    const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
     // AI Classification state
     const [investigationPrompt, setInvestigationPrompt] = useState(
@@ -189,15 +190,23 @@ function DocumentReview({ addToast }) {
         }
     };
 
-    const deleteDoc = async () => {
-        if (!confirm('Delete this document permanently?')) return;
+    const requestDelete = () => {
+        setShowDeleteConfirm(true);
+    };
+
+    const confirmDelete = async () => {
         try {
             await fetch(`/api/documents/${id}`, { method: 'DELETE' });
             addToast('Document deleted', 'success');
             navigate('/search');
         } catch (err) {
             addToast('Failed to delete', 'error');
+            setShowDeleteConfirm(false);
         }
+    };
+
+    const cancelDelete = () => {
+        setShowDeleteConfirm(false);
     };
 
     // Highlight search term in text
@@ -594,12 +603,30 @@ function DocumentReview({ addToast }) {
                         <button className="btn btn-secondary btn-sm" onClick={() => navigate('/search')} style={{ width: '100%' }}>
                             ← Back to Search
                         </button>
-                        <button className="btn btn-danger btn-sm" onClick={deleteDoc} style={{ width: '100%' }}>
+                        <button className="btn btn-danger btn-sm" onClick={requestDelete} style={{ width: '100%' }}>
                             Delete Document
                         </button>
                     </div>
                 </div>
             </div>
+
+            {/* Delete Confirmation Modal */}
+            {showDeleteConfirm && (
+                <div style={{
+                    position: 'fixed', top: 0, left: 0, right: 0, bottom: 0,
+                    background: 'rgba(0,0,0,0.5)', backdropFilter: 'blur(4px)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000
+                }}>
+                    <div className="card fade-in" style={{ width: '400px', maxWidth: '90vw' }}>
+                        <h3 className="text-danger" style={{ marginTop: 0 }}>Delete Document?</h3>
+                        <p className="text-muted">Are you sure you want to permanently delete this document and all its attachments? This action cannot be undone.</p>
+                        <div className="flex justify-end gap-8 mt-24">
+                            <button className="btn btn-ghost" onClick={cancelDelete}>Cancel</button>
+                            <button className="btn btn-danger" onClick={confirmDelete}>Yes, Delete</button>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }
