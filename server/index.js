@@ -8,6 +8,7 @@ import documentsRouter from './routes/documents.js';
 import searchRouter from './routes/search.js';
 import tagsRouter from './routes/tags.js';
 import reviewsRouter from './routes/reviews.js';
+import classifyRouter from './routes/classify.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
@@ -29,6 +30,7 @@ app.use('/api/documents', documentsRouter);
 app.use('/api/search', searchRouter);
 app.use('/api/tags', tagsRouter);
 app.use('/api/reviews', reviewsRouter);
+app.use('/api/classify', classifyRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {

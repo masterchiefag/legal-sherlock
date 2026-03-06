@@ -20,6 +20,14 @@ function DocumentReview({ addToast }) {
     const [showNewTag, setShowNewTag] = useState(false);
     const [textSearch, setTextSearch] = useState('');
 
+    // AI Classification state
+    const [investigationPrompt, setInvestigationPrompt] = useState(
+        () => localStorage.getItem('sherlock_investigation_prompt') || ''
+    );
+    const [classifying, setClassifying] = useState(false);
+    const [classification, setClassification] = useState(null);
+    const [classificationHistory, setClassificationHistory] = useState([]);
+
     const loadDocument = useCallback(async () => {
         try {
             const [docRes, tagsRes] = await Promise.all([
@@ -46,7 +54,51 @@ function DocumentReview({ addToast }) {
         setLoading(false);
     }, [id]);
 
-    useEffect(() => { setLoading(true); loadDocument(); }, [loadDocument]);
+    useEffect(() => { setLoading(true); loadDocument(); loadClassifications(); }, [loadDocument]);
+
+    const loadClassifications = useCallback(async () => {
+        try {
+            const res = await fetch(`/api/classify/${id}`);
+            const data = await res.json();
+            if (data.classifications?.length > 0) {
+                setClassification(data.classifications[0]);
+                setClassificationHistory(data.classifications);
+                // Restore the prompt from the last classification
+                if (!investigationPrompt && data.classifications[0].investigation_prompt) {
+                    setInvestigationPrompt(data.classifications[0].investigation_prompt);
+                }
+            } else {
+                setClassification(null);
+                setClassificationHistory([]);
+            }
+        } catch (err) {
+            console.error('Failed to load classifications:', err);
+        }
+    }, [id]);
+
+    const handleClassify = async () => {
+        if (!investigationPrompt.trim() || classifying) return;
+        setClassifying(true);
+        localStorage.setItem('sherlock_investigation_prompt', investigationPrompt);
+        try {
+            const res = await fetch(`/api/classify/${id}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ investigationPrompt: investigationPrompt.trim() }),
+            });
+            const data = await res.json();
+            if (res.ok) {
+                setClassification(data);
+                loadClassifications();
+                addToast(`Classified: ${data.score}/5`, 'success');
+            } else {
+                addToast(data.error || 'Classification failed', 'error');
+            }
+        } catch (err) {
+            addToast('Classification failed: ' + err.message, 'error');
+        }
+        setClassifying(false);
+    };
 
     // Keyboard shortcuts
     useEffect(() => {
@@ -357,6 +409,108 @@ function DocumentReview({ addToast }) {
                     </div>
                 )}
 
+                {/* AI Classification */}
+                <div className="doc-sidebar-section">
+                    <h3>🔍 AI Classification</h3>
+                    <textarea
+                        className="textarea"
+                        placeholder="Describe the investigation focus, e.g. 'Find evidence of bribery, off-the-books payments, or corruption involving government officials'"
+                        value={investigationPrompt}
+                        onChange={(e) => setInvestigationPrompt(e.target.value)}
+                        rows="3"
+                        style={{ fontSize: '12px', marginBottom: '8px' }}
+                    />
+                    <button
+                        className="btn btn-primary btn-sm"
+                        onClick={handleClassify}
+                        disabled={classifying || !investigationPrompt.trim()}
+                        style={{ width: '100%', position: 'relative' }}
+                    >
+                        {classifying ? (
+                            <span style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '8px' }}>
+                                <span className="spinner" style={{ width: '14px', height: '14px', borderWidth: '2px' }}></span>
+                                Analyzing…
+                            </span>
+                        ) : '🔍 Classify Document'}
+                    </button>
+
+                    {/* Classification Result */}
+                    {classification && (
+                        <div style={{
+                            marginTop: '12px',
+                            padding: '14px',
+                            borderRadius: 'var(--radius-md)',
+                            background: 'var(--bg-tertiary)',
+                            border: `1px solid ${getScoreColor(classification.score)}30`,
+                        }}>
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '8px' }}>
+                                <div style={{
+                                    width: '36px', height: '36px',
+                                    borderRadius: 'var(--radius-sm)',
+                                    background: `${getScoreColor(classification.score)}20`,
+                                    color: getScoreColor(classification.score),
+                                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                                    fontWeight: 700, fontSize: '18px',
+                                    border: `2px solid ${getScoreColor(classification.score)}40`,
+                                }}>
+                                    {classification.score}
+                                </div>
+                                <div>
+                                    <div style={{ fontSize: '13px', fontWeight: 600, color: getScoreColor(classification.score) }}>
+                                        {getScoreLabel(classification.score)}
+                                    </div>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                        {classification.model || 'unknown'} • {classification.elapsed_seconds ? `${classification.elapsed_seconds}s` : ''}
+                                    </div>
+                                </div>
+                            </div>
+                            <div style={{
+                                fontSize: '12px',
+                                color: 'var(--text-secondary)',
+                                lineHeight: '1.5',
+                                padding: '8px 10px',
+                                background: 'var(--bg-primary)',
+                                borderRadius: 'var(--radius-sm)',
+                                border: '1px solid var(--border-secondary)',
+                            }}>
+                                {classification.reasoning}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Classification History */}
+                    {classificationHistory.length > 1 && (
+                        <details style={{ marginTop: '8px' }}>
+                            <summary style={{ fontSize: '11px', color: 'var(--text-tertiary)', cursor: 'pointer' }}>
+                                Previous classifications ({classificationHistory.length - 1})
+                            </summary>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px' }}>
+                                {classificationHistory.slice(1).map(c => (
+                                    <div key={c.id} style={{
+                                        padding: '6px 8px',
+                                        borderRadius: 'var(--radius-sm)',
+                                        background: 'var(--bg-primary)',
+                                        border: '1px solid var(--border-secondary)',
+                                        fontSize: '11px',
+                                    }}>
+                                        <div style={{ display: 'flex', justifyContent: 'space-between' }}>
+                                            <span style={{ fontWeight: 600, color: getScoreColor(c.score) }}>
+                                                Score: {c.score}/5
+                                            </span>
+                                            <span style={{ color: 'var(--text-tertiary)' }}>
+                                                {new Date(c.classified_at).toLocaleString()}
+                                            </span>
+                                        </div>
+                                        <div style={{ color: 'var(--text-secondary)', marginTop: '2px' }}>
+                                            {c.reasoning?.substring(0, 100)}{c.reasoning?.length > 100 ? '…' : ''}
+                                        </div>
+                                    </div>
+                                ))}
+                            </div>
+                        </details>
+                    )}
+                </div>
+
                 {/* Review Status */}
                 <div className="doc-sidebar-section">
                     <h3>Review Decision</h3>
@@ -457,6 +611,16 @@ function formatSize(bytes) {
     let size = bytes;
     while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
     return `${size.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
+}
+
+function getScoreColor(score) {
+    const colors = { 1: '#6b7280', 2: '#3b82f6', 3: '#f59e0b', 4: '#f97316', 5: '#ef4444' };
+    return colors[score] || '#6b7280';
+}
+
+function getScoreLabel(score) {
+    const labels = { 1: 'Not Relevant', 2: 'Unlikely Relevant', 3: 'Potentially Relevant', 4: 'Highly Relevant', 5: 'Smoking Gun' };
+    return labels[score] || 'Unknown';
 }
 
 export default DocumentReview;

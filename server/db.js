@@ -53,6 +53,18 @@ db.exec(`
     reviewed_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS classifications (
+    id TEXT PRIMARY KEY,
+    document_id TEXT NOT NULL,
+    investigation_prompt TEXT NOT NULL,
+    score INTEGER NOT NULL CHECK(score BETWEEN 1 AND 5),
+    reasoning TEXT,
+    provider TEXT,
+    model TEXT,
+    classified_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+  );
 `);
 
 // ═══════════════════════════════════════════════════
