@@ -16,6 +16,8 @@ router.get('/', (req, res) => {
             date_from,
             date_to,
             doc_type,
+            score_min,
+            score_max,
         } = req.query;
 
         const offset = (parseInt(page) - 1) * parseInt(limit);
@@ -78,6 +80,16 @@ router.get('/', (req, res) => {
             filterParams.push(date_to);
         }
 
+        if (score_min) {
+            filterWhere += ' AND d.id IN (SELECT c2.document_id FROM classifications c2 WHERE c2.id IN (SELECT MAX(id) FROM classifications GROUP BY document_id) AND c2.score >= ?)';
+            filterParams.push(parseInt(score_min));
+        }
+
+        if (score_max) {
+            filterWhere += ' AND d.id IN (SELECT c2.document_id FROM classifications c2 WHERE c2.id IN (SELECT MAX(id) FROM classifications GROUP BY document_id) AND c2.score <= ?)';
+            filterParams.push(parseInt(score_max));
+        }
+
         // Count total results
         const countRow = db.prepare(`
       SELECT COUNT(*) as total
@@ -94,7 +106,9 @@ router.get('/', (req, res) => {
         snippet(documents_fts, 1, '<mark>', '</mark>', '…', 40) as snippet,
         rank,
         (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
-        (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email') as thread_count
+        (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email') as thread_count,
+        (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score,
+        (SELECT cl.reasoning FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_reasoning
       FROM documents_fts fts
       JOIN documents d ON d.rowid = fts.rowid
       WHERE documents_fts MATCH ?

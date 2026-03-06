@@ -11,6 +11,7 @@ function Search() {
     // Filters
     const [reviewStatus, setReviewStatus] = useState('');
     const [docType, setDocType] = useState('');
+    const [scoreFilter, setScoreFilter] = useState('');
     const [dateFrom, setDateFrom] = useState('');
     const [dateTo, setDateTo] = useState('');
 
@@ -131,6 +132,15 @@ function Search() {
                     <option value="email">Emails</option>
                     <option value="file">Files</option>
                 </select>
+                <select className="filter-select" value={scoreFilter} onChange={e => setScoreFilter(e.target.value)}>
+                    <option value="">All Scores</option>
+                    <option value="5">🔴 5 — Smoking Gun</option>
+                    <option value="4">🟠 4 — Highly Relevant</option>
+                    <option value="3">🟡 3 — Potentially Relevant</option>
+                    <option value="2">🔵 2 — Unlikely Relevant</option>
+                    <option value="1">⚪ 1 — Not Relevant</option>
+                    <option value="unscored">— Unscored</option>
+                </select>
                 <input type="date" className="input" style={{ width: 'auto', padding: '8px 14px', fontSize: '13px' }} value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
                 <input type="date" className="input" style={{ width: 'auto', padding: '8px 14px', fontSize: '13px' }} value={dateTo} onChange={e => setDateTo(e.target.value)} />
                 <button className="btn btn-primary" onClick={() => doSearch()}>Search</button>
@@ -188,6 +198,12 @@ function Search() {
                                             )}
                                             <span>•</span>
                                             <span className={`status-badge ${r.review_status}`}>{r.review_status.replace('_', ' ')}</span>
+                                            {r.ai_score && (
+                                                <>
+                                                    <span>•</span>
+                                                    {renderScoreBadge(r.ai_score)}
+                                                </>
+                                            )}
                                         </div>
                                     </div>
                                 ))}
@@ -229,6 +245,7 @@ function Search() {
                                             <th>Size</th>
                                             <th>Status</th>
                                             <th>Review</th>
+                                            <th>AI Score</th>
                                             <th>Date</th>
                                         </tr>
                                     </thead>
@@ -252,6 +269,7 @@ function Search() {
                                                         {(doc.review_status || 'pending').replace('_', ' ')}
                                                     </span>
                                                 </td>
+                                                <td>{renderScoreBadge(doc.ai_score)}</td>
                                                 <td className="text-muted text-sm">
                                                     {doc.email_date
                                                         ? new Date(doc.email_date).toLocaleDateString()
@@ -296,3 +314,22 @@ function formatSize(bytes) {
 }
 
 export default Search;
+
+function getScoreColor(score) {
+    const colors = { 1: '#6b7280', 2: '#3b82f6', 3: '#f59e0b', 4: '#f97316', 5: '#ef4444' };
+    return colors[score] || '#6b7280';
+}
+
+function renderScoreBadge(score) {
+    if (!score) return <span className="text-sm text-muted">—</span>;
+    const color = getScoreColor(score);
+    return (
+        <span style={{
+            display: 'inline-flex', alignItems: 'center', gap: '4px',
+            padding: '2px 8px', borderRadius: '10px', fontSize: '11px', fontWeight: 600,
+            background: `${color}18`, color: color, border: `1px solid ${color}30`,
+        }}>
+            {score}/5
+        </span>
+    );
+}

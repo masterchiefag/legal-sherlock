@@ -310,7 +310,8 @@ router.get('/', (req, res) => {
          WHERE dr.document_id = d.id
          ORDER BY dr.reviewed_at DESC LIMIT 1) as review_status,
         (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
-        (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email') as thread_count
+        (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email') as thread_count,
+        (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score
       FROM documents d
       ${where}
       ORDER BY d.${sortCol} ${sortOrder}
