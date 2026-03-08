@@ -62,6 +62,7 @@ db.exec(`
     reasoning TEXT,
     provider TEXT,
     model TEXT,
+    elapsed_seconds REAL,
     classified_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
   );
@@ -100,6 +101,14 @@ for (const { col, type } of emailMigrations) {
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_message_id ON documents(message_id)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_thread_id ON documents(thread_id)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_parent_id ON documents(parent_id)`);
+
+// ═══════════════════════════════════════════════════
+// Migration: Add elapsed_seconds to classifications
+// ═══════════════════════════════════════════════════
+if (!columnExists('classifications', 'elapsed_seconds')) {
+  db.exec(`ALTER TABLE classifications ADD COLUMN elapsed_seconds REAL`);
+  console.log(`✦ Migration: added column classifications.elapsed_seconds`);
+}
 
 // ═══════════════════════════════════════════════════
 // Rebuild FTS to include email fields

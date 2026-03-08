@@ -120,9 +120,9 @@ router.post('/:documentId', async (req, res) => {
         // Save to DB
         const classificationId = uuidv4();
         db.prepare(`
-      INSERT INTO classifications (id, document_id, investigation_prompt, score, reasoning, provider, model)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(classificationId, documentId, investigationPrompt.trim(), result.score, result.reasoning, provider.name, provider.modelName);
+      INSERT INTO classifications (id, document_id, investigation_prompt, score, reasoning, provider, model, elapsed_seconds)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(classificationId, documentId, investigationPrompt.trim(), result.score, result.reasoning, provider.name, activeModel, parseFloat(elapsed));
 
         res.json({
             id: classificationId,
@@ -136,6 +136,40 @@ router.post('/:documentId', async (req, res) => {
         });
     } catch (err) {
         console.error('Classification error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ═══════════════════════════════════════════════════
+// GET /api/classify/logs — Get full classification history
+// ═══════════════════════════════════════════════════
+router.get('/logs', (req, res) => {
+    try {
+        const { limit = 100, page = 1 } = req.query;
+        const offset = (parseInt(page) - 1) * parseInt(limit);
+
+        const logs = db.prepare(`
+            SELECT 
+                c.id, c.document_id, c.investigation_prompt, c.score, c.reasoning, c.model, c.classified_at, c.elapsed_seconds,
+                d.original_name, d.email_subject, d.doc_type
+            FROM classifications c
+            JOIN documents d ON c.document_id = d.id
+            ORDER BY c.classified_at DESC
+            LIMIT ? OFFSET ?
+        `).all(parseInt(limit), offset);
+
+        const countRow = db.prepare('SELECT COUNT(*) as total FROM classifications').get();
+
+        res.json({
+            logs,
+            pagination: {
+                total: countRow.total,
+                page: parseInt(page),
+                limit: parseInt(limit),
+                pages: Math.ceil(countRow.total / parseInt(limit))
+            }
+        });
+    } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
