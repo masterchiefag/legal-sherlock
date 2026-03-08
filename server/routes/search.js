@@ -26,13 +26,41 @@ router.get('/', (req, res) => {
             return res.json({ results: [], query: q, pagination: { page: 1, limit: 20, total: 0, pages: 0 } });
         }
 
-        // Sanitize FTS query — escape special chars and add prefix matching
-        const ftsQuery = q
-            .replace(/['"]/g, '')
-            .split(/\s+/)
-            .filter(Boolean)
-            .map(term => `"${term}"*`)
-            .join(' ');
+        // Parse FTS5 query: support "exact phrase", OR, and -exclude
+        const parseQuery = (q) => {
+            // Unify quotes and split into tokens maintaining quoted phrases
+            const tokens = q.match(/("[^"]+"|-[^\s]+|\bOR\b|[^\s]+)/g) || [];
+
+            const processed = [];
+            let i = 0;
+            while (i < tokens.length) {
+                const token = tokens[i];
+
+                if (token.toUpperCase() === 'OR') {
+                    processed.push('OR');
+                } else if (token.startsWith('"') && token.endsWith('"') && token.length > 2) {
+                    // Exact phrase, keep quotes
+                    processed.push(token);
+                } else if (token.startsWith('-')) {
+                    // Exclusion term (e.g., -bribe) -> NOT "bribe"
+                    const val = token.substring(1).replace(/['"]/g, '');
+                    if (val) processed.push(`NOT "${val}"*`);
+                } else {
+                    // Standard word, prefix match
+                    const val = token.replace(/['"]/g, '');
+                    if (val) processed.push(`"${val}"*`);
+                }
+                i++;
+            }
+            return processed.join(' ');
+        };
+
+        const ftsQuery = parseQuery(q);
+
+        // If query parsing results in empty string, return empty
+        if (!ftsQuery.trim() || ftsQuery.trim() === 'OR') {
+            return res.json({ results: [], query: q, pagination: { page: 1, limit: 20, total: 0, pages: 0 } });
+        }
 
         let filterWhere = '';
         const filterParams = [];

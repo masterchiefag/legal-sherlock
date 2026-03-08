@@ -13,7 +13,7 @@
 class OllamaProvider {
     constructor() {
         this.baseUrl = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
-        this.model = process.env.OLLAMA_MODEL || 'gemma3:4b';
+        this.model = process.env.OLLAMA_MODEL || 'gemma3:1b';
     }
 
     get name() { return 'ollama'; }
