@@ -19,14 +19,15 @@ class OllamaProvider {
     get name() { return 'ollama'; }
     get modelName() { return this.model; }
 
-    async classify(systemPrompt, documentContent) {
+    async classify(systemPrompt, documentContent, overrideModel = null) {
         const fullPrompt = `${systemPrompt}\n\n--- DOCUMENT START ---\n${documentContent}\n--- DOCUMENT END ---\n\nRespond ONLY with valid JSON in this exact format: {"score": <1-5>, "reasoning": "<brief explanation>"}`;
+        const activeModel = overrideModel || this.model;
 
         const response = await fetch(`${this.baseUrl}/api/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
-                model: this.model,
+                model: activeModel,
                 prompt: fullPrompt,
                 stream: false,
                 options: {
@@ -79,8 +80,9 @@ class OpenAIProvider {
     get name() { return 'openai'; }
     get modelName() { return this.model; }
 
-    async classify(systemPrompt, documentContent) {
+    async classify(systemPrompt, documentContent, overrideModel = null) {
         if (!this.apiKey) throw new Error('OPENAI_API_KEY not set');
+        const activeModel = overrideModel || this.model;
 
         const response = await fetch('https://api.openai.com/v1/chat/completions', {
             method: 'POST',
@@ -89,7 +91,7 @@ class OpenAIProvider {
                 'Authorization': `Bearer ${this.apiKey}`,
             },
             body: JSON.stringify({
-                model: this.model,
+                model: activeModel,
                 temperature: 0.1,
                 response_format: { type: 'json_object' },
                 messages: [
@@ -122,8 +124,9 @@ class AnthropicProvider {
     get name() { return 'anthropic'; }
     get modelName() { return this.model; }
 
-    async classify(systemPrompt, documentContent) {
+    async classify(systemPrompt, documentContent, overrideModel = null) {
         if (!this.apiKey) throw new Error('ANTHROPIC_API_KEY not set');
+        const activeModel = overrideModel || this.model;
 
         const response = await fetch('https://api.anthropic.com/v1/messages', {
             method: 'POST',
@@ -133,7 +136,7 @@ class AnthropicProvider {
                 'anthropic-version': '2023-06-01',
             },
             body: JSON.stringify({
-                model: this.model,
+                model: activeModel,
                 max_tokens: 300,
                 temperature: 0.1,
                 system: systemPrompt,

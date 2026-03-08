@@ -109,8 +109,12 @@ router.get('/', (req, res) => {
         }
 
         if (score_min) {
-            filterWhere += ' AND d.id IN (SELECT c2.document_id FROM classifications c2 WHERE c2.id IN (SELECT MAX(id) FROM classifications GROUP BY document_id) AND c2.score >= ?)';
-            filterParams.push(parseInt(score_min));
+            if (score_min === 'unscored') {
+                filterWhere += ' AND d.id NOT IN (SELECT document_id FROM classifications)';
+            } else {
+                filterWhere += ' AND d.id IN (SELECT c2.document_id FROM classifications c2 WHERE c2.id IN (SELECT MAX(id) FROM classifications GROUP BY document_id) AND c2.score >= ?)';
+                filterParams.push(parseInt(score_min));
+            }
         }
 
         if (score_max) {

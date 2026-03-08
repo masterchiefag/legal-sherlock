@@ -81,7 +81,7 @@ function buildDocumentContent(doc, thread, attachments) {
 router.post('/:documentId', async (req, res) => {
     try {
         const { documentId } = req.params;
-        const { investigationPrompt } = req.body;
+        const { investigationPrompt, model } = req.body;
 
         if (!investigationPrompt || investigationPrompt.trim().length < 5) {
             return res.status(400).json({ error: 'Investigation prompt must be at least 5 characters.' });
@@ -108,10 +108,11 @@ router.post('/:documentId', async (req, res) => {
 
         // Call LLM
         const provider = getProvider();
-        console.log(`🔍 Classifying document ${documentId} with ${provider.name}/${provider.modelName}...`);
+        const activeModel = model || provider.modelName;
+        console.log(`🔍 Classifying document ${documentId} with ${provider.name}/${activeModel}...`);
 
         const startTime = Date.now();
-        const result = await provider.classify(systemPrompt, documentContent);
+        const result = await provider.classify(systemPrompt, documentContent, model);
         const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 
         console.log(`✦ Classification complete in ${elapsed}s — Score: ${result.score}/5`);
@@ -129,12 +130,34 @@ router.post('/:documentId', async (req, res) => {
             score: result.score,
             reasoning: result.reasoning,
             provider: provider.name,
-            model: provider.modelName,
+            model: activeModel,
             elapsed_seconds: parseFloat(elapsed),
             classified_at: new Date().toISOString(),
         });
     } catch (err) {
         console.error('Classification error:', err.message);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// ═══════════════════════════════════════════════════
+// GET /api/classify/models — List available local models
+// ═══════════════════════════════════════════════════
+router.get('/models', async (req, res) => {
+    try {
+        const provider = getProvider();
+        if (provider.name !== 'ollama') {
+            return res.json({ models: [provider.modelName], active_model: provider.modelName });
+        }
+
+        const baseUrl = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
+        const response = await fetch(`${baseUrl}/api/tags`);
+        if (!response.ok) throw new Error('Failed to fetch Ollama models');
+
+        const data = await response.json();
+        const models = data.models?.map(m => m.name) || [];
+        res.json({ models, active_model: provider.modelName });
+    } catch (err) {
         res.status(500).json({ error: err.message });
     }
 });
@@ -153,6 +176,8 @@ router.get('/:documentId', (req, res) => {
         res.status(500).json({ error: err.message });
     }
 });
+
+
 
 // ═══════════════════════════════════════════════════
 // GET /api/classify — List available providers

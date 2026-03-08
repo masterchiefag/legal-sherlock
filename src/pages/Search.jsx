@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 
-function Search() {
+function Search({ addToast }) {
     const [query, setQuery] = useState('');
     const [results, setResults] = useState([]);
     const [pagination, setPagination] = useState(null);
@@ -14,6 +14,18 @@ function Search() {
     const [scoreFilter, setScoreFilter] = useState('');
     const [dateFrom, setDateFrom] = useState('');
     const [dateTo, setDateTo] = useState('');
+
+    // Batch Classification
+    const [showBatchPanel, setShowBatchPanel] = useState(false);
+    const [models, setModels] = useState([]);
+    const [selectedModel, setSelectedModel] = useState('');
+    const [batchPrompt, setBatchPrompt] = useState(
+        () => localStorage.getItem('sherlock_investigation_prompt') || ''
+    );
+    const [batchStatus, setBatchStatus] = useState('idle'); // idle, running, done
+    const [batchProgress, setBatchProgress] = useState(0);
+    const [batchTotal, setBatchTotal] = useState(0);
+    const [batchTime, setBatchTime] = useState(0);
 
     // All documents view (when no search query)
     const [documents, setDocuments] = useState([]);
@@ -51,6 +63,15 @@ function Search() {
         if (dateFrom) params.set('date_from', dateFrom);
         if (dateTo) params.set('date_to', dateTo);
 
+        if (scoreFilter) {
+            if (scoreFilter === 'unscored') {
+                params.set('score_min', 'unscored');
+            } else {
+                params.set('score_min', scoreFilter);
+                params.set('score_max', scoreFilter);
+            }
+        }
+
         try {
             const res = await fetch(`/api/search?${params}`);
             const data = await res.json();
@@ -72,6 +93,93 @@ function Search() {
         setSearched(false);
         setResults([]);
         setPagination(null);
+    };
+
+    const toggleBatchPanel = async () => {
+        if (!showBatchPanel && models.length === 0) {
+            try {
+                const res = await fetch('/api/classify/models');
+                const data = await res.json();
+                setModels(data.models || []);
+                if (data.models && data.models.length > 0) {
+                    setSelectedModel(data.active_model || data.models[0]);
+                }
+            } catch (err) {
+                console.error('Failed to load models:', err);
+            }
+        }
+        setShowBatchPanel(!showBatchPanel);
+    };
+
+    const startBatchClassify = async () => {
+        if (!batchPrompt.trim() || !selectedModel || results.length === 0) return;
+
+        localStorage.setItem('sherlock_investigation_prompt', batchPrompt);
+        setBatchStatus('running');
+        setBatchProgress(0);
+        setBatchTime(0);
+
+        // Fetch ALL matching IDs by re-running search without pagination
+        const params = new URLSearchParams({ q: query, page: 1, limit: 10000 });
+        if (reviewStatus) params.set('review_status', reviewStatus);
+        if (docType) params.set('doc_type', docType);
+        if (dateFrom) params.set('date_from', dateFrom);
+        if (dateTo) params.set('date_to', dateTo);
+        if (scoreFilter) {
+            if (scoreFilter === 'unscored') {
+                params.set('score_min', 'unscored');
+            } else {
+                params.set('score_min', scoreFilter);
+                params.set('score_max', scoreFilter);
+            }
+        }
+
+        try {
+            const searchRes = await fetch(`/api/search?${params}`);
+            const searchData = await searchRes.json();
+            const allDocs = searchData.results || [];
+
+            if (allDocs.length === 0) {
+                setBatchStatus('done');
+                return;
+            }
+
+            setBatchTotal(allDocs.length);
+            const startTime = Date.now();
+
+            const timer = setInterval(() => {
+                setBatchTime(Math.floor((Date.now() - startTime) / 1000));
+            }, 1000);
+
+            for (let i = 0; i < allDocs.length; i++) {
+                const doc = allDocs[i];
+                try {
+                    await fetch(`/api/classify/${doc.id}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            investigationPrompt: batchPrompt,
+                            model: selectedModel
+                        }),
+                    });
+                } catch (e) {
+                    console.error('Failed to classify doc', doc.id, e);
+                }
+                setBatchProgress(i + 1);
+            }
+
+            clearInterval(timer);
+            setBatchStatus('done');
+            addToast(`Successfully classified ${allDocs.length} documents!`, 'success');
+
+            // Refresh current search view
+            doSearch(pagination?.page || 1);
+
+        } catch (err) {
+            console.error('Failed to run batch classify', err);
+            addToast('Batch classification failed', 'error');
+            setBatchStatus('idle');
+        }
     };
 
     const getDocIcon = (doc) => {
@@ -145,7 +253,80 @@ function Search() {
                 <input type="date" className="input" style={{ width: 'auto', padding: '8px 14px', fontSize: '13px' }} value={dateTo} onChange={e => setDateTo(e.target.value)} />
                 <button className="btn btn-primary" onClick={() => doSearch()}>Search</button>
                 {searched && <button className="btn btn-ghost" onClick={clearSearch}>Clear</button>}
+                {searched && results.length > 0 && (
+                    <button className="btn btn-secondary" style={{ marginLeft: 'auto' }} onClick={toggleBatchPanel}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: '16px', height: '16px', marginRight: '6px' }}>
+                            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                        </svg>
+                        Batch AI Classify
+                    </button>
+                )}
             </div>
+
+            {/* Batch AI Classification Panel */}
+            {showBatchPanel && (
+                <div className="card fade-in" style={{ marginBottom: '24px', border: '1px solid var(--primary)', background: 'var(--bg-tertiary)' }}>
+                    <h3 style={{ marginTop: 0, marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: '18px', height: '18px', color: 'var(--primary)' }}>
+                            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                        </svg>
+                        Batch AI Classification
+                    </h3>
+
+                    <div className="flex gap-16" style={{ alignItems: 'flex-start' }}>
+                        <div style={{ flex: 1 }}>
+                            <label className="text-sm text-secondary block mb-8">Investigation Prompt</label>
+                            <textarea
+                                className="textarea"
+                                placeholder="Describe exactly what evidence or keywords the AI should look for..."
+                                value={batchPrompt}
+                                onChange={(e) => setBatchPrompt(e.target.value)}
+                                rows="3"
+                                disabled={batchStatus === 'running'}
+                            />
+                        </div>
+                        <div style={{ width: '250px' }}>
+                            <label className="text-sm text-secondary block mb-8">AI Model</label>
+                            <select
+                                className="select"
+                                value={selectedModel}
+                                onChange={(e) => setSelectedModel(e.target.value)}
+                                disabled={batchStatus === 'running'}
+                                style={{ width: '100%', marginBottom: '16px' }}
+                            >
+                                {models.map(m => <option key={m} value={m}>{m}</option>)}
+                            </select>
+
+                            {batchStatus === 'idle' && (
+                                <button
+                                    className="btn btn-primary"
+                                    style={{ width: '100%' }}
+                                    onClick={startBatchClassify}
+                                    disabled={!batchPrompt.trim()}
+                                >
+                                    Start Bulk Classification
+                                </button>
+                            )}
+
+                            {(batchStatus === 'running' || batchStatus === 'done') && (
+                                <div style={{ background: 'var(--bg-primary)', padding: '12px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-secondary)' }}>
+                                    <div className="flex justify-between text-sm mb-4">
+                                        <span style={{ fontWeight: 600 }}>{Math.round((batchProgress / batchTotal) * 100)}%</span>
+                                        <span className="text-secondary">{batchProgress} / {batchTotal} docs</span>
+                                    </div>
+                                    <div style={{ height: '6px', background: 'var(--border-secondary)', borderRadius: '3px', overflow: 'hidden', marginBottom: '8px' }}>
+                                        <div style={{ height: '100%', background: 'var(--primary)', width: `${(batchProgress / batchTotal) * 100}%`, transition: 'width 0.3s' }}></div>
+                                    </div>
+                                    <div className="text-xs text-tertiary flex justify-between">
+                                        <span>{batchStatus === 'running' ? 'Processing...' : 'Complete!'}</span>
+                                        <span>{Math.floor(batchTime / 60)}m {batchTime % 60}s</span>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* Search Results */}
             {searched ? (
