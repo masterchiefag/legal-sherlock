@@ -7,6 +7,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import db from '../db.js';
 import { extractText } from '../lib/extract.js';
+import { resolveThreadId, backfillThread } from '../lib/threading.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
@@ -174,47 +175,6 @@ async function processAndInsertEmail(msg) {
         `).run(attId, attFilename, attName, contentType, totalWritten, attText, emailId, threadId);
 
         totalAttachments++;
-    }
-}
-
-// ═══════════════════════════════════════════════════
-// Thread resolution utilities (duplicated from documents.js for worker isolation)
-// ═══════════════════════════════════════════════════
-function resolveThreadId(messageId, inReplyTo, references) {
-    if (inReplyTo) {
-        const parent = db.prepare('SELECT thread_id FROM documents WHERE message_id = ?').get(inReplyTo);
-        if (parent?.thread_id) return parent.thread_id;
-    }
-    if (references) {
-        const refIds = references.split(/\s+/).filter(Boolean).reverse();
-        for (const refId of refIds) {
-            const ref = db.prepare('SELECT thread_id FROM documents WHERE message_id = ?').get(refId);
-            if (ref?.thread_id) return ref.thread_id;
-        }
-    }
-    if (messageId) {
-        const child = db.prepare(
-            "SELECT thread_id FROM documents WHERE in_reply_to = ? OR email_references LIKE ? LIMIT 1"
-        ).get(messageId, `%${messageId}%`);
-        if (child?.thread_id) return child.thread_id;
-    }
-    return uuidv4();
-}
-
-function backfillThread(threadId, messageId, references) {
-    if (!messageId && !references) return;
-    const idsToCheck = [messageId, ...(references || '').split(/\s+/)].filter(Boolean);
-    for (const refId of idsToCheck) {
-        const orphans = db.prepare(
-            "SELECT id, thread_id FROM documents WHERE (message_id = ? OR in_reply_to = ? OR email_references LIKE ?) AND (thread_id IS NULL OR thread_id != ?)"
-        ).all(refId, refId, `%${refId}%`, threadId);
-        for (const orphan of orphans) {
-            if (orphan.thread_id) {
-                db.prepare('UPDATE documents SET thread_id = ? WHERE thread_id = ?').run(threadId, orphan.thread_id);
-            } else {
-                db.prepare('UPDATE documents SET thread_id = ? WHERE id = ?').run(threadId, orphan.id);
-            }
-        }
     }
 }
 

@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { formatSize, getScoreColor } from '../utils/format';
 
 function Search({ addToast }) {
     const [query, setQuery] = useState('');
@@ -27,6 +28,9 @@ function Search({ addToast }) {
     const [batchTotal, setBatchTotal] = useState(0);
     const [batchTime, setBatchTime] = useState(0);
 
+    // Selection for batch classification
+    const [selectedIds, setSelectedIds] = useState(new Set());
+
     // All documents view (when no search query)
     const [documents, setDocuments] = useState([]);
     const [docPagination, setDocPagination] = useState(null);
@@ -48,6 +52,7 @@ function Search({ addToast }) {
             setDocPage(page);
         } catch (err) {
             console.error('Failed to load documents:', err);
+            addToast('Failed to load documents', 'error');
         }
     };
 
@@ -56,6 +61,7 @@ function Search({ addToast }) {
 
         setLoading(true);
         setSearched(true);
+        setSelectedIds(new Set());
 
         const params = new URLSearchParams({ q: query, page, limit: 15 });
         if (reviewStatus) params.set('review_status', reviewStatus);
@@ -79,6 +85,7 @@ function Search({ addToast }) {
             setPagination(data.pagination);
         } catch (err) {
             console.error('Search failed:', err);
+            addToast('Search failed', 'error');
         }
 
         setLoading(false);
@@ -93,6 +100,24 @@ function Search({ addToast }) {
         setSearched(false);
         setResults([]);
         setPagination(null);
+        setSelectedIds(new Set());
+    };
+
+    const toggleSelect = (id) => {
+        setSelectedIds(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    };
+
+    const toggleSelectAll = () => {
+        if (selectedIds.size === results.length) {
+            setSelectedIds(new Set());
+        } else {
+            setSelectedIds(new Set(results.map(r => r.id)));
+        }
     };
 
     const toggleBatchPanel = async () => {
@@ -144,15 +169,25 @@ function Search({ addToast }) {
                 return;
             }
 
-            setBatchTotal(allDocs.length);
+            // If user selected specific docs, filter to only those
+            const docsToClassify = selectedIds.size > 0
+                ? allDocs.filter(d => selectedIds.has(d.id))
+                : allDocs;
+
+            if (docsToClassify.length === 0) {
+                setBatchStatus('done');
+                return;
+            }
+
+            setBatchTotal(docsToClassify.length);
             const startTime = Date.now();
 
             const timer = setInterval(() => {
                 setBatchTime(Math.floor((Date.now() - startTime) / 1000));
             }, 1000);
 
-            for (let i = 0; i < allDocs.length; i++) {
-                const doc = allDocs[i];
+            for (let i = 0; i < docsToClassify.length; i++) {
+                const doc = docsToClassify[i];
                 try {
                     await fetch(`/api/classify/${doc.id}`, {
                         method: 'POST',
@@ -170,7 +205,8 @@ function Search({ addToast }) {
 
             clearInterval(timer);
             setBatchStatus('done');
-            addToast(`Successfully classified ${allDocs.length} documents!`, 'success');
+            setSelectedIds(new Set());
+            addToast(`Successfully classified ${docsToClassify.length} documents!`, 'success');
 
             // Refresh current search view
             doSearch(pagination?.page || 1);
@@ -304,7 +340,9 @@ function Search({ addToast }) {
                                     onClick={startBatchClassify}
                                     disabled={!batchPrompt.trim()}
                                 >
-                                    Start Bulk Classification
+                                    {selectedIds.size > 0
+                                        ? `Classify ${selectedIds.size} Selected`
+                                        : 'Classify All Results'}
                                 </button>
                             )}
 
@@ -335,13 +373,39 @@ function Search({ addToast }) {
                         <div className="loading-overlay"><div className="spinner"></div></div>
                     ) : results.length > 0 ? (
                         <>
-                            <div className="text-sm text-muted mb-16">
-                                {pagination.total} result(s) for "<strong style={{ color: 'var(--text-primary)' }}>{query}</strong>"
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                                <div className="text-sm text-muted">
+                                    {pagination.total} result(s) for "<strong style={{ color: 'var(--text-primary)' }}>{query}</strong>"
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)', userSelect: 'none' }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={results.length > 0 && selectedIds.size === results.length}
+                                            ref={el => { if (el) el.indeterminate = selectedIds.size > 0 && selectedIds.size < results.length; }}
+                                            onChange={toggleSelectAll}
+                                            style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: 'var(--primary)' }}
+                                        />
+                                        {selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Select all'}
+                                    </label>
+                                </div>
                             </div>
                             <div className="search-results">
                                 {results.map(r => (
-                                    <div key={r.id} className="search-result-card" onClick={() => navigate(`/documents/${r.id}`)}>
+                                    <div
+                                        key={r.id}
+                                        className="search-result-card"
+                                        onClick={() => navigate(`/documents/${r.id}`)}
+                                        style={selectedIds.has(r.id) ? { borderColor: 'var(--primary)', background: 'var(--bg-tertiary)' } : {}}
+                                    >
                                         <div className="flex items-center gap-8">
+                                            <input
+                                                type="checkbox"
+                                                checked={selectedIds.has(r.id)}
+                                                onChange={() => toggleSelect(r.id)}
+                                                onClick={(e) => e.stopPropagation()}
+                                                style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: 'var(--primary)', flexShrink: 0 }}
+                                            />
                                             <span style={{ fontSize: '18px' }}>{getDocIcon(r)}</span>
                                             <div style={{ flex: 1 }}>
                                                 <div className="search-result-title">{getDisplayName(r)}</div>
@@ -350,7 +414,7 @@ function Search({ addToast }) {
                                                 )}
                                             </div>
                                         </div>
-                                        <div className="search-result-snippet" dangerouslySetInnerHTML={{ __html: r.snippet || 'No preview available' }} />
+                                        <div className="search-result-snippet" dangerouslySetInnerHTML={{ __html: r.snippet ? r.snippet.replace(/<(?!\/?mark\b)[^>]*>/gi, '') : 'No preview available' }} />
                                         <div className="search-result-meta">
                                             <span>{formatSize(r.size_bytes)}</span>
                                             <span>•</span>
@@ -485,21 +549,7 @@ function Search({ addToast }) {
     );
 }
 
-function formatSize(bytes) {
-    if (!bytes) return '—';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    let i = 0;
-    let size = bytes;
-    while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
-    return `${size.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
-}
-
 export default Search;
-
-function getScoreColor(score) {
-    const colors = { 1: '#6b7280', 2: '#3b82f6', 3: '#f59e0b', 4: '#f97316', 5: '#ef4444' };
-    return colors[score] || '#6b7280';
-}
 
 function renderScoreBadge(score) {
     if (!score) return <span className="text-sm text-muted">—</span>;

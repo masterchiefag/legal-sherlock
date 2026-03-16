@@ -136,7 +136,8 @@ router.post('/:documentId', async (req, res) => {
         });
     } catch (err) {
         console.error('Classification error:', err.message);
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -170,7 +171,8 @@ router.get('/logs', (req, res) => {
             }
         });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -192,7 +194,8 @@ router.get('/models', async (req, res) => {
         const models = data.models?.map(m => m.name) || [];
         res.json({ models, active_model: provider.modelName });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -207,7 +210,8 @@ router.get('/:documentId', (req, res) => {
 
         res.json({ classifications });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -225,7 +229,8 @@ router.get('/', (req, res) => {
             available_providers: listProviders(),
         });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 

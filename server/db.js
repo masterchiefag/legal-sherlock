@@ -14,6 +14,7 @@ const db = new Database(DB_PATH);
 // Enable WAL mode for better performance
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
+db.pragma('busy_timeout = 5000');
 
 // Create tables
 db.exec(`
@@ -109,10 +110,16 @@ for (const { col, type } of emailMigrations) {
   }
 }
 
-// Create index on message_id for fast threading lookups
+// Create indexes for fast lookups
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_message_id ON documents(message_id)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_thread_id ON documents(thread_id)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_parent_id ON documents(parent_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_doc_type ON documents(doc_type)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_document_reviews_document_id ON document_reviews(document_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_document_tags_document_id ON document_tags(document_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_classifications_document_id ON classifications(document_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_classifications_classified_at ON classifications(classified_at DESC)`);
 
 // ═══════════════════════════════════════════════════
 // Migration: Add elapsed_seconds to classifications

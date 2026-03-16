@@ -7,7 +7,7 @@ import { v4 as uuidv4 } from 'uuid';
 import db from '../db.js';
 import { extractText } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
-import { parsePst } from '../lib/pst-parser.js';
+import { resolveThreadId, backfillThread } from '../lib/threading.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
@@ -36,60 +36,6 @@ const upload = multer({
 });
 
 const router = express.Router();
-
-// ═══════════════════════════════════════════════════
-// Threading algorithm
-// ═══════════════════════════════════════════════════
-function resolveThreadId(messageId, inReplyTo, references) {
-    // 1. Check if any existing email has the same thread by looking up In-Reply-To
-    if (inReplyTo) {
-        const parent = db.prepare('SELECT thread_id FROM documents WHERE message_id = ?').get(inReplyTo);
-        if (parent?.thread_id) return parent.thread_id;
-    }
-
-    // 2. Check References header (walk backwards for most recent ancestor first)
-    if (references) {
-        const refIds = references.split(/\s+/).filter(Boolean).reverse();
-        for (const refId of refIds) {
-            const ref = db.prepare('SELECT thread_id FROM documents WHERE message_id = ?').get(refId);
-            if (ref?.thread_id) return ref.thread_id;
-        }
-    }
-
-    // 3. Check if any existing email references *our* message_id (late arrival scenario)
-    if (messageId) {
-        const child = db.prepare(
-            "SELECT thread_id FROM documents WHERE in_reply_to = ? OR email_references LIKE ? LIMIT 1"
-        ).get(messageId, `%${messageId}%`);
-        if (child?.thread_id) return child.thread_id;
-    }
-
-    // 4. New thread
-    return uuidv4();
-}
-
-function backfillThread(threadId, messageId, references) {
-    // If we're creating a new thread but other emails reference us or
-    // share references, unify them under this thread_id
-    if (!messageId && !references) return;
-
-    const idsToCheck = [messageId, ...(references || '').split(/\s+/)].filter(Boolean);
-    for (const refId of idsToCheck) {
-        // Find orphan emails that reference any of these IDs
-        const orphans = db.prepare(
-            "SELECT id, thread_id FROM documents WHERE (message_id = ? OR in_reply_to = ? OR email_references LIKE ?) AND (thread_id IS NULL OR thread_id != ?)"
-        ).all(refId, refId, `%${refId}%`, threadId);
-
-        for (const orphan of orphans) {
-            // Unify: update this orphan and all emails in its old thread
-            if (orphan.thread_id) {
-                db.prepare('UPDATE documents SET thread_id = ? WHERE thread_id = ?').run(threadId, orphan.thread_id);
-            } else {
-                db.prepare('UPDATE documents SET thread_id = ? WHERE id = ?').run(threadId, orphan.id);
-            }
-        }
-    }
-}
 
 // ═══════════════════════════════════════════════════
 // Shared: insert a parsed email + its attachments
@@ -268,7 +214,8 @@ router.post('/upload', upload.array('files', 50), async (req, res) => {
         // Only returns here for non-PST files
         res.json({ uploaded: allResults.length, documents: allResults });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -281,7 +228,8 @@ router.get('/jobs/:id', (req, res) => {
         }
         res.json(job);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -352,7 +300,8 @@ router.get('/', (req, res) => {
             },
         });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -407,7 +356,8 @@ router.get('/:id', (req, res) => {
 
         res.json(doc);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -433,7 +383,8 @@ router.delete('/:id', (req, res) => {
 
         res.json({ deleted: true });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 

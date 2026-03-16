@@ -1,5 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link } from 'react-router-dom';
+import { formatSize, getScoreColor, getScoreLabel } from '../utils/format';
+import { highlightText } from '../utils/sanitize';
 
 const REVIEW_OPTIONS = [
     { status: 'relevant', label: 'Relevant', color: '#10b981', key: 'r' },
@@ -209,13 +211,8 @@ function DocumentReview({ addToast }) {
         setShowDeleteConfirm(false);
     };
 
-    // Highlight search term in text
-    const highlightedText = textSearch.trim()
-        ? doc?.text_content?.replace(
-            new RegExp(`(${textSearch.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')})`, 'gi'),
-            '<mark>$1</mark>'
-        )
-        : doc?.text_content;
+    // Highlight search term in text (HTML-escaped for XSS safety)
+    const highlightedText = highlightText(doc?.text_content, textSearch);
 
     if (loading) return <div className="loading-overlay"><div className="spinner"></div></div>;
 
@@ -631,25 +628,6 @@ function DocumentReview({ addToast }) {
             )}
         </div>
     );
-}
-
-function formatSize(bytes) {
-    if (!bytes) return '—';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    let i = 0;
-    let size = bytes;
-    while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
-    return `${size.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
-}
-
-function getScoreColor(score) {
-    const colors = { 1: '#6b7280', 2: '#3b82f6', 3: '#f59e0b', 4: '#f97316', 5: '#ef4444' };
-    return colors[score] || '#6b7280';
-}
-
-function getScoreLabel(score) {
-    const labels = { 1: 'Not Relevant', 2: 'Unlikely Relevant', 3: 'Potentially Relevant', 4: 'Highly Relevant', 5: 'Smoking Gun' };
-    return labels[score] || 'Unknown';
 }
 
 export default DocumentReview;
