@@ -32,7 +32,9 @@ class OllamaProvider {
                 stream: false,
                 options: {
                     temperature: 0.1,       // Low temp for consistent scoring
-                    num_predict: 300,       // Cap output length
+                    num_predict: 80,        // JSON response is ~30-50 tokens
+                    num_ctx: 2048,          // Smaller context = faster inference
+                    num_thread: 8,          // Use all CPU cores
                 },
             }),
         });
