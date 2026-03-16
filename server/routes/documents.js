@@ -23,7 +23,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
     storage,
-    limits: { fileSize: 500 * 1024 * 1024 }, // 500MB (PST files can be large)
+    limits: { fileSize: 5000 * 1024 * 1024 }, // 5GB (PST files can be massive)
     fileFilter: (req, file, cb) => {
         const allowed = ['.pdf', '.docx', '.txt', '.csv', '.md', '.eml', '.pst'];
         const ext = path.extname(file.originalname).toLowerCase();
@@ -180,34 +180,30 @@ async function processEmlFile(file) {
 }
 
 // ═══════════════════════════════════════════════════
-// PST processing pipeline
+// PST processing pipeline (Now delegated to Worker)
 // ═══════════════════════════════════════════════════
-async function processPstFile(file) {
-    const results = [];
-    try {
-        const emails = parsePst(file.path);
-        console.log(`✦ PST file contains ${emails.length} email(s)`);
+import { Worker } from 'worker_threads';
 
-        for (let i = 0; i < emails.length; i++) {
-            const eml = emails[i];
-            const emailId = uuidv4();
-            const emailFilename = `${emailId}.pst-msg`;
-            try {
-                const result = await processEmailData(
-                    eml, emailId, emailFilename,
-                    `${file.originalname} — ${eml.subject || `Message ${i + 1}`}`,
-                    eml.textBody?.length || 0
-                );
-                results.push(result);
-            } catch (err) {
-                console.error(`⚠ Failed to process PST email ${i}: ${err.message}`);
-                results.push({ id: emailId, name: eml.subject || `Message ${i + 1}`, status: 'error', error: err.message, doc_type: 'email' });
-            }
+function spawnPstWorker(jobId, filename, filepath, originalname) {
+    const workerPath = path.join(__dirname, '..', 'workers', 'pst-worker.js');
+    const worker = new Worker(workerPath, {
+        workerData: { jobId, filename, filepath, originalname }
+    });
+
+    worker.on('error', (err) => {
+        console.error(`⚠ PST Worker error for job ${jobId}:`, err);
+        db.prepare(`UPDATE import_jobs SET status = 'failed', error_log = ?, completed_at = datetime('now') WHERE id = ?`).run(
+            JSON.stringify([{ error: `Worker crashed: ${err.message}` }]), jobId
+        );
+    });
+
+    worker.on('exit', (code) => {
+        if (code !== 0) {
+            console.error(`⚠ PST Worker for job ${jobId} stopped with exit code ${code}`);
         }
-    } catch (err) {
-        results.push({ id: uuidv4(), name: file.originalname, status: 'error', error: `PST parse failed: ${err.message}`, doc_type: 'email' });
-    }
-    return results;
+    });
+
+    return worker;
 }
 
 // ═══════════════════════════════════════════════════
@@ -247,15 +243,43 @@ router.post('/upload', upload.array('files', 50), async (req, res) => {
                 const emlResults = await processEmlFile(file);
                 allResults.push(...emlResults);
             } else if (ext === '.pst') {
-                const pstResults = await processPstFile(file);
-                allResults.push(...pstResults);
+                // Background job for PST
+                const jobId = uuidv4();
+                
+                // Initialize job in database
+                db.prepare(`
+                    INSERT INTO import_jobs (id, filename, status)
+                    VALUES (?, ?, 'pending')
+                `).run(jobId, file.originalname);
+
+                spawnPstWorker(jobId, file.filename, file.path, file.originalname);
+                
+                // Return 202 Accepted instead of waiting for results
+                return res.status(202).json({ 
+                    message: "PST file uploaded. Processing in background.", 
+                    jobId: jobId 
+                });
             } else {
                 const fileResults = await processRegularFile(file);
                 allResults.push(...fileResults);
             }
         }
 
+        // Only returns here for non-PST files
         res.json({ uploaded: allResults.length, documents: allResults });
+    } catch (err) {
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// GET /api/documents/jobs/:id - Poll job status
+router.get('/jobs/:id', (req, res) => {
+    try {
+        const job = db.prepare('SELECT * FROM import_jobs WHERE id = ?').get(req.params.id);
+        if (!job) {
+            return res.status(404).json({ error: "Job not found" });
+        }
+        res.json(job);
     } catch (err) {
         res.status(500).json({ error: err.message });
     }

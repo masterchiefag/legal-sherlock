@@ -4,8 +4,29 @@ function Upload({ addToast }) {
     const [files, setFiles] = useState([]);
     const [uploading, setUploading] = useState(false);
     const [results, setResults] = useState([]);
+    const [activeJob, setActiveJob] = useState(null);
     const [dragActive, setDragActive] = useState(false);
     const inputRef = useRef(null);
+
+    const pollJobStatus = async (jobId) => {
+        try {
+            const res = await fetch(`/api/documents/jobs/${jobId}`);
+            if (res.ok) {
+                const job = await res.json();
+                setActiveJob(job);
+                
+                if (job.status === 'completed' || job.status === 'failed') {
+                    if (job.status === 'completed') addToast('PST Import Complete', 'success');
+                    if (job.status === 'failed') addToast('PST Import Failed', 'error');
+                    return; // Stop polling
+                }
+            }
+        } catch (err) {
+            console.error("Error polling job status", err);
+        }
+        // Poll again in 3 seconds
+        setTimeout(() => pollJobStatus(jobId), 3000);
+    };
 
     const handleFiles = useCallback((fileList) => {
         const newFiles = Array.from(fileList).filter(f => {
@@ -55,8 +76,14 @@ function Upload({ addToast }) {
             });
             const data = await res.json();
 
-            if (res.ok) {
-                setResults(data.documents);
+            if (res.status === 202 && data.jobId) {
+                // Background job started (PST)
+                setFiles([]);
+                addToast(data.message, 'info');
+                setActiveJob({ id: data.jobId, status: 'pending', filename: data.filename || 'PST File' });
+                pollJobStatus(data.jobId);
+            } else if (res.ok) {
+                setResults(data.documents || []);
                 setFiles([]);
                 addToast(`Successfully uploaded ${data.uploaded} document(s)`, 'success');
             } else {
@@ -144,6 +171,63 @@ function Upload({ addToast }) {
                             </button>
                         </div>
                     ))}
+                </div>
+            )}
+
+            {/* Background Job Progress */}
+            {activeJob && (
+                <div className="mt-24 p-16" style={{ background: 'var(--bg-secondary)', borderRadius: '12px', border: '1px solid var(--border-secondary)' }}>
+                    <div className="flex items-center justify-between mb-16">
+                        <div className="flex items-center gap-12">
+                            {activeJob.status === 'processing' || activeJob.status === 'pending' ? (
+                                <div className="spinner"></div>
+                            ) : activeJob.status === 'completed' ? (
+                                <div style={{ color: 'var(--success)', fontSize: '20px' }}>✓</div>
+                            ) : (
+                                <div style={{ color: 'var(--danger)', fontSize: '20px' }}>⚠</div>
+                            )}
+                            <div>
+                                <h3 className="text-md fw-bold m-0 text-primary">PST Import: {activeJob.filename || 'Archive'}</h3>
+                                <p className="text-sm text-muted m-0 capitalize">Status: {activeJob.status}</p>
+                            </div>
+                        </div>
+                        {activeJob.status === 'completed' && (
+                            <button className="btn btn-outline btn-sm" onClick={() => setActiveJob(null)}>Dismiss</button>
+                        )}
+                    </div>
+                    
+                    {(activeJob.status === 'processing' || activeJob.status === 'completed' || activeJob.status === 'failed') && (
+                        <div className="flex gap-24 mt-16" style={{ borderTop: '1px solid var(--border-secondary)', paddingTop: '16px' }}>
+                            <div>
+                                <p className="text-xs text-muted m-0 uppercase tracking-wide">Emails Extracted</p>
+                                <p className="text-lg fw-bold m-0">{activeJob.total_emails?.toLocaleString() || 0}</p>
+                            </div>
+                            <div>
+                                <p className="text-xs text-muted m-0 uppercase tracking-wide">Attachments</p>
+                                <p className="text-lg fw-bold m-0">{activeJob.total_attachments?.toLocaleString() || 0}</p>
+                            </div>
+                            {activeJob.completed_at && (
+                                <div>
+                                    <p className="text-xs text-muted m-0 uppercase tracking-wide">Finished At</p>
+                                    <p className="text-md fw-bold m-0">{new Date(activeJob.completed_at).toLocaleTimeString()}</p>
+                                </div>
+                            )}
+                        </div>
+                    )}
+
+                    {activeJob.error_log && JSON.parse(activeJob.error_log).length > 0 && (
+                        <div className="mt-16 p-12" style={{ background: 'var(--bg-tertiary)', borderRadius: '8px', color: 'var(--danger)', fontSize: '13px' }}>
+                            <strong>Engine Errors Encountered:</strong>
+                            <ul className="m-0 mt-8 pl-16">
+                                {JSON.parse(activeJob.error_log).slice(0, 5).map((err, i) => (
+                                    <li key={i}>{err.subject ? `[${err.subject}]: ` : ''}{err.error}</li>
+                                ))}
+                                {JSON.parse(activeJob.error_log).length > 5 && (
+                                    <li className="text-muted italic">...and {JSON.parse(activeJob.error_log).length - 5} more errors.</li>
+                                )}
+                            </ul>
+                        </div>
+                    )}
                 </div>
             )}
 

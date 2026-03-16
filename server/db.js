@@ -66,6 +66,18 @@ db.exec(`
     classified_at TEXT DEFAULT (datetime('now')),
     FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
   );
+
+  CREATE TABLE IF NOT EXISTS import_jobs (
+    id TEXT PRIMARY KEY,
+    filename TEXT NOT NULL,
+    status TEXT NOT NULL CHECK(status IN ('pending', 'processing', 'completed', 'failed')),
+    total_emails INTEGER DEFAULT 0,
+    total_attachments INTEGER DEFAULT 0,
+    progress_percent INTEGER DEFAULT 0,
+    error_log TEXT,
+    started_at TEXT DEFAULT (datetime('now')),
+    completed_at TEXT
+  );
 `);
 
 // ═══════════════════════════════════════════════════
