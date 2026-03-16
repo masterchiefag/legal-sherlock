@@ -28,6 +28,9 @@ function Search({ addToast }) {
     const [batchTotal, setBatchTotal] = useState(0);
     const [batchTime, setBatchTime] = useState(0);
 
+    // Selection for batch classification
+    const [selectedIds, setSelectedIds] = useState(new Set());
+
     // All documents view (when no search query)
     const [documents, setDocuments] = useState([]);
     const [docPagination, setDocPagination] = useState(null);
@@ -58,6 +61,7 @@ function Search({ addToast }) {
 
         setLoading(true);
         setSearched(true);
+        setSelectedIds(new Set());
 
         const params = new URLSearchParams({ q: query, page, limit: 15 });
         if (reviewStatus) params.set('review_status', reviewStatus);
@@ -96,6 +100,24 @@ function Search({ addToast }) {
         setSearched(false);
         setResults([]);
         setPagination(null);
+        setSelectedIds(new Set());
+    };
+
+    const toggleSelect = (id) => {
+        setSelectedIds(prev => {
+            const next = new Set(prev);
+            if (next.has(id)) next.delete(id);
+            else next.add(id);
+            return next;
+        });
+    };
+
+    const toggleSelectAll = () => {
+        if (selectedIds.size === results.length) {
+            setSelectedIds(new Set());
+        } else {
+            setSelectedIds(new Set(results.map(r => r.id)));
+        }
     };
 
     const toggleBatchPanel = async () => {
@@ -147,15 +169,25 @@ function Search({ addToast }) {
                 return;
             }
 
-            setBatchTotal(allDocs.length);
+            // If user selected specific docs, filter to only those
+            const docsToClassify = selectedIds.size > 0
+                ? allDocs.filter(d => selectedIds.has(d.id))
+                : allDocs;
+
+            if (docsToClassify.length === 0) {
+                setBatchStatus('done');
+                return;
+            }
+
+            setBatchTotal(docsToClassify.length);
             const startTime = Date.now();
 
             const timer = setInterval(() => {
                 setBatchTime(Math.floor((Date.now() - startTime) / 1000));
             }, 1000);
 
-            for (let i = 0; i < allDocs.length; i++) {
-                const doc = allDocs[i];
+            for (let i = 0; i < docsToClassify.length; i++) {
+                const doc = docsToClassify[i];
                 try {
                     await fetch(`/api/classify/${doc.id}`, {
                         method: 'POST',
@@ -173,7 +205,8 @@ function Search({ addToast }) {
 
             clearInterval(timer);
             setBatchStatus('done');
-            addToast(`Successfully classified ${allDocs.length} documents!`, 'success');
+            setSelectedIds(new Set());
+            addToast(`Successfully classified ${docsToClassify.length} documents!`, 'success');
 
             // Refresh current search view
             doSearch(pagination?.page || 1);
@@ -307,7 +340,9 @@ function Search({ addToast }) {
                                     onClick={startBatchClassify}
                                     disabled={!batchPrompt.trim()}
                                 >
-                                    Start Bulk Classification
+                                    {selectedIds.size > 0
+                                        ? `Classify ${selectedIds.size} Selected`
+                                        : 'Classify All Results'}
                                 </button>
                             )}
 
@@ -338,13 +373,39 @@ function Search({ addToast }) {
                         <div className="loading-overlay"><div className="spinner"></div></div>
                     ) : results.length > 0 ? (
                         <>
-                            <div className="text-sm text-muted mb-16">
-                                {pagination.total} result(s) for "<strong style={{ color: 'var(--text-primary)' }}>{query}</strong>"
+                            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
+                                <div className="text-sm text-muted">
+                                    {pagination.total} result(s) for "<strong style={{ color: 'var(--text-primary)' }}>{query}</strong>"
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)', userSelect: 'none' }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={results.length > 0 && selectedIds.size === results.length}
+                                            ref={el => { if (el) el.indeterminate = selectedIds.size > 0 && selectedIds.size < results.length; }}
+                                            onChange={toggleSelectAll}
+                                            style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: 'var(--primary)' }}
+                                        />
+                                        {selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Select all'}
+                                    </label>
+                                </div>
                             </div>
                             <div className="search-results">
                                 {results.map(r => (
-                                    <div key={r.id} className="search-result-card" onClick={() => navigate(`/documents/${r.id}`)}>
+                                    <div
+                                        key={r.id}
+                                        className="search-result-card"
+                                        onClick={() => navigate(`/documents/${r.id}`)}
+                                        style={selectedIds.has(r.id) ? { borderColor: 'var(--primary)', background: 'var(--bg-tertiary)' } : {}}
+                                    >
                                         <div className="flex items-center gap-8">
+                                            <input
+                                                type="checkbox"
+                                                checked={selectedIds.has(r.id)}
+                                                onChange={() => toggleSelect(r.id)}
+                                                onClick={(e) => e.stopPropagation()}
+                                                style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: 'var(--primary)', flexShrink: 0 }}
+                                            />
                                             <span style={{ fontSize: '18px' }}>{getDocIcon(r)}</span>
                                             <div style={{ flex: 1 }}>
                                                 <div className="search-result-title">{getDisplayName(r)}</div>
