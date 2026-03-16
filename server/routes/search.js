@@ -21,10 +21,7 @@ router.get('/', (req, res) => {
         } = req.query;
 
         const offset = (parseInt(page) - 1) * parseInt(limit);
-
-        if (!q.trim()) {
-            return res.json({ results: [], query: q, pagination: { page: 1, limit: 20, total: 0, pages: 0 } });
-        }
+        const hasQuery = q.trim().length > 0;
 
         // Parse FTS5 query: support "exact phrase", OR, and -exclude
         const parseQuery = (q) => {
@@ -55,11 +52,13 @@ router.get('/', (req, res) => {
             return processed.join(' ');
         };
 
-        const ftsQuery = parseQuery(q);
-
-        // If query parsing results in empty string, return empty
-        if (!ftsQuery.trim() || ftsQuery.trim() === 'OR') {
-            return res.json({ results: [], query: q, pagination: { page: 1, limit: 20, total: 0, pages: 0 } });
+        let ftsQuery = '';
+        if (hasQuery) {
+            ftsQuery = parseQuery(q);
+            // If query parsing results in empty string, return empty
+            if (!ftsQuery.trim() || ftsQuery.trim() === 'OR') {
+                return res.json({ results: [], query: q, pagination: { page: 1, limit: 20, total: 0, pages: 0 } });
+            }
         }
 
         let filterWhere = '';
@@ -123,37 +122,72 @@ router.get('/', (req, res) => {
         }
 
         // Count total results
-        const countRow = db.prepare(`
-      SELECT COUNT(*) as total
-      FROM documents_fts fts
-      JOIN documents d ON d.rowid = fts.rowid
-      WHERE documents_fts MATCH ?
-      ${filterWhere}
-    `).get(ftsQuery, ...filterParams);
+        let countRow;
+        let results;
 
-        // Get ranked results with snippets, tags, and review status in one query
-        const results = db.prepare(`
-      SELECT
-        d.*,
-        snippet(documents_fts, 1, '<mark>', '</mark>', '…', 40) as snippet,
-        rank,
-        (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
-        (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email') as thread_count,
-        (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score,
-        (SELECT cl.reasoning FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_reasoning,
-        (SELECT json_group_array(json_object('id', t.id, 'name', t.name, 'color', t.color))
-         FROM document_tags dt JOIN tags t ON dt.tag_id = t.id
-         WHERE dt.document_id = d.id) as tags_json,
-        (SELECT dr.status FROM document_reviews dr
-         WHERE dr.document_id = d.id
-         ORDER BY dr.reviewed_at DESC LIMIT 1) as review_status
-      FROM documents_fts fts
-      JOIN documents d ON d.rowid = fts.rowid
-      WHERE documents_fts MATCH ?
-      ${filterWhere}
-      ORDER BY rank
-      LIMIT ? OFFSET ?
-    `).all(ftsQuery, ...filterParams, parseInt(limit), offset);
+        if (hasQuery) {
+            countRow = db.prepare(`
+              SELECT COUNT(*) as total
+              FROM documents_fts fts
+              JOIN documents d ON d.rowid = fts.rowid
+              WHERE documents_fts MATCH ?
+              ${filterWhere}
+            `).get(ftsQuery, ...filterParams);
+
+            // Get ranked results with snippets, tags, and review status in one query
+            results = db.prepare(`
+              SELECT
+                d.*,
+                snippet(documents_fts, 1, '<mark>', '</mark>', '…', 40) as snippet,
+                rank,
+                (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
+                (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email') as thread_count,
+                (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score,
+                (SELECT cl.reasoning FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_reasoning,
+                (SELECT json_group_array(json_object('id', t.id, 'name', t.name, 'color', t.color))
+                 FROM document_tags dt JOIN tags t ON dt.tag_id = t.id
+                 WHERE dt.document_id = d.id) as tags_json,
+                (SELECT dr.status FROM document_reviews dr
+                 WHERE dr.document_id = d.id
+                 ORDER BY dr.reviewed_at DESC LIMIT 1) as review_status
+              FROM documents_fts fts
+              JOIN documents d ON d.rowid = fts.rowid
+              WHERE documents_fts MATCH ?
+              ${filterWhere}
+              ORDER BY rank
+              LIMIT ? OFFSET ?
+            `).all(ftsQuery, ...filterParams, parseInt(limit), offset);
+        } else {
+            // No search query — filter-only mode, query documents table directly
+            countRow = db.prepare(`
+              SELECT COUNT(*) as total
+              FROM documents d
+              WHERE 1=1
+              ${filterWhere}
+            `).get(...filterParams);
+
+            results = db.prepare(`
+              SELECT
+                d.*,
+                NULL as snippet,
+                NULL as rank,
+                (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
+                (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email') as thread_count,
+                (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score,
+                (SELECT cl.reasoning FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_reasoning,
+                (SELECT json_group_array(json_object('id', t.id, 'name', t.name, 'color', t.color))
+                 FROM document_tags dt JOIN tags t ON dt.tag_id = t.id
+                 WHERE dt.document_id = d.id) as tags_json,
+                (SELECT dr.status FROM document_reviews dr
+                 WHERE dr.document_id = d.id
+                 ORDER BY dr.reviewed_at DESC LIMIT 1) as review_status
+              FROM documents d
+              WHERE 1=1
+              ${filterWhere}
+              ORDER BY d.uploaded_at DESC
+              LIMIT ? OFFSET ?
+            `).all(...filterParams, parseInt(limit), offset);
+        }
 
         for (const r of results) {
             r.tags = JSON.parse(r.tags_json || '[]').filter(t => t.id !== null);

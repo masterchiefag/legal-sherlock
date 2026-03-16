@@ -31,39 +31,20 @@ function Search({ addToast }) {
     // Selection for batch classification
     const [selectedIds, setSelectedIds] = useState(new Set());
 
-    // All documents view (when no search query)
-    const [documents, setDocuments] = useState([]);
-    const [docPagination, setDocPagination] = useState(null);
-    const [docPage, setDocPage] = useState(1);
-
     const navigate = useNavigate();
 
-    // Load all documents on mount
+    // Load all documents on mount (filter-only search with empty query)
     useEffect(() => {
-        loadDocuments(1);
+        doSearch(1);
     }, []);
 
-    const loadDocuments = async (page) => {
-        try {
-            const res = await fetch(`/api/documents?page=${page}&limit=15`);
-            const data = await res.json();
-            setDocuments(data.documents);
-            setDocPagination(data.pagination);
-            setDocPage(page);
-        } catch (err) {
-            console.error('Failed to load documents:', err);
-            addToast('Failed to load documents', 'error');
-        }
-    };
-
     const doSearch = useCallback(async (page = 1) => {
-        if (!query.trim()) return;
-
         setLoading(true);
         setSearched(true);
         setSelectedIds(new Set());
 
-        const params = new URLSearchParams({ q: query, page, limit: 15 });
+        const params = new URLSearchParams({ page, limit: 15 });
+        if (query.trim()) params.set('q', query);
         if (reviewStatus) params.set('review_status', reviewStatus);
         if (docType) params.set('doc_type', docType);
         if (dateFrom) params.set('date_from', dateFrom);
@@ -89,19 +70,29 @@ function Search({ addToast }) {
         }
 
         setLoading(false);
-    }, [query, reviewStatus, docType, dateFrom, dateTo]);
+    }, [query, reviewStatus, docType, scoreFilter, dateFrom, dateTo]);
 
     const handleKeyDown = (e) => {
         if (e.key === 'Enter') doSearch();
     };
 
+    const [shouldRefresh, setShouldRefresh] = useState(0);
+
     const clearSearch = () => {
         setQuery('');
-        setSearched(false);
-        setResults([]);
-        setPagination(null);
+        setReviewStatus('');
+        setDocType('');
+        setScoreFilter('');
+        setDateFrom('');
+        setDateTo('');
         setSelectedIds(new Set());
+        setShouldRefresh(n => n + 1);
     };
+
+    // Re-fetch after clearing filters (state will have been reset by now)
+    useEffect(() => {
+        if (shouldRefresh > 0) doSearch(1);
+    }, [shouldRefresh]);
 
     const toggleSelect = (id) => {
         setSelectedIds(prev => {
@@ -145,7 +136,8 @@ function Search({ addToast }) {
         setBatchTime(0);
 
         // Fetch ALL matching IDs by re-running search without pagination
-        const params = new URLSearchParams({ q: query, page: 1, limit: 10000 });
+        const params = new URLSearchParams({ page: 1, limit: 10000 });
+        if (query.trim()) params.set('q', query);
         if (reviewStatus) params.set('review_status', reviewStatus);
         if (docType) params.set('doc_type', docType);
         if (dateFrom) params.set('date_from', dateFrom);
@@ -288,8 +280,10 @@ function Search({ addToast }) {
                 <input type="date" className="input" style={{ width: 'auto', padding: '8px 14px', fontSize: '13px' }} value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
                 <input type="date" className="input" style={{ width: 'auto', padding: '8px 14px', fontSize: '13px' }} value={dateTo} onChange={e => setDateTo(e.target.value)} />
                 <button className="btn btn-primary" onClick={() => doSearch()}>Search</button>
-                {searched && <button className="btn btn-ghost" onClick={clearSearch}>Clear</button>}
-                {searched && results.length > 0 && (
+                {(query.trim() || reviewStatus || docType || scoreFilter || dateFrom || dateTo) && (
+                    <button className="btn btn-ghost" onClick={clearSearch}>Clear</button>
+                )}
+                {results.length > 0 && (
                     <button className="btn btn-secondary" style={{ marginLeft: 'auto' }} onClick={toggleBatchPanel}>
                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: '16px', height: '16px', marginRight: '6px' }}>
                             <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
@@ -367,7 +361,7 @@ function Search({ addToast }) {
             )}
 
             {/* Search Results */}
-            {searched ? (
+            {searched && (
                 <>
                     {loading ? (
                         <div className="loading-overlay"><div className="spinner"></div></div>
@@ -375,7 +369,9 @@ function Search({ addToast }) {
                         <>
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
                                 <div className="text-sm text-muted">
-                                    {pagination.total} result(s) for "<strong style={{ color: 'var(--text-primary)' }}>{query}</strong>"
+                                    {pagination.total} {query.trim()
+                                        ? <>result(s) for "<strong style={{ color: 'var(--text-primary)' }}>{query}</strong>"</>
+                                        : 'document(s)'}
                                 </div>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)', userSelect: 'none' }}>
@@ -469,78 +465,6 @@ function Search({ addToast }) {
                             </svg>
                             <h3 className="empty-state-title">No results found</h3>
                             <p className="empty-state-text">Try a different search term or adjust your filters.</p>
-                        </div>
-                    )}
-                </>
-            ) : (
-                /* All Documents Table */
-                <>
-                    <h3 style={{ fontSize: '14px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '16px', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                        All Documents
-                    </h3>
-                    {documents.length > 0 ? (
-                        <>
-                            <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-                                <table className="data-table">
-                                    <thead>
-                                        <tr>
-                                            <th></th>
-                                            <th>Name / Subject</th>
-                                            <th>From</th>
-                                            <th>Size</th>
-                                            <th>Status</th>
-                                            <th>Review</th>
-                                            <th>AI Score</th>
-                                            <th>Date</th>
-                                        </tr>
-                                    </thead>
-                                    <tbody>
-                                        {documents.map(doc => (
-                                            <tr key={doc.id} onClick={() => navigate(`/documents/${doc.id}`)}>
-                                                <td style={{ width: '30px', textAlign: 'center', fontSize: '16px' }}>{getDocIcon(doc)}</td>
-                                                <td className="doc-name" style={{ maxWidth: '300px' }}>
-                                                    <span className="truncate" style={{ display: 'block' }}>{getDisplayName(doc)}</span>
-                                                    {doc.doc_type === 'email' && doc.attachment_count > 0 && (
-                                                        <span className="text-sm text-muted">📎 {doc.attachment_count}</span>
-                                                    )}
-                                                </td>
-                                                <td className="text-sm truncate" style={{ maxWidth: '180px', color: 'var(--text-secondary)' }}>
-                                                    {doc.email_from ? doc.email_from.split('<')[0].trim() : '—'}
-                                                </td>
-                                                <td>{formatSize(doc.size_bytes)}</td>
-                                                <td><span className={`status-badge ${doc.status}`}>{doc.status}</span></td>
-                                                <td>
-                                                    <span className={`status-badge ${doc.review_status || 'pending'}`}>
-                                                        {(doc.review_status || 'pending').replace('_', ' ')}
-                                                    </span>
-                                                </td>
-                                                <td>{renderScoreBadge(doc.ai_score)}</td>
-                                                <td className="text-muted text-sm">
-                                                    {doc.email_date
-                                                        ? new Date(doc.email_date).toLocaleDateString()
-                                                        : new Date(doc.uploaded_at).toLocaleDateString()}
-                                                </td>
-                                            </tr>
-                                        ))}
-                                    </tbody>
-                                </table>
-                            </div>
-                            {docPagination && docPagination.pages > 1 && (
-                                <div className="pagination">
-                                    <button className="pagination-btn" disabled={docPage <= 1} onClick={() => loadDocuments(docPage - 1)}>← Previous</button>
-                                    <span className="pagination-info">Page {docPage} of {docPagination.pages}</span>
-                                    <button className="pagination-btn" disabled={docPage >= docPagination.pages} onClick={() => loadDocuments(docPage + 1)}>Next →</button>
-                                </div>
-                            )}
-                        </>
-                    ) : (
-                        <div className="empty-state">
-                            <svg className="empty-state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                                <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z" />
-                                <polyline points="14 2 14 8 20 8" />
-                            </svg>
-                            <h3 className="empty-state-title">No documents yet</h3>
-                            <p className="empty-state-text">Upload your first document to get started.</p>
                         </div>
                     )}
                 </>
