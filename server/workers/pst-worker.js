@@ -138,20 +138,26 @@ async function processAndInsertEmail(msg) {
         const attPath = path.join(UPLOADS_DIR, attFilename);
         const contentType = att.mimeTag || 'application/octet-stream';
 
-        // Stream from PST to disk
-        const fd = fs.openSync(attPath, 'w');
-        const blockSize = 8176;
-        let bytesRead;
+        // Get the accurate stream length to avoid PST nodeEOF bugs
+        const streamLength = att.fileInputStream?.length?.toNumber() || 0;
         let totalWritten = 0;
-        do {
-            const buf = Buffer.alloc(blockSize);
-            bytesRead = att.fileInputStream?.read(buf) || 0;
-            if (bytesRead > 0) {
-                fs.writeSync(fd, buf, 0, bytesRead, null);
-                totalWritten += bytesRead;
+
+        if (streamLength > 0) {
+            // Stream from PST to disk
+            const fd = fs.openSync(attPath, 'w');
+            
+            while (totalWritten < streamLength) {
+                const remaining = streamLength - totalWritten;
+                const chunkSize = Math.min(8176, remaining);
+                const buf = Buffer.alloc(chunkSize);
+                
+                // Read next chunk
+                att.fileInputStream?.read(buf);
+                fs.writeSync(fd, buf, 0, chunkSize, null);
+                totalWritten += chunkSize;
             }
-        } while (bytesRead === blockSize);
-        fs.closeSync(fd);
+            fs.closeSync(fd);
+        }
 
         let attText = '';
         try {

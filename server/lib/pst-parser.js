@@ -85,19 +85,22 @@ function extractEmailData(msg) {
             const contentType = att.mimeTag || 'application/octet-stream';
             const size = att.attachSize || 0;
 
-            // Read attachment content into a buffer
+            // Read attachment content into a buffer accurately bounded to avoid Infinite Loops
+            const streamLength = att.fileInputStream?.length?.toNumber() || 0;
             const buffers = [];
-            const blockSize = 8176;
-            let offset = 0;
-            let bytesRead;
-            do {
-                const buf = Buffer.alloc(blockSize);
-                bytesRead = att.fileInputStream?.read(buf) || 0;
-                if (bytesRead > 0) {
-                    buffers.push(buf.subarray(0, bytesRead));
-                    offset += bytesRead;
+            let totalWritten = 0;
+
+            if (streamLength > 0) {
+                while (totalWritten < streamLength) {
+                    const remaining = streamLength - totalWritten;
+                    const chunkSize = Math.min(8176, remaining);
+                    const buf = Buffer.alloc(chunkSize);
+                    
+                    att.fileInputStream?.read(buf);
+                    buffers.push(buf);
+                    totalWritten += chunkSize;
                 }
-            } while (bytesRead === blockSize);
+            }
 
             const content = Buffer.concat(buffers);
 
