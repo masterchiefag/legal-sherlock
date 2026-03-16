@@ -372,9 +372,11 @@ function DocumentReview({ addToast }) {
                             {doc.attachments.map(att => {
                                 const ext = att.original_name?.split('.').pop().toLowerCase() || '';
                                 return (
-                                    <Link
+                                    <a
                                         key={att.id}
-                                        to={`/documents/${att.id}`}
+                                        href={`/uploads/${att.filename}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
                                         style={{ textDecoration: 'none' }}
                                     >
                                         <div className="file-item" style={{ cursor: 'pointer' }}>
@@ -384,7 +386,7 @@ function DocumentReview({ addToast }) {
                                                 <div className="file-meta">{formatSize(att.size_bytes)}</div>
                                             </div>
                                         </div>
-                                    </Link>
+                                    </a>
                                 );
                             })}
                         </div>
