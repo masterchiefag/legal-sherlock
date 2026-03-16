@@ -1,10 +1,12 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { getScoreColor } from '../utils/format';
 
 function ClassificationLogs() {
     const [logs, setLogs] = useState([]);
     const [pagination, setPagination] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
     const navigate = useNavigate();
 
     useEffect(() => {
@@ -20,13 +22,9 @@ function ClassificationLogs() {
             setPagination(data.pagination);
         } catch (err) {
             console.error('Failed to load logs:', err);
+            setError('Failed to load classification logs');
         }
         setLoading(false);
-    };
-
-    const getScoreColor = (score) => {
-        const colors = { 1: '#6b7280', 2: '#3b82f6', 3: '#f59e0b', 4: '#f97316', 5: '#ef4444' };
-        return colors[score] || '#6b7280';
     };
 
     const renderScoreBadge = (score) => {
@@ -55,6 +53,11 @@ function ClassificationLogs() {
 
             {loading ? (
                 <div className="loading-overlay" style={{ height: '300px' }}><div className="spinner"></div></div>
+            ) : error ? (
+                <div className="empty-state">
+                    <h3 className="empty-state-title">Error</h3>
+                    <p className="empty-state-text">{error}</p>
+                </div>
             ) : logs.length > 0 ? (
                 <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
                     <table className="data-table" style={{ fontSize: '13px' }}>

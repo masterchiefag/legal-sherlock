@@ -1,29 +1,35 @@
 import { useState, useEffect } from 'react';
-import { Link } from 'react-router-dom';
+import { Link, useNavigate } from 'react-router-dom';
+import { formatSize } from '../utils/format';
 
 function Dashboard() {
     const [stats, setStats] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
+    const navigate = useNavigate();
 
     useEffect(() => {
         fetch('/api/reviews/stats')
-            .then(r => r.json())
+            .then(r => {
+                if (!r.ok) throw new Error('Failed to load dashboard');
+                return r.json();
+            })
             .then(data => { setStats(data); setLoading(false); })
-            .catch(() => setLoading(false));
+            .catch(err => { setError(err.message); setLoading(false); });
     }, []);
 
     if (loading) {
         return <div className="loading-overlay"><div className="spinner"></div></div>;
     }
 
-    if (!stats) {
+    if (error || !stats) {
         return (
             <div className="empty-state">
                 <svg className="empty-state-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
                     <path d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
                 <h3 className="empty-state-title">Unable to load dashboard</h3>
-                <p className="empty-state-text">Make sure the server is running on port 3001.</p>
+                <p className="empty-state-text">{error || 'Make sure the server is running on port 3001.'}</p>
             </div>
         );
     }
@@ -107,7 +113,7 @@ function Dashboard() {
                         </thead>
                         <tbody>
                             {stats.recent_uploads.map(doc => (
-                                <tr key={doc.id} onClick={() => window.location.href = `/documents/${doc.id}`}>
+                                <tr key={doc.id} onClick={() => navigate(`/documents/${doc.id}`)}>
                                     <td className="doc-name">{doc.original_name}</td>
                                     <td>{formatSize(doc.size_bytes)}</td>
                                     <td><span className={`status-badge ${doc.status}`}>{doc.status}</span></td>
@@ -124,15 +130,6 @@ function Dashboard() {
             </div>
         </div>
     );
-}
-
-function formatSize(bytes) {
-    if (!bytes) return '—';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    let i = 0;
-    let size = bytes;
-    while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
-    return `${size.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
 }
 
 export default Dashboard;

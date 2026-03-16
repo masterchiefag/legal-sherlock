@@ -29,13 +29,16 @@ No test framework or linter is configured.
 ```
 src/                    # React frontend
   pages/                # Page components (Dashboard, Upload, Search, DocumentReview, ClassificationLogs)
+  utils/                # Shared utilities
+    format.js           # formatSize, getScoreColor, getScoreLabel
+    sanitize.js         # escapeHtml, highlightText (XSS-safe)
   App.jsx               # Root layout with sidebar + routing
   main.jsx              # Entry point
   index.css             # Global styles with CSS variables
 
 server/                 # Express backend
-  index.js              # Server setup and middleware
-  db.js                 # SQLite schema, migrations, and connection
+  index.js              # Server setup, middleware, graceful shutdown
+  db.js                 # SQLite schema, migrations, indexes, and connection
   routes/               # API route handlers
     documents.js        # Upload, list, delete, PST import jobs
     search.js           # FTS5 full-text search with filters
@@ -47,6 +50,7 @@ server/                 # Express backend
     eml-parser.js       # .eml email parsing
     pst-parser.js       # Outlook PST folder walking
     llm-providers.js    # LLM provider abstraction
+    threading.js        # Email thread resolution and backfill
   workers/
     pst-worker.js       # Background PST extraction (Worker thread)
 
@@ -86,6 +90,7 @@ SQLite at `data/ediscovery.db`. Programmatic migrations in `server/db.js` using 
 | `OPENAI_API_KEY` | — | OpenAI API key |
 | `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key |
+| `CORS_ORIGIN` | `true` (all origins) | Restrict CORS in production |
 
 ## Key Patterns
 

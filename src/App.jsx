@@ -89,6 +89,12 @@ function App() {
                             <Route path="/search" element={<Search addToast={addToast} />} />
                             <Route path="/ai-logs" element={<ClassificationLogs />} />
                             <Route path="/documents/:id" element={<DocumentReview addToast={addToast} />} />
+                            <Route path="*" element={
+                                <div className="empty-state">
+                                    <h3 className="empty-state-title">Page not found</h3>
+                                    <p className="empty-state-text">The page you're looking for doesn't exist.</p>
+                                </div>
+                            } />
                         </Routes>
                     </div>
                 </div>

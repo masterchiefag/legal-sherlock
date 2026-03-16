@@ -1,4 +1,6 @@
 import { useState, useRef, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
+import { formatSize } from '../utils/format';
 
 function Upload({ addToast }) {
     const [files, setFiles] = useState([]);
@@ -8,6 +10,7 @@ function Upload({ addToast }) {
     const [activeJob, setActiveJob] = useState(null);
     const [dragActive, setDragActive] = useState(false);
     const inputRef = useRef(null);
+    const navigate = useNavigate();
 
     const pollJobStatus = async (jobId) => {
         try {
@@ -268,7 +271,7 @@ function Upload({ addToast }) {
                     </h3>
                     <div className="file-list">
                         {results.map(r => (
-                            <div key={r.id} className="file-item" onClick={() => window.location.href = `/documents/${r.id}`} style={{ cursor: 'pointer' }}>
+                            <div key={r.id} className="file-item" onClick={() => navigate(`/documents/${r.id}`)} style={{ cursor: 'pointer' }}>
                                 <div className={`file-icon ${getFileExt(r.name)}`}>
                                     {getFileExt(r.name)}
                                 </div>
@@ -284,15 +287,6 @@ function Upload({ addToast }) {
             )}
         </div>
     );
-}
-
-function formatSize(bytes) {
-    if (!bytes) return '—';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    let i = 0;
-    let size = bytes;
-    while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
-    return `${size.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
 }
 
 export default Upload;

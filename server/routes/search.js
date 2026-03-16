@@ -131,7 +131,7 @@ router.get('/', (req, res) => {
       ${filterWhere}
     `).get(ftsQuery, ...filterParams);
 
-        // Get ranked results with snippets
+        // Get ranked results with snippets, tags, and review status in one query
         const results = db.prepare(`
       SELECT
         d.*,
@@ -140,7 +140,13 @@ router.get('/', (req, res) => {
         (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
         (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email') as thread_count,
         (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score,
-        (SELECT cl.reasoning FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_reasoning
+        (SELECT cl.reasoning FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_reasoning,
+        (SELECT json_group_array(json_object('id', t.id, 'name', t.name, 'color', t.color))
+         FROM document_tags dt JOIN tags t ON dt.tag_id = t.id
+         WHERE dt.document_id = d.id) as tags_json,
+        (SELECT dr.status FROM document_reviews dr
+         WHERE dr.document_id = d.id
+         ORDER BY dr.reviewed_at DESC LIMIT 1) as review_status
       FROM documents_fts fts
       JOIN documents d ON d.rowid = fts.rowid
       WHERE documents_fts MATCH ?
@@ -149,23 +155,10 @@ router.get('/', (req, res) => {
       LIMIT ? OFFSET ?
     `).all(ftsQuery, ...filterParams, parseInt(limit), offset);
 
-        // Attach tags to results
-        const tagStmt = db.prepare(`
-      SELECT t.id, t.name, t.color
-      FROM document_tags dt JOIN tags t ON dt.tag_id = t.id
-      WHERE dt.document_id = ?
-    `);
-
-        const reviewStmt = db.prepare(`
-      SELECT status FROM document_reviews
-      WHERE document_id = ?
-      ORDER BY reviewed_at DESC LIMIT 1
-    `);
-
         for (const r of results) {
-            r.tags = tagStmt.all(r.id);
-            const review = reviewStmt.get(r.id);
-            r.review_status = review ? review.status : 'pending';
+            r.tags = JSON.parse(r.tags_json || '[]').filter(t => t.id !== null);
+            delete r.tags_json;
+            r.review_status = r.review_status || 'pending';
             // Don't send full text in search results
             delete r.text_content;
         }
@@ -181,7 +174,8 @@ router.get('/', (req, res) => {
             },
         });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 

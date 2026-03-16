@@ -16,7 +16,8 @@ router.get('/', (req, res) => {
     `).all();
         res.json(tags);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -35,7 +36,8 @@ router.post('/', (req, res) => {
         if (err.message.includes('UNIQUE')) {
             return res.status(409).json({ error: 'Tag already exists' });
         }
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -58,7 +60,8 @@ router.put('/:id', (req, res) => {
         if (!tag) return res.status(404).json({ error: 'Tag not found' });
         res.json(tag);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -69,7 +72,8 @@ router.delete('/:id', (req, res) => {
         if (result.changes === 0) return res.status(404).json({ error: 'Tag not found' });
         res.json({ deleted: true });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -82,7 +86,8 @@ router.post('/documents/:docId/tags', (req, res) => {
         db.prepare('INSERT OR IGNORE INTO document_tags (document_id, tag_id) VALUES (?, ?)').run(req.params.docId, tag_id);
         res.status(201).json({ assigned: true });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -92,7 +97,8 @@ router.delete('/documents/:docId/tags/:tagId', (req, res) => {
         db.prepare('DELETE FROM document_tags WHERE document_id = ? AND tag_id = ?').run(req.params.docId, req.params.tagId);
         res.json({ removed: true });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 

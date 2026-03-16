@@ -24,7 +24,8 @@ router.put('/documents/:docId/review', (req, res) => {
         const review = db.prepare('SELECT * FROM document_reviews WHERE id = ?').get(id);
         res.json(review);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -38,7 +39,8 @@ router.get('/documents/:docId/review', (req, res) => {
     `).all(req.params.docId);
         res.json(reviews);
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
@@ -85,7 +87,8 @@ router.get('/stats', (req, res) => {
             recent_uploads: recentUploads,
         });
     } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 

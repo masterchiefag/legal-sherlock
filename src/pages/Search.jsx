@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import { formatSize, getScoreColor } from '../utils/format';
 
 function Search({ addToast }) {
     const [query, setQuery] = useState('');
@@ -48,6 +49,7 @@ function Search({ addToast }) {
             setDocPage(page);
         } catch (err) {
             console.error('Failed to load documents:', err);
+            addToast('Failed to load documents', 'error');
         }
     };
 
@@ -79,6 +81,7 @@ function Search({ addToast }) {
             setPagination(data.pagination);
         } catch (err) {
             console.error('Search failed:', err);
+            addToast('Search failed', 'error');
         }
 
         setLoading(false);
@@ -350,7 +353,7 @@ function Search({ addToast }) {
                                                 )}
                                             </div>
                                         </div>
-                                        <div className="search-result-snippet" dangerouslySetInnerHTML={{ __html: r.snippet || 'No preview available' }} />
+                                        <div className="search-result-snippet" dangerouslySetInnerHTML={{ __html: r.snippet ? r.snippet.replace(/<(?!\/?mark\b)[^>]*>/gi, '') : 'No preview available' }} />
                                         <div className="search-result-meta">
                                             <span>{formatSize(r.size_bytes)}</span>
                                             <span>•</span>
@@ -485,21 +488,7 @@ function Search({ addToast }) {
     );
 }
 
-function formatSize(bytes) {
-    if (!bytes) return '—';
-    const units = ['B', 'KB', 'MB', 'GB'];
-    let i = 0;
-    let size = bytes;
-    while (size >= 1024 && i < units.length - 1) { size /= 1024; i++; }
-    return `${size.toFixed(i > 0 ? 1 : 0)} ${units[i]}`;
-}
-
 export default Search;
-
-function getScoreColor(score) {
-    const colors = { 1: '#6b7280', 2: '#3b82f6', 3: '#f59e0b', 4: '#f97316', 5: '#ef4444' };
-    return colors[score] || '#6b7280';
-}
 
 function renderScoreBadge(score) {
     if (!score) return <span className="text-sm text-muted">—</span>;
