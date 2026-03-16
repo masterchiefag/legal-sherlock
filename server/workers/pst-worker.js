@@ -57,8 +57,8 @@ async function walkFolder(folder) {
                     await processAndInsertEmail(email);
                     totalEmails++;
                     
-                    // Periodically update progress
-                    if (totalEmails % 50 === 0) {
+                    // Periodically update progress (every 5 emails for faster UI feedback)
+                    if (totalEmails % 5 === 0 || totalEmails === 1) {
                         db.prepare("UPDATE import_jobs SET total_emails = ?, total_attachments = ? WHERE id = ?")
                           .run(totalEmails, totalAttachments, jobId);
                         

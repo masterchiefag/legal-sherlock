@@ -3,6 +3,7 @@ import { useState, useRef, useCallback } from 'react';
 function Upload({ addToast }) {
     const [files, setFiles] = useState([]);
     const [uploading, setUploading] = useState(false);
+    const [uploadProgress, setUploadProgress] = useState(0);
     const [results, setResults] = useState([]);
     const [activeJob, setActiveJob] = useState(null);
     const [dragActive, setDragActive] = useState(false);
@@ -60,40 +61,62 @@ function Upload({ addToast }) {
         setFiles(prev => prev.filter((_, i) => i !== index));
     };
 
-    const uploadFiles = async () => {
+    const uploadFiles = () => {
         if (files.length === 0) return;
 
         setUploading(true);
+        setUploadProgress(0);
         setResults([]);
 
         const formData = new FormData();
         files.forEach(f => formData.append('files', f));
 
         try {
-            const res = await fetch('/api/documents/upload', {
-                method: 'POST',
-                body: formData,
-            });
-            const data = await res.json();
+            const xhr = new XMLHttpRequest();
+            xhr.open('POST', '/api/documents/upload', true);
 
-            if (res.status === 202 && data.jobId) {
-                // Background job started (PST)
-                setFiles([]);
-                addToast(data.message, 'info');
-                setActiveJob({ id: data.jobId, status: 'pending', filename: data.filename || 'PST File' });
-                pollJobStatus(data.jobId);
-            } else if (res.ok) {
-                setResults(data.documents || []);
-                setFiles([]);
-                addToast(`Successfully uploaded ${data.uploaded} document(s)`, 'success');
-            } else {
-                addToast(data.error || 'Upload failed', 'error');
-            }
+            xhr.upload.onprogress = (e) => {
+                if (e.lengthComputable) {
+                    const percentComplete = Math.round((e.loaded / e.total) * 100);
+                    setUploadProgress(percentComplete);
+                }
+            };
+
+            xhr.onload = () => {
+                setUploading(false);
+                let data;
+                try {
+                    data = JSON.parse(xhr.responseText);
+                } catch(e) {
+                    addToast('Invalid API response', 'error');
+                    return;
+                }
+
+                if (xhr.status === 202 && data.jobId) {
+                    // Background job started (PST)
+                    setFiles([]);
+                    addToast(data.message, 'info');
+                    setActiveJob({ id: data.jobId, status: 'pending', filename: data.filename || 'PST File' });
+                    pollJobStatus(data.jobId);
+                } else if (xhr.status >= 200 && xhr.status < 300) {
+                    setResults(data.documents || []);
+                    setFiles([]);
+                    addToast(`Successfully uploaded ${data.uploaded} document(s)`, 'success');
+                } else {
+                    addToast(data.error || 'Upload failed', 'error');
+                }
+            };
+
+            xhr.onerror = () => {
+                setUploading(false);
+                addToast('Upload failed due to a network error', 'error');
+            };
+
+            xhr.send(formData);
         } catch (err) {
+            setUploading(false);
             addToast('Upload failed: ' + err.message, 'error');
         }
-
-        setUploading(false);
     };
 
     const getFileExt = (name) => name.split('.').pop().toLowerCase();
@@ -139,7 +162,7 @@ function Upload({ addToast }) {
                             {uploading ? (
                                 <>
                                     <div className="spinner"></div>
-                                    Uploading…
+                                    Uploading {uploadProgress}%
                                 </>
                             ) : (
                                 <>
@@ -153,6 +176,12 @@ function Upload({ addToast }) {
                             )}
                         </button>
                     </div>
+                    
+                    {uploading && (
+                        <div style={{ width: '100%', height: '4px', background: 'var(--bg-tertiary)', borderRadius: '2px', marginBottom: '16px', overflow: 'hidden' }}>
+                            <div style={{ width: `${uploadProgress}%`, height: '100%', background: 'var(--primary)', transition: 'width 0.2s ease' }} />
+                        </div>
+                    )}
 
                     {files.map((file, i) => (
                         <div key={i} className="file-item">
