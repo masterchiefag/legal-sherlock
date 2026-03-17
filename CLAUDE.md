@@ -86,7 +86,7 @@ SQLite at `data/ediscovery.db`. Programmatic migrations in `server/db.js` using 
 | `PORT` | `3001` | Backend server port |
 | `LLM_PROVIDER` | `ollama` | AI provider: `ollama`, `openai`, `anthropic` |
 | `OLLAMA_URL` | `http://127.0.0.1:11434` | Ollama server URL |
-| `OLLAMA_MODEL` | `gemma3:1b` | Ollama model name |
+| `OLLAMA_MODEL` | `gemma3:4b` | Ollama model name |
 | `OPENAI_API_KEY` | — | OpenAI API key |
 | `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key |
