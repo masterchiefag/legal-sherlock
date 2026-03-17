@@ -286,7 +286,12 @@ function DocumentReview({ addToast }) {
                     </div>
                 )}
 
-                {highlightedText ? (
+                {doc.status === 'processing' ? (
+                    <div className="empty-state">
+                        <div className="spinner" style={{ marginBottom: '12px' }}></div>
+                        <p className="empty-state-text">Text extraction in progress. Content will appear shortly.</p>
+                    </div>
+                ) : highlightedText ? (
                     <div className="doc-text-content" dangerouslySetInnerHTML={{ __html: highlightedText }} />
                 ) : (
                     <div className="empty-state">
@@ -369,21 +374,32 @@ function DocumentReview({ addToast }) {
                             {doc.attachments.map(att => {
                                 const ext = att.original_name?.split('.').pop().toLowerCase() || '';
                                 return (
-                                    <a
-                                        key={att.id}
-                                        href={`/uploads/${att.filename}`}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        style={{ textDecoration: 'none' }}
-                                    >
-                                        <div className="file-item" style={{ cursor: 'pointer' }}>
+                                    <div key={att.id} className="file-item" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
+                                        <Link
+                                            to={`/documents/${att.id}`}
+                                            style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, textDecoration: 'none', color: 'inherit', minWidth: 0 }}
+                                        >
                                             <div className={`file-icon ${ext}`}>{ext || '?'}</div>
-                                            <div className="file-info">
+                                            <div className="file-info" style={{ minWidth: 0 }}>
                                                 <div className="file-name">{att.original_name}</div>
                                                 <div className="file-meta">{formatSize(att.size_bytes)}</div>
                                             </div>
-                                        </div>
-                                    </a>
+                                        </Link>
+                                        <a
+                                            href={`/uploads/${att.filename}`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            title="Download file"
+                                            onClick={(e) => e.stopPropagation()}
+                                            style={{ padding: '6px', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', flexShrink: 0 }}
+                                        >
+                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                                <polyline points="7 10 12 15 17 10" />
+                                                <line x1="12" y1="15" x2="12" y2="3" />
+                                            </svg>
+                                        </a>
+                                    </div>
                                 );
                             })}
                         </div>
