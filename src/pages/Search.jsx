@@ -41,8 +41,6 @@ function Search({ addToast }) {
     const hasActiveFilters = reviewStatus || docType || scoreFilter || dateFrom || dateTo;
 
     const doSearch = useCallback(async (page = 1) => {
-        if (!query.trim() && !hasActiveFilters) return;
-
         setLoading(true);
         setSearched(true);
         setSelectedIds(new Set());
