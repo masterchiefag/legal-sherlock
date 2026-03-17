@@ -293,11 +293,54 @@ function DocumentReview({ addToast }) {
                     </div>
                 ) : highlightedText ? (
                     <div className="doc-text-content" dangerouslySetInnerHTML={{ __html: highlightedText }} />
-                ) : (
-                    <div className="empty-state">
-                        <p className="empty-state-text">No text content available for this document.</p>
-                    </div>
-                )}
+                ) : (() => {
+                    const ext = doc.original_name?.split('.').pop().toLowerCase() || '';
+                    const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg'];
+                    const isImage = imageExts.includes(ext);
+                    const isPdf = ext === 'pdf';
+                    if (isImage) {
+                        return (
+                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px' }}>
+                                <img
+                                    src={`/uploads/${doc.filename}`}
+                                    alt={doc.original_name}
+                                    style={{ maxWidth: '100%', maxHeight: '70vh', borderRadius: '8px', border: '1px solid var(--border-secondary)' }}
+                                />
+                                <a
+                                    href={`/uploads/${doc.filename}`}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    style={{ marginTop: '12px', color: 'var(--text-accent)', fontSize: '13px' }}
+                                >
+                                    Open full size ↗
+                                </a>
+                            </div>
+                        );
+                    }
+                    if (isPdf) {
+                        return (
+                            <iframe
+                                src={`/uploads/${doc.filename}`}
+                                style={{ width: '100%', height: '80vh', border: 'none', borderRadius: '8px' }}
+                                title={doc.original_name}
+                            />
+                        );
+                    }
+                    return (
+                        <div className="empty-state">
+                            <p className="empty-state-text">No text content available for this document.</p>
+                            <a
+                                href={`/uploads/${doc.filename}`}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="btn btn-outline btn-sm"
+                                style={{ marginTop: '12px' }}
+                            >
+                                Download file
+                            </a>
+                        </div>
+                    );
+                })()}
             </div>
 
             {/* Sidebar */}
