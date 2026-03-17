@@ -120,6 +120,8 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_document_reviews_document_id ON document
 db.exec(`CREATE INDEX IF NOT EXISTS idx_document_tags_document_id ON document_tags(document_id)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_classifications_document_id ON classifications(document_id)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_classifications_classified_at ON classifications(classified_at DESC)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_status_doctype ON documents(status, doc_type)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_thread_doctype ON documents(thread_id, doc_type)`);
 
 // ═══════════════════════════════════════════════════
 // Migration: Add elapsed_seconds to classifications
@@ -127,6 +129,14 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_classifications_classified_at ON classif
 if (!columnExists('classifications', 'elapsed_seconds')) {
   db.exec(`ALTER TABLE classifications ADD COLUMN elapsed_seconds REAL`);
   console.log(`✦ Migration: added column classifications.elapsed_seconds`);
+}
+
+// ═══════════════════════════════════════════════════
+// Migration: Add phase tracking to import_jobs
+// ═══════════════════════════════════════════════════
+if (!columnExists('import_jobs', 'phase')) {
+  db.exec(`ALTER TABLE import_jobs ADD COLUMN phase TEXT DEFAULT 'importing'`);
+  console.log(`✦ Migration: added column import_jobs.phase`);
 }
 
 // ═══════════════════════════════════════════════════

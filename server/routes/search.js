@@ -21,51 +21,39 @@ router.get('/', (req, res) => {
         } = req.query;
 
         const offset = (parseInt(page) - 1) * parseInt(limit);
-        const hasQuery = q.trim().length > 0;
 
         // Parse FTS5 query: support "exact phrase", OR, and -exclude
-        const parseQuery = (q) => {
-            // Unify quotes and split into tokens maintaining quoted phrases
-            const tokens = q.match(/("[^"]+"|-[^\s]+|\bOR\b|[^\s]+)/g) || [];
-
+        const parseQuery = (raw) => {
+            const tokens = raw.match(/("[^"]+"|-[^\s]+|\bOR\b|[^\s]+)/g) || [];
             const processed = [];
-            let i = 0;
-            while (i < tokens.length) {
-                const token = tokens[i];
-
+            for (const token of tokens) {
                 if (token.toUpperCase() === 'OR') {
                     processed.push('OR');
                 } else if (token.startsWith('"') && token.endsWith('"') && token.length > 2) {
-                    // Exact phrase, keep quotes
                     processed.push(token);
                 } else if (token.startsWith('-')) {
-                    // Exclusion term (e.g., -bribe) -> NOT "bribe"
                     const val = token.substring(1).replace(/['"]/g, '');
                     if (val) processed.push(`NOT "${val}"*`);
                 } else {
-                    // Standard word, prefix match
                     const val = token.replace(/['"]/g, '');
                     if (val) processed.push(`"${val}"*`);
                 }
-                i++;
             }
             return processed.join(' ');
         };
 
-        let ftsQuery = '';
-        if (hasQuery) {
-            ftsQuery = parseQuery(q);
-            // If query parsing results in empty string, return empty
-            if (!ftsQuery.trim() || ftsQuery.trim() === 'OR') {
-                return res.json({ results: [], query: q, pagination: { page: 1, limit: 20, total: 0, pages: 0 } });
-            }
-        }
+        const hasQuery = q.trim().length > 0;
+        const ftsQuery = hasQuery ? parseQuery(q) : '';
+        const useFts = hasQuery && ftsQuery.trim() && ftsQuery.trim() !== 'OR';
 
+        // Build shared filter clauses
         let filterWhere = '';
         const filterParams = [];
 
-        // Hide attachments from top-level results
-        filterWhere += " AND (d.doc_type != 'attachment' OR d.doc_type IS NULL)";
+        // Hide attachments from top-level results unless explicitly filtering for them
+        if (doc_type !== 'attachment') {
+            filterWhere += " AND (d.doc_type != 'attachment' OR d.doc_type IS NULL)";
+        }
 
         if (status) {
             filterWhere += ' AND d.status = ?';
@@ -98,13 +86,13 @@ router.get('/', (req, res) => {
         }
 
         if (date_from) {
-            filterWhere += ' AND d.uploaded_at >= ?';
+            filterWhere += ' AND COALESCE(d.email_date, d.uploaded_at) >= ?';
             filterParams.push(date_from);
         }
 
         if (date_to) {
-            filterWhere += ' AND d.uploaded_at <= ?';
-            filterParams.push(date_to);
+            filterWhere += ' AND COALESCE(d.email_date, d.uploaded_at) <= ?';
+            filterParams.push(date_to + 'T23:59:59');
         }
 
         if (score_min) {
@@ -121,79 +109,77 @@ router.get('/', (req, res) => {
             filterParams.push(parseInt(score_max));
         }
 
-        // Count total results
-        let countRow;
-        let results;
+        let countRow, results;
 
-        if (hasQuery) {
+        if (useFts) {
+            // FTS search with filters
             countRow = db.prepare(`
-              SELECT COUNT(*) as total
-              FROM documents_fts fts
-              JOIN documents d ON d.rowid = fts.rowid
-              WHERE documents_fts MATCH ?
-              ${filterWhere}
-            `).get(ftsQuery, ...filterParams);
+          SELECT COUNT(*) as total
+          FROM documents_fts fts
+          JOIN documents d ON d.rowid = fts.rowid
+          WHERE documents_fts MATCH ?
+          ${filterWhere}
+        `).get(ftsQuery, ...filterParams);
 
-            // Get ranked results with snippets, tags, and review status in one query
             results = db.prepare(`
-              SELECT
-                d.*,
-                snippet(documents_fts, 1, '<mark>', '</mark>', '…', 40) as snippet,
-                rank,
-                (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
-                (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email') as thread_count,
-                (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score,
-                (SELECT cl.reasoning FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_reasoning,
-                (SELECT json_group_array(json_object('id', t.id, 'name', t.name, 'color', t.color))
-                 FROM document_tags dt JOIN tags t ON dt.tag_id = t.id
-                 WHERE dt.document_id = d.id) as tags_json,
-                (SELECT dr.status FROM document_reviews dr
-                 WHERE dr.document_id = d.id
-                 ORDER BY dr.reviewed_at DESC LIMIT 1) as review_status
-              FROM documents_fts fts
-              JOIN documents d ON d.rowid = fts.rowid
-              WHERE documents_fts MATCH ?
-              ${filterWhere}
-              ORDER BY rank
-              LIMIT ? OFFSET ?
-            `).all(ftsQuery, ...filterParams, parseInt(limit), offset);
+          SELECT
+            d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,
+            d.doc_type, d.thread_id, d.parent_id,
+            d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at,
+            snippet(documents_fts, 1, '<mark>', '</mark>', '…', 40) as snippet,
+            rank,
+            (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
+            (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email') as thread_count,
+            (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score,
+            (SELECT cl.reasoning FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_reasoning,
+            (SELECT json_group_array(json_object('id', t.id, 'name', t.name, 'color', t.color))
+             FROM document_tags dt JOIN tags t ON dt.tag_id = t.id
+             WHERE dt.document_id = d.id) as tags_json,
+            (SELECT dr.status FROM document_reviews dr
+             WHERE dr.document_id = d.id
+             ORDER BY dr.reviewed_at DESC LIMIT 1) as review_status
+          FROM documents_fts fts
+          JOIN documents d ON d.rowid = fts.rowid
+          WHERE documents_fts MATCH ?
+          ${filterWhere}
+          ORDER BY rank
+          LIMIT ? OFFSET ?
+        `).all(ftsQuery, ...filterParams, parseInt(limit), offset);
         } else {
-            // No search query — filter-only mode, query documents table directly
+            // Filter-only (no search query)
             countRow = db.prepare(`
-              SELECT COUNT(*) as total
-              FROM documents d
-              WHERE 1=1
-              ${filterWhere}
-            `).get(...filterParams);
+          SELECT COUNT(*) as total
+          FROM documents d
+          WHERE 1=1 ${filterWhere}
+        `).get(...filterParams);
 
             results = db.prepare(`
-              SELECT
-                d.*,
-                NULL as snippet,
-                NULL as rank,
-                (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
-                (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email') as thread_count,
-                (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score,
-                (SELECT cl.reasoning FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_reasoning,
-                (SELECT json_group_array(json_object('id', t.id, 'name', t.name, 'color', t.color))
-                 FROM document_tags dt JOIN tags t ON dt.tag_id = t.id
-                 WHERE dt.document_id = d.id) as tags_json,
-                (SELECT dr.status FROM document_reviews dr
-                 WHERE dr.document_id = d.id
-                 ORDER BY dr.reviewed_at DESC LIMIT 1) as review_status
-              FROM documents d
-              WHERE 1=1
-              ${filterWhere}
-              ORDER BY d.uploaded_at DESC
-              LIMIT ? OFFSET ?
-            `).all(...filterParams, parseInt(limit), offset);
+          SELECT
+            d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,
+            d.doc_type, d.thread_id, d.parent_id,
+            d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at,
+            NULL as snippet,
+            (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
+            (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email') as thread_count,
+            (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score,
+            (SELECT cl.reasoning FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_reasoning,
+            (SELECT json_group_array(json_object('id', t.id, 'name', t.name, 'color', t.color))
+             FROM document_tags dt JOIN tags t ON dt.tag_id = t.id
+             WHERE dt.document_id = d.id) as tags_json,
+            (SELECT dr.status FROM document_reviews dr
+             WHERE dr.document_id = d.id
+             ORDER BY dr.reviewed_at DESC LIMIT 1) as review_status
+          FROM documents d
+          WHERE 1=1 ${filterWhere}
+          ORDER BY COALESCE(d.email_date, d.uploaded_at) DESC
+          LIMIT ? OFFSET ?
+        `).all(...filterParams, parseInt(limit), offset);
         }
 
         for (const r of results) {
             r.tags = JSON.parse(r.tags_json || '[]').filter(t => t.id !== null);
             delete r.tags_json;
             r.review_status = r.review_status || 'pending';
-            // Don't send full text in search results
             delete r.text_content;
         }
 

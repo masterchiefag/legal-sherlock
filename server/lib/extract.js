@@ -26,7 +26,19 @@ export async function extractText(filePath, mimeType) {
             return result.value;
         }
 
-        // Fallback: try reading as text
+        // Skip binary/media files that have no extractable text
+        const skipExts = new Set([
+            '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.ico', '.svg', '.tiff', '.tif',
+            '.mp3', '.mp4', '.wav', '.avi', '.mov', '.mkv', '.flac', '.ogg', '.wmv', '.webm',
+            '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2',
+            '.exe', '.dll', '.so', '.dylib', '.bin',
+            '.xls', '.xlsx', '.ppt', '.pptx', '.doc',
+        ]);
+        if (skipExts.has(ext)) {
+            return '';
+        }
+
+        // Fallback: try reading as text for unknown but potentially text-based formats
         return fs.readFileSync(filePath, 'utf-8');
     } catch (err) {
         console.error(`Text extraction failed for ${filePath}:`, err.message);

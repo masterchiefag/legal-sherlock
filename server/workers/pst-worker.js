@@ -1,178 +1,318 @@
-import { workerData, parentPort } from 'worker_threads';
-import pkg from 'pst-extractor';
-const { PSTFile, PSTFolder, PSTMessage } = pkg;
+import { workerData } from 'worker_threads';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
 import db from '../db.js';
 import { extractText } from '../lib/extract.js';
+import { parseEml } from '../lib/eml-parser.js';
 import { resolveThreadId, backfillThread } from '../lib/threading.js';
+
+const execFileAsync = promisify(execFile);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
 
-const { jobId, filename, filepath, originalname } = workerData;
+const { jobId, filepath, originalname } = workerData;
 
 let totalEmails = 0;
 let totalAttachments = 0;
 let errorLog = [];
 
+// Batch size for transaction commits
+const BATCH_SIZE = 50;
+let batchBuffer = [];
+
+// Prepared statements for Phase 1
+const insertEmail = db.prepare(`
+    INSERT INTO documents (
+        id, filename, original_name, mime_type, size_bytes, text_content, status,
+        doc_type, thread_id, message_id, in_reply_to, email_references,
+        email_from, email_to, email_cc, email_subject, email_date
+    ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+`);
+
+const insertAttachment = db.prepare(`
+    INSERT INTO documents (
+        id, filename, original_name, mime_type, size_bytes, text_content, status,
+        doc_type, parent_id, thread_id
+    ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?)
+`);
+
+const updateProgress = db.prepare(
+    "UPDATE import_jobs SET total_emails = ?, total_attachments = ?, phase = ? WHERE id = ?"
+);
+
+const updateExtractionProgress = db.prepare(
+    "UPDATE import_jobs SET progress_percent = ?, phase = 'extracting' WHERE id = ?"
+);
+
+const updateDocText = db.prepare(
+    "UPDATE documents SET text_content = ?, status = 'ready' WHERE id = ?"
+);
+
+// Batched transaction wrapper
+const flushBatch = db.transaction((ops) => {
+    for (const op of ops) {
+        op();
+    }
+});
+
+function flushPendingOps() {
+    if (batchBuffer.length === 0) return;
+    flushBatch(batchBuffer);
+    batchBuffer = [];
+}
+
+// Recursively find all .eml files in a directory
+function findEmlFiles(dir) {
+    const results = [];
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+            results.push(...findEmlFiles(fullPath));
+        } else if (entry.name.endsWith('.eml')) {
+            results.push(fullPath);
+        }
+    }
+    return results;
+}
+
 async function main() {
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pst-import-'));
+
     try {
-        db.prepare("UPDATE import_jobs SET status = 'processing' WHERE id = ?").run(jobId);
-        
-        const pstFile = new PSTFile(filepath);
-        
-        // Wrap everything in an async walk
-        await walkFolder(pstFile.getRootFolder());
+        db.prepare("UPDATE import_jobs SET status = 'processing', phase = 'importing' WHERE id = ?").run(jobId);
+
+        // ═══════════════════════════════════════════
+        // Disable FTS triggers for bulk import
+        // ═══════════════════════════════════════════
+        db.exec('DROP TRIGGER IF EXISTS documents_ai');
+        db.exec('DROP TRIGGER IF EXISTS documents_au');
+        console.log('✦ PST Import: disabled FTS triggers for bulk import');
+
+        // ═══════════════════════════════════════════
+        // Phase 1a: Run readpst to extract .eml files
+        // ═══════════════════════════════════════════
+        console.log(`✦ PST Import: extracting with readpst: ${filepath}`);
+
+        // Verify readpst is installed
+        try {
+            await execFileAsync('which', ['readpst']);
+        } catch (_) {
+            throw new Error('readpst not found. Install it with: brew install libpst');
+        }
+
+        try {
+            await execFileAsync('readpst', ['-e', '-D', '-o', tmpDir, filepath], {
+                maxBuffer: 50 * 1024 * 1024, // 50MB stdout buffer
+                timeout: 30 * 60 * 1000, // 30 min timeout
+            });
+        } catch (err) {
+            // readpst may exit non-zero but still produce valid output
+            const emlCount = findEmlFiles(tmpDir).length;
+            if (emlCount === 0) {
+                throw new Error(`readpst failed: ${err.stderr?.substring(0, 500) || err.message}`);
+            }
+            console.warn('✦ PST Import: readpst exited with warnings but produced output:', err.stderr?.substring(0, 200));
+        }
+
+        const emlFiles = findEmlFiles(tmpDir);
+        console.log(`✦ PST Import: readpst extracted ${emlFiles.length} .eml files`);
+
+        // ═══════════════════════════════════════════
+        // Phase 1b: Parse each .eml and insert into DB
+        // ═══════════════════════════════════════════
+        console.log('✦ PST Import Phase 1: Importing emails and attachments...');
+
+        for (const emlPath of emlFiles) {
+            try {
+                const eml = await parseEml(emlPath);
+                processEmail(eml);
+                totalEmails++;
+
+                // Flush batch and update progress periodically
+                if (totalEmails === 1 || totalEmails % BATCH_SIZE === 0) {
+                    flushPendingOps();
+                    updateProgress.run(totalEmails, totalAttachments, 'importing', jobId);
+                    console.log(`✦ PST Import: ${totalEmails} emails, ${totalAttachments} attachments processed`);
+                }
+            } catch (err) {
+                errorLog.push({ file: path.basename(emlPath), error: err.message });
+            }
+        }
+
+        // Flush any remaining batched operations
+        flushPendingOps();
+        updateProgress.run(totalEmails, totalAttachments, 'importing', jobId);
+
+        console.log(`✦ PST Import Phase 1 complete: ${totalEmails} emails, ${totalAttachments} attachments`);
+
+        // ═══════════════════════════════════════════
+        // Phase 2: Extract text from attachments
+        // ═══════════════════════════════════════════
+        console.log('✦ PST Import Phase 2: Extracting text from attachments...');
+        updateProgress.run(totalEmails, totalAttachments, 'extracting', jobId);
+
+        const pendingDocs = db.prepare(
+            "SELECT id, filename, mime_type FROM documents WHERE status = 'processing' AND doc_type = 'attachment'"
+        ).all();
+
+        const totalPending = pendingDocs.length;
+        let extracted = 0;
+
+        const extractionBatch = [];
+
+        for (const doc of pendingDocs) {
+            const filePath = path.join(UPLOADS_DIR, doc.filename);
+            let text = '';
+            try {
+                text = await extractText(filePath, doc.mime_type);
+            } catch (e) {
+                text = `[Could not extract text: ${e.message}]`;
+            }
+
+            extractionBatch.push(() => updateDocText.run(text, doc.id));
+            extracted++;
+
+            // Flush extraction batch every 20 documents
+            if (extractionBatch.length >= 20) {
+                db.transaction((ops) => { for (const op of ops) op(); })(extractionBatch);
+                extractionBatch.length = 0;
+            }
+
+            if (extracted % 5 === 0 || extracted === totalPending) {
+                const pct = Math.round((extracted / totalPending) * 100);
+                updateExtractionProgress.run(pct, jobId);
+            }
+        }
+
+        // Flush remaining extraction batch
+        if (extractionBatch.length > 0) {
+            db.transaction((ops) => { for (const op of ops) op(); })(extractionBatch);
+        }
+
+        console.log(`✦ PST Import Phase 2 complete: extracted text from ${extracted} attachments`);
+
+        // ═══════════════════════════════════════════
+        // Recreate FTS INSERT trigger + rebuild index
+        // ═══════════════════════════════════════════
+        console.log('✦ Rebuilding FTS index...');
+        db.exec(`
+            CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
+                INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
+                VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
+            END;
+        `);
+        db.exec(`
+            CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
+                INSERT INTO documents_fts(documents_fts, rowid, original_name, text_content, email_subject, email_from, email_to)
+                VALUES ('delete', old.rowid, old.original_name, COALESCE(old.text_content,''), COALESCE(old.email_subject,''), COALESCE(old.email_from,''), COALESCE(old.email_to,''));
+                INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
+                VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
+            END;
+        `);
+        db.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')");
+        console.log('✦ FTS index rebuilt');
 
         db.prepare(`
-            UPDATE import_jobs 
-            SET status = 'completed', 
-                total_emails = ?, 
-                total_attachments = ?, 
-                error_log = ?, 
-                completed_at = datetime('now') 
+            UPDATE import_jobs
+            SET status = 'completed',
+                phase = 'completed',
+                total_emails = ?,
+                total_attachments = ?,
+                progress_percent = 100,
+                error_log = ?,
+                completed_at = datetime('now')
             WHERE id = ?
         `).run(totalEmails, totalAttachments, JSON.stringify(errorLog), jobId);
 
     } catch (err) {
         console.error("Worker fatal error:", err);
+        // Ensure FTS triggers are restored even on failure
+        try {
+            db.exec(`
+                CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
+                    INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
+                    VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
+                END;
+            `);
+            db.exec(`
+                CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
+                    INSERT INTO documents_fts(documents_fts, rowid, original_name, text_content, email_subject, email_from, email_to)
+                    VALUES ('delete', old.rowid, old.original_name, COALESCE(old.text_content,''), COALESCE(old.email_subject,''), COALESCE(old.email_from,''), COALESCE(old.email_to,''));
+                    INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
+                    VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
+                END;
+            `);
+            db.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')");
+        } catch (_) { /* best effort */ }
+
         db.prepare(`
-            UPDATE import_jobs 
-            SET status = 'failed', 
-                error_log = ?, 
-                completed_at = datetime('now') 
+            UPDATE import_jobs
+            SET status = 'failed',
+                error_log = ?,
+                completed_at = datetime('now')
             WHERE id = ?
         `).run(JSON.stringify([{ error: err.message, fatal: true }]), jobId);
+    } finally {
+        // Clean up temp directory
+        try {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+            console.log('✦ PST Import: cleaned up temp directory');
+        } catch (_) { /* best effort */ }
     }
 }
 
-async function walkFolder(folder) {
-    if (folder.contentCount > 0) {
-        let email = folder.getNextChild();
-        while (email) {
-            if (email instanceof PSTMessage) {
-                try {
-                    await processAndInsertEmail(email);
-                    totalEmails++;
-                    
-                    // Periodically update progress (every 5 emails for faster UI feedback)
-                    if (totalEmails % 5 === 0 || totalEmails === 1) {
-                        db.prepare("UPDATE import_jobs SET total_emails = ?, total_attachments = ? WHERE id = ?")
-                          .run(totalEmails, totalAttachments, jobId);
-                        
-                        // Explicitly hint to GC to clear memory
-                        if (global.gc) global.gc();
-                    }
-                } catch (err) {
-                    errorLog.push({ subject: email.subject || 'Unknown', error: err.message });
-                }
-            }
-            email = folder.getNextChild();
-        }
-    }
-
-    if (folder.hasSubfolders) {
-        const subFolders = folder.getSubFolders();
-        for (const sub of subFolders) {
-            await walkFolder(sub);
-        }
-    }
-}
-
-// ═══════════════════════════════════════════════════
-// Email processing logic specifically tuned for low memory
-// ═══════════════════════════════════════════════════
-async function processAndInsertEmail(msg) {
+function processEmail(eml) {
     const emailId = uuidv4();
-    const emailFilename = `${emailId}.pst-msg`;
+    const emailFilename = `${emailId}.eml`;
 
-    const from = msg.senderName
-        ? (msg.senderEmailAddress ? `${msg.senderName} <${msg.senderEmailAddress}>` : msg.senderName)
-        : msg.senderEmailAddress || '';
-
-    let messageId = msg.internetMessageId || '';
-    if (messageId) messageId = messageId.replace(/^</, '').replace(/>$/, '').trim();
-
-    let inReplyTo = msg.inReplyToId || '';
-    if (inReplyTo) inReplyTo = inReplyTo.replace(/^</, '').replace(/>$/, '').trim();
-
-    let references = '';
-    const headers = msg.transportMessageHeaders || '';
-    const refMatch = headers.match(/^References:\s*(.+?)(?:\r?\n(?!\s))/ms);
-    if (refMatch) references = refMatch[1].replace(/[\r\n\s]+/g, ' ').trim();
-
-    const subject = msg.subject || '(no subject)';
-    const textBody = msg.body || '';
-    const date = msg.clientSubmitTime ? msg.clientSubmitTime.toISOString() : null;
+    const textBody = eml.textBody || '';
     const sizeBytes = textBody.length;
+    const subject = eml.subject || '(no subject)';
 
-    const threadId = resolveThreadId(messageId, inReplyTo, references);
+    const threadId = resolveThreadId(eml.messageId, eml.inReplyTo, eml.references);
 
-    // Write primary email to DB
-    db.prepare(`
-        INSERT INTO documents (
-            id, filename, original_name, mime_type, size_bytes, text_content, status,
-            doc_type, thread_id, message_id, in_reply_to, email_references,
-            email_from, email_to, email_cc, email_subject, email_date
-        ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-        emailId, emailFilename, `${originalname} — ${subject}`, 'message/rfc822', sizeBytes, textBody,
-        threadId, messageId, inReplyTo, references,
-        from, msg.displayTo || '', msg.displayCC || '', subject, date
-    );
+    // Queue email insert into batch
+    batchBuffer.push(() => {
+        insertEmail.run(
+            emailId, emailFilename, `${originalname} — ${subject}`, 'message/rfc822', sizeBytes, textBody,
+            threadId, eml.messageId, eml.inReplyTo, eml.references,
+            eml.from, eml.to, eml.cc, subject, eml.date
+        );
+    });
 
-    backfillThread(threadId, messageId, references);
+    batchBuffer.push(() => backfillThread(threadId, eml.messageId, eml.references));
 
-    // Process attachments by streaming to disk (low memory profile)
-    const numAttachments = msg.numberOfAttachments;
-    for (let i = 0; i < numAttachments; i++) {
-        const att = msg.getAttachment(i);
-        if (!att) continue;
-
+    // Write attachments to disk
+    for (const att of eml.attachments) {
         const attId = uuidv4();
-        const attName = att.longFilename || att.filename || `attachment_${i}`;
-        const attExt = path.extname(attName) || '.bin';
+        const attExt = path.extname(att.filename) || '.bin';
         const attFilename = `${attId}${attExt}`;
         const attPath = path.join(UPLOADS_DIR, attFilename);
-        const contentType = att.mimeTag || 'application/octet-stream';
 
-        // Get the accurate stream length to avoid PST nodeEOF bugs
-        const streamLength = att.fileInputStream?.length?.toNumber() || 0;
-        let totalWritten = 0;
+        fs.writeFileSync(attPath, att.content);
 
-        if (streamLength > 0) {
-            // Stream from PST to disk
-            const fd = fs.openSync(attPath, 'w');
-            
-            while (totalWritten < streamLength) {
-                const remaining = streamLength - totalWritten;
-                const chunkSize = Math.min(8176, remaining);
-                const buf = Buffer.alloc(chunkSize);
-                
-                // Read next chunk
-                att.fileInputStream?.read(buf);
-                fs.writeSync(fd, buf, 0, chunkSize, null);
-                totalWritten += chunkSize;
-            }
-            fs.closeSync(fd);
-        }
+        const capturedAttId = attId;
+        const capturedAttFilename = attFilename;
+        const capturedAttName = att.filename;
+        const capturedContentType = att.contentType;
+        const capturedSize = att.size;
+        const capturedEmailId = emailId;
+        const capturedThreadId = threadId;
 
-        let attText = '';
-        try {
-            attText = await extractText(attPath, contentType);
-        } catch (e) {
-            attText = `[Could not extract text: ${e.message}]`;
-        }
-
-        db.prepare(`
-            INSERT INTO documents (
-                id, filename, original_name, mime_type, size_bytes, text_content, status,
-                doc_type, parent_id, thread_id
-            ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'attachment', ?, ?)
-        `).run(attId, attFilename, attName, contentType, totalWritten, attText, emailId, threadId);
+        batchBuffer.push(() => {
+            insertAttachment.run(
+                capturedAttId, capturedAttFilename, capturedAttName,
+                capturedContentType, capturedSize,
+                capturedEmailId, capturedThreadId
+            );
+        });
 
         totalAttachments++;
     }
