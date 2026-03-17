@@ -1,4 +1,4 @@
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formatSize } from '../utils/format';
 
@@ -121,6 +121,26 @@ function Upload({ addToast }) {
             addToast('Upload failed: ' + err.message, 'error');
         }
     };
+
+    const [elapsed, setElapsed] = useState('');
+
+    useEffect(() => {
+        if (!activeJob?.started_at || activeJob.status === 'failed') return;
+        const update = () => {
+            const start = new Date(activeJob.started_at + 'Z').getTime();
+            const end = activeJob.completed_at
+                ? new Date(activeJob.completed_at + 'Z').getTime()
+                : Date.now();
+            const secs = Math.floor((end - start) / 1000);
+            const m = Math.floor(secs / 60);
+            const s = secs % 60;
+            setElapsed(m > 0 ? `${m}m ${s}s` : `${s}s`);
+        };
+        update();
+        if (activeJob.status === 'completed') return;
+        const id = setInterval(update, 1000);
+        return () => clearInterval(id);
+    }, [activeJob?.started_at, activeJob?.completed_at, activeJob?.status]);
 
     const getFileExt = (name) => name.split('.').pop().toLowerCase();
 
@@ -262,10 +282,10 @@ function Upload({ addToast }) {
                                     <p className="text-xs text-muted m-0 uppercase tracking-wide">Attachments</p>
                                     <p className="text-lg fw-bold m-0">{activeJob.total_attachments?.toLocaleString() || 0}</p>
                                 </div>
-                                {activeJob.completed_at && (
+                                {elapsed && (
                                     <div>
-                                        <p className="text-xs text-muted m-0 uppercase tracking-wide">Finished At</p>
-                                        <p className="text-md fw-bold m-0">{new Date(activeJob.completed_at).toLocaleTimeString()}</p>
+                                        <p className="text-xs text-muted m-0 uppercase tracking-wide">Elapsed</p>
+                                        <p className="text-lg fw-bold m-0">{elapsed}</p>
                                     </div>
                                 )}
                             </div>

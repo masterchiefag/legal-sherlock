@@ -38,6 +38,18 @@ const upload = multer({
 const router = express.Router();
 
 // ═══════════════════════════════════════════════════
+// Recover stuck import jobs from previous server crash
+// ═══════════════════════════════════════════════════
+const stuckJobs = db.prepare("SELECT id, filename FROM import_jobs WHERE status IN ('processing', 'pending')").all();
+for (const job of stuckJobs) {
+    db.prepare(`
+        UPDATE import_jobs SET status = 'failed',
+        error_log = ?, completed_at = datetime('now') WHERE id = ?
+    `).run(JSON.stringify([{ error: 'Server restarted during import', fatal: true }]), job.id);
+    console.log(`✦ Recovered stuck import job: ${job.filename} (${job.id})`);
+}
+
+// ═══════════════════════════════════════════════════
 // Shared: insert a parsed email + its attachments
 // ═══════════════════════════════════════════════════
 async function processEmailData(eml, emailId, filename, originalName, sizeBytes) {
@@ -274,7 +286,9 @@ router.get('/', (req, res) => {
     `).get(...params);
 
         const documents = db.prepare(`
-      SELECT d.*,
+      SELECT d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,
+        d.doc_type, d.thread_id, d.parent_id,
+        d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at,
         (SELECT GROUP_CONCAT(t.name, ', ')
          FROM document_tags dt JOIN tags t ON dt.tag_id = t.id
          WHERE dt.document_id = d.id) as tag_names,
