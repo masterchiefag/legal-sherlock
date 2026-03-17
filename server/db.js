@@ -121,6 +121,7 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_document_tags_document_id ON document_ta
 db.exec(`CREATE INDEX IF NOT EXISTS idx_classifications_document_id ON classifications(document_id)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_classifications_classified_at ON classifications(classified_at DESC)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_status_doctype ON documents(status, doc_type)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_thread_doctype ON documents(thread_id, doc_type)`);
 
 // ═══════════════════════════════════════════════════
 // Migration: Add elapsed_seconds to classifications

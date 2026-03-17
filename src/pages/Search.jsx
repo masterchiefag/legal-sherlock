@@ -38,7 +38,11 @@ function Search({ addToast }) {
         doSearch(1);
     }, []);
 
+    const hasActiveFilters = reviewStatus || docType || scoreFilter || dateFrom || dateTo;
+
     const doSearch = useCallback(async (page = 1) => {
+        if (!query.trim() && !hasActiveFilters) return;
+
         setLoading(true);
         setSearched(true);
         setSelectedIds(new Set());
@@ -70,7 +74,7 @@ function Search({ addToast }) {
         }
 
         setLoading(false);
-    }, [query, reviewStatus, docType, scoreFilter, dateFrom, dateTo]);
+    }, [query, reviewStatus, docType, scoreFilter, dateFrom, dateTo, hasActiveFilters]);
 
     const handleKeyDown = (e) => {
         if (e.key === 'Enter') doSearch();
@@ -85,6 +89,9 @@ function Search({ addToast }) {
         setScoreFilter('');
         setDateFrom('');
         setDateTo('');
+        setSearched(false);
+        setResults([]);
+        setPagination(null);
         setSelectedIds(new Set());
         setShouldRefresh(n => n + 1);
     };
@@ -267,6 +274,7 @@ function Search({ addToast }) {
                     <option value="">All Types</option>
                     <option value="email">Emails</option>
                     <option value="file">Files</option>
+                    <option value="attachment">Attachments</option>
                 </select>
                 <select className="filter-select" value={scoreFilter} onChange={e => setScoreFilter(e.target.value)}>
                     <option value="">All Scores</option>
@@ -369,9 +377,7 @@ function Search({ addToast }) {
                         <>
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
                                 <div className="text-sm text-muted">
-                                    {pagination.total} {query.trim()
-                                        ? <>result(s) for "<strong style={{ color: 'var(--text-primary)' }}>{query}</strong>"</>
-                                        : 'document(s)'}
+                                    {pagination.total} result(s){query.trim() ? <> for "<strong style={{ color: 'var(--text-primary)' }}>{query}</strong>"</> : ' (filtered)'}
                                 </div>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)', userSelect: 'none' }}>
