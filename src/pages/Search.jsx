@@ -1,25 +1,27 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useNavigate } from 'react-router-dom';
+import { useNavigate, useSearchParams } from 'react-router-dom';
 import { formatSize, getScoreColor } from '../utils/format';
 
 function Search({ addToast }) {
-    const [query, setQuery] = useState('');
+    const [searchParams, setSearchParams] = useSearchParams();
+    const [query, setQuery] = useState(searchParams.get('q') || '');
     const [results, setResults] = useState([]);
     const [pagination, setPagination] = useState(null);
     const [loading, setLoading] = useState(false);
     const [searched, setSearched] = useState(false);
 
     // Filters
-    const [reviewStatus, setReviewStatus] = useState('');
-    const [docType, setDocType] = useState('');
-    const [scoreFilter, setScoreFilter] = useState('');
-    const [dateFrom, setDateFrom] = useState('');
-    const [dateTo, setDateTo] = useState('');
+    const [reviewStatus, setReviewStatus] = useState(searchParams.get('status') || '');
+    const [docType, setDocType] = useState(searchParams.get('type') || '');
+    const [scoreFilter, setScoreFilter] = useState(searchParams.get('score') || '');
+    const [dateFrom, setDateFrom] = useState(searchParams.get('from') || '');
+    const [dateTo, setDateTo] = useState(searchParams.get('to') || '');
 
     // Batch Classification
     const [showBatchPanel, setShowBatchPanel] = useState(false);
     const [models, setModels] = useState([]);
     const [selectedModel, setSelectedModel] = useState('');
+    const [modelsError, setModelsError] = useState('');
     const [batchPrompt, setBatchPrompt] = useState(
         () => localStorage.getItem('sherlock_investigation_prompt') || ''
     );
@@ -33,9 +35,10 @@ function Search({ addToast }) {
 
     const navigate = useNavigate();
 
-    // Load all documents on mount (filter-only search with empty query)
+    // Load documents on mount — restore page from URL if present
     useEffect(() => {
-        doSearch(1);
+        const initialPage = parseInt(searchParams.get('page')) || 1;
+        doSearch(initialPage);
     }, []);
 
     const hasActiveFilters = reviewStatus || docType || scoreFilter || dateFrom || dateTo;
@@ -45,24 +48,35 @@ function Search({ addToast }) {
         setSearched(true);
         setSelectedIds(new Set());
 
-        const params = new URLSearchParams({ page, limit: 15 });
-        if (query.trim()) params.set('q', query);
-        if (reviewStatus) params.set('review_status', reviewStatus);
-        if (docType) params.set('doc_type', docType);
-        if (dateFrom) params.set('date_from', dateFrom);
-        if (dateTo) params.set('date_to', dateTo);
+        const apiParams = new URLSearchParams({ page, limit: 15 });
+        if (query.trim()) apiParams.set('q', query);
+        if (reviewStatus) apiParams.set('review_status', reviewStatus);
+        if (docType) apiParams.set('doc_type', docType);
+        if (dateFrom) apiParams.set('date_from', dateFrom);
+        if (dateTo) apiParams.set('date_to', dateTo);
 
         if (scoreFilter) {
             if (scoreFilter === 'unscored') {
-                params.set('score_min', 'unscored');
+                apiParams.set('score_min', 'unscored');
             } else {
-                params.set('score_min', scoreFilter);
-                params.set('score_max', scoreFilter);
+                apiParams.set('score_min', scoreFilter);
+                apiParams.set('score_max', scoreFilter);
             }
         }
 
+        // Sync search state to URL for back-button support
+        const urlParams = {};
+        if (query.trim()) urlParams.q = query.trim();
+        if (reviewStatus) urlParams.status = reviewStatus;
+        if (docType) urlParams.type = docType;
+        if (scoreFilter) urlParams.score = scoreFilter;
+        if (dateFrom) urlParams.from = dateFrom;
+        if (dateTo) urlParams.to = dateTo;
+        if (page > 1) urlParams.page = String(page);
+        setSearchParams(urlParams, { replace: true });
+
         try {
-            const res = await fetch(`/api/search?${params}`);
+            const res = await fetch(`/api/search?${apiParams}`);
             const data = await res.json();
             setResults(data.results);
             setPagination(data.pagination);
@@ -72,7 +86,7 @@ function Search({ addToast }) {
         }
 
         setLoading(false);
-    }, [query, reviewStatus, docType, scoreFilter, dateFrom, dateTo, hasActiveFilters]);
+    }, [query, reviewStatus, docType, scoreFilter, dateFrom, dateTo, hasActiveFilters, setSearchParams]);
 
     const handleKeyDown = (e) => {
         if (e.key === 'Enter') doSearch();
@@ -91,6 +105,7 @@ function Search({ addToast }) {
         setResults([]);
         setPagination(null);
         setSelectedIds(new Set());
+        setSearchParams({}, { replace: true });
         setShouldRefresh(n => n + 1);
     };
 
@@ -118,15 +133,19 @@ function Search({ addToast }) {
 
     const toggleBatchPanel = async () => {
         if (!showBatchPanel && models.length === 0) {
+            setModelsError('');
             try {
                 const res = await fetch('/api/classify/models');
                 const data = await res.json();
                 setModels(data.models || []);
-                if (data.models && data.models.length > 0) {
+                if (data.error) {
+                    setModelsError(data.error);
+                } else if (data.models && data.models.length > 0) {
                     setSelectedModel(data.active_model || data.models[0]);
                 }
             } catch (err) {
                 console.error('Failed to load models:', err);
+                setModelsError('Failed to connect to server');
             }
         }
         setShowBatchPanel(!showBatchPanel);
@@ -323,15 +342,24 @@ function Search({ addToast }) {
                         </div>
                         <div style={{ width: '250px' }}>
                             <label className="text-sm text-secondary block mb-8">AI Model</label>
-                            <select
-                                className="select"
-                                value={selectedModel}
-                                onChange={(e) => setSelectedModel(e.target.value)}
-                                disabled={batchStatus === 'running'}
-                                style={{ width: '100%', marginBottom: '16px' }}
-                            >
-                                {models.map(m => <option key={m} value={m}>{m}</option>)}
-                            </select>
+                            {modelsError ? (
+                                <div style={{ padding: '12px', background: 'var(--bg-primary)', border: '1px solid var(--border-secondary)', borderRadius: 'var(--radius-md)', marginBottom: '16px' }}>
+                                    <p style={{ color: 'var(--warning)', fontSize: '13px', margin: '0 0 8px 0' }}>⚠️ {modelsError}</p>
+                                    <button className="btn btn-secondary" style={{ width: '100%', fontSize: '12px' }} onClick={() => { setModels([]); setModelsError(''); setShowBatchPanel(false); setTimeout(() => toggleBatchPanel(), 100); }}>
+                                        Retry
+                                    </button>
+                                </div>
+                            ) : (
+                                <select
+                                    className="select"
+                                    value={selectedModel}
+                                    onChange={(e) => setSelectedModel(e.target.value)}
+                                    disabled={batchStatus === 'running'}
+                                    style={{ width: '100%', marginBottom: '16px' }}
+                                >
+                                    {models.map(m => <option key={m} value={m}>{m}</option>)}
+                                </select>
+                            )}
 
                             {batchStatus === 'idle' && (
                                 <button
