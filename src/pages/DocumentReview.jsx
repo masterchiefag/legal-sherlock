@@ -291,8 +291,6 @@ function DocumentReview({ addToast }) {
                         <div className="spinner" style={{ marginBottom: '12px' }}></div>
                         <p className="empty-state-text">Text extraction in progress. Content will appear shortly.</p>
                     </div>
-                ) : highlightedText ? (
-                    <div className="doc-text-content" dangerouslySetInnerHTML={{ __html: highlightedText }} />
                 ) : (() => {
                     const ext = doc.original_name?.split('.').pop().toLowerCase() || '';
                     const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg'];
@@ -319,11 +317,41 @@ function DocumentReview({ addToast }) {
                     }
                     if (isPdf) {
                         return (
-                            <iframe
-                                src={`/uploads/${doc.filename}`}
-                                style={{ width: '100%', height: '80vh', border: 'none', borderRadius: '8px' }}
-                                title={doc.original_name}
-                            />
+                            <div style={{ display: 'flex', flexDirection: 'column', height: '80vh' }}>
+                                <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 0' }}>
+                                    <a
+                                        href={`/uploads/${doc.filename}`}
+                                        target="_blank"
+                                        rel="noopener noreferrer"
+                                        style={{ color: 'var(--text-accent)', fontSize: '13px' }}
+                                    >
+                                        Open in new tab ↗
+                                    </a>
+                                </div>
+                                <object
+                                    data={`/uploads/${doc.filename}`}
+                                    type="application/pdf"
+                                    style={{ width: '100%', flex: 1, border: 'none', borderRadius: '8px' }}
+                                >
+                                    <div className="empty-state" style={{ padding: '48px' }}>
+                                        <p className="empty-state-text">PDF preview not available in this browser.</p>
+                                        <a
+                                            href={`/uploads/${doc.filename}`}
+                                            target="_blank"
+                                            rel="noopener noreferrer"
+                                            className="btn btn-outline btn-sm"
+                                            style={{ marginTop: '12px' }}
+                                        >
+                                            Open PDF ↗
+                                        </a>
+                                    </div>
+                                </object>
+                            </div>
+                        );
+                    }
+                    if (highlightedText?.trim()) {
+                        return (
+                            <div className="doc-text-content" dangerouslySetInnerHTML={{ __html: highlightedText }} />
                         );
                     }
                     return (

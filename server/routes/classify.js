@@ -188,8 +188,15 @@ router.get('/models', async (req, res) => {
         const models = data.models?.map(m => m.name) || [];
         res.json({ models, active_model: provider.modelName });
     } catch (err) {
-        console.error(err);
-        res.status(500).json({ error: 'Internal server error' });
+        console.error('Failed to fetch models:', err.message);
+        const isConnectionError = err.cause?.code === 'ECONNREFUSED' || err.message.includes('fetch failed');
+        res.json({
+            models: [],
+            active_model: null,
+            error: isConnectionError
+                ? 'Ollama is not running. Start it with: ollama serve'
+                : `Failed to fetch models: ${err.message}`
+        });
     }
 });
 

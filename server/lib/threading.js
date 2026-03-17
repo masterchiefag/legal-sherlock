@@ -20,8 +20,8 @@ export function resolveThreadId(messageId, inReplyTo, references) {
     // 3. Check if any existing email references *our* message_id (late arrival scenario)
     if (messageId) {
         const child = db.prepare(
-            "SELECT thread_id FROM documents WHERE in_reply_to = ? OR email_references LIKE ? LIMIT 1"
-        ).get(messageId, `%${messageId}%`);
+            "SELECT thread_id FROM documents WHERE in_reply_to = ? OR email_references = ? OR email_references LIKE ? OR email_references LIKE ? OR email_references LIKE ? LIMIT 1"
+        ).get(messageId, messageId, `${messageId} %`, `% ${messageId}`, `% ${messageId} %`);
         if (child?.thread_id) return child.thread_id;
     }
 
@@ -38,8 +38,8 @@ export function backfillThread(threadId, messageId, references) {
     for (const refId of idsToCheck) {
         // Find orphan emails that reference any of these IDs
         const orphans = db.prepare(
-            "SELECT id, thread_id FROM documents WHERE (message_id = ? OR in_reply_to = ? OR email_references LIKE ?) AND (thread_id IS NULL OR thread_id != ?)"
-        ).all(refId, refId, `%${refId}%`, threadId);
+            "SELECT id, thread_id FROM documents WHERE (message_id = ? OR in_reply_to = ? OR email_references = ? OR email_references LIKE ? OR email_references LIKE ? OR email_references LIKE ?) AND (thread_id IS NULL OR thread_id != ?)"
+        ).all(refId, refId, refId, `${refId} %`, `% ${refId}`, `% ${refId} %`, threadId);
 
         for (const orphan of orphans) {
             // Unify: update this orphan and all emails in its old thread
