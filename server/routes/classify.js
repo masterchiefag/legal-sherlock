@@ -9,67 +9,61 @@ const router = express.Router();
 // Build the classification prompt
 // ═══════════════════════════════════════════════════
 function buildSystemPrompt(investigationPrompt) {
-    return `You are an expert eDiscovery attorney reviewing documents for responsiveness to a specific investigation.
+    return `eDiscovery document reviewer. Score 1-5 for relevance to: ${investigationPrompt}
 
-INVESTIGATION FOCUS:
-${investigationPrompt}
-
-SCORING RUBRIC (1-5):
-5 = SMOKING GUN — Explicitly discusses the core investigation topic. Direct evidence.
-4 = HIGHLY RELEVANT — Strong circumstantial evidence, direct references, or evasive/suspicious language.
-3 = POTENTIALLY RELEVANT — Mentions key people, places, or topics but context is ambiguous.
-2 = UNLIKELY RELEVANT — Generic business content, unrelated work, company newsletters.
-1 = NOT RELEVANT — Spam, lunch orders, completely unrelated personal chatter, system notifications.
-
-RULES:
-- Score based ONLY on relevance to the investigation focus above.
-- Consider the full context: sender, recipients, subject, body text, and any attachment content.
-- If the document discusses concealment, destruction of evidence, or coded language, score higher.
-- Respond ONLY with valid JSON. No other text.`;
+5=direct evidence, 4=strong circumstantial, 3=ambiguous mention, 2=unlikely relevant, 1=not relevant.
+Respond ONLY with JSON: {"score": <1-5>, "reasoning": "<1 sentence>"}`;
 }
+
+// Target ~2500 chars of content to stay well within 4096 token context
+const MAX_BODY_CHARS = 1500;
+const MAX_THREAD_CHARS = 400;
+const MAX_ATTACHMENT_CHARS = 400;
 
 function buildDocumentContent(doc, thread, attachments) {
     let content = '';
 
-    // Email metadata
+    // Email metadata (compact)
     if (doc.doc_type === 'email') {
-        content += `FROM: ${doc.email_from || 'Unknown'}\n`;
-        content += `TO: ${doc.email_to || 'Unknown'}\n`;
-        if (doc.email_cc) content += `CC: ${doc.email_cc}\n`;
-        content += `DATE: ${doc.email_date || 'Unknown'}\n`;
-        content += `SUBJECT: ${doc.email_subject || 'No subject'}\n\n`;
+        content += `From: ${doc.email_from || '?'} | To: ${doc.email_to || '?'}`;
+        if (doc.email_cc) content += ` | CC: ${doc.email_cc}`;
+        content += `\nSubject: ${doc.email_subject || 'No subject'} | Date: ${doc.email_date || '?'}\n\n`;
     } else {
-        content += `FILENAME: ${doc.original_name}\n`;
-        content += `TYPE: ${doc.mime_type || 'Unknown'}\n\n`;
+        content += `File: ${doc.original_name} (${doc.mime_type || '?'})\n\n`;
     }
 
-    // Main body (truncate to avoid exceeding context window)
-    const body = (doc.text_content || '').substring(0, 3000);
-    content += `BODY:\n${body}\n`;
+    // Main body — aggressively trimmed
+    const body = (doc.text_content || '').substring(0, MAX_BODY_CHARS);
+    content += body + '\n';
 
-    // Thread context (previous emails in the conversation)
+    // Thread context — just subjects and senders, minimal body
     if (thread && thread.length > 1) {
-        content += '\n--- THREAD CONTEXT (other emails in this conversation) ---\n';
+        let threadContent = '\nThread:\n';
+        let threadLen = 0;
         for (const msg of thread) {
-            if (msg.id === doc.id) continue; // skip self
-            const msgDoc = db.prepare('SELECT text_content, email_from, email_subject, email_date FROM documents WHERE id = ?').get(msg.id);
-            if (msgDoc) {
-                content += `\n[${msgDoc.email_date || 'Unknown date'}] ${msgDoc.email_from || 'Unknown'}: ${msgDoc.email_subject || 'No subject'}\n`;
-                content += (msgDoc.text_content || '').substring(0, 1000) + '\n';
-            }
+            if (msg.id === doc.id) continue;
+            const line = `- ${msg.email_from || '?'}: ${msg.email_subject || '?'}\n`;
+            if (threadLen + line.length > MAX_THREAD_CHARS) break;
+            threadContent += line;
+            threadLen += line.length;
         }
+        content += threadContent;
     }
 
-    // Attachment content
+    // Attachment content — just names and first snippet
     if (attachments && attachments.length > 0) {
-        content += '\n--- ATTACHMENTS ---\n';
+        let attContent = '\nAttachments:\n';
+        let attLen = 0;
         for (const att of attachments) {
             const attDoc = db.prepare('SELECT text_content, original_name FROM documents WHERE id = ?').get(att.id);
             if (attDoc) {
-                content += `\n[Attachment: ${attDoc.original_name}]\n`;
-                content += (attDoc.text_content || '').substring(0, 1500) + '\n';
+                const line = `- ${attDoc.original_name}: ${(attDoc.text_content || '').substring(0, 200)}\n`;
+                if (attLen + line.length > MAX_ATTACHMENT_CHARS) break;
+                attContent += line;
+                attLen += line.length;
             }
         }
+        content += attContent;
     }
 
     return content;
