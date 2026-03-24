@@ -18,6 +18,7 @@ router.get('/', (req, res) => {
             doc_type,
             score_min,
             score_max,
+            hide_duplicates,
         } = req.query;
 
         const offset = (parseInt(page) - 1) * parseInt(limit);
@@ -53,6 +54,11 @@ router.get('/', (req, res) => {
         // Hide attachments from top-level results unless explicitly filtering for them
         if (doc_type !== 'attachment') {
             filterWhere += " AND (d.doc_type != 'attachment' OR d.doc_type IS NULL)";
+        }
+
+        // Deduplication filter
+        if (hide_duplicates === '1') {
+            filterWhere += ' AND (d.is_duplicate = 0 OR d.is_duplicate IS NULL)';
         }
 
         if (status) {

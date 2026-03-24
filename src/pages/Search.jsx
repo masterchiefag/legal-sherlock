@@ -16,6 +16,7 @@ function Search({ addToast }) {
     const [scoreFilter, setScoreFilter] = useState(searchParams.get('score') || '');
     const [dateFrom, setDateFrom] = useState(searchParams.get('from') || '');
     const [dateTo, setDateTo] = useState(searchParams.get('to') || '');
+    const [hideDuplicates, setHideDuplicates] = useState(searchParams.get('dedup') !== '0');
 
     // Batch Classification
     const [showBatchPanel, setShowBatchPanel] = useState(false);
@@ -54,6 +55,7 @@ function Search({ addToast }) {
         if (docType) apiParams.set('doc_type', docType);
         if (dateFrom) apiParams.set('date_from', dateFrom);
         if (dateTo) apiParams.set('date_to', dateTo);
+        if (hideDuplicates) apiParams.set('hide_duplicates', '1');
 
         if (scoreFilter) {
             if (scoreFilter === 'unscored') {
@@ -72,6 +74,7 @@ function Search({ addToast }) {
         if (scoreFilter) urlParams.score = scoreFilter;
         if (dateFrom) urlParams.from = dateFrom;
         if (dateTo) urlParams.to = dateTo;
+        if (!hideDuplicates) urlParams.dedup = '0';
         if (page > 1) urlParams.page = String(page);
         setSearchParams(urlParams, { replace: true });
 
@@ -86,7 +89,7 @@ function Search({ addToast }) {
         }
 
         setLoading(false);
-    }, [query, reviewStatus, docType, scoreFilter, dateFrom, dateTo, hasActiveFilters, setSearchParams]);
+    }, [query, reviewStatus, docType, scoreFilter, dateFrom, dateTo, hideDuplicates, hasActiveFilters, setSearchParams]);
 
     const handleKeyDown = (e) => {
         if (e.key === 'Enter') doSearch();
@@ -101,6 +104,7 @@ function Search({ addToast }) {
         setScoreFilter('');
         setDateFrom('');
         setDateTo('');
+        setHideDuplicates(true);
         setSearched(false);
         setResults([]);
         setPagination(null);
@@ -305,6 +309,15 @@ function Search({ addToast }) {
                 <input type="date" className="input" style={{ width: 'auto', padding: '8px 14px', fontSize: '13px' }} value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
                 <input type="date" className="input" style={{ width: 'auto', padding: '8px 14px', fontSize: '13px' }} value={dateTo} onChange={e => setDateTo(e.target.value)} />
                 <button className="btn btn-primary" onClick={() => doSearch()}>Search</button>
+                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)', userSelect: 'none', whiteSpace: 'nowrap' }}>
+                    <input
+                        type="checkbox"
+                        checked={hideDuplicates}
+                        onChange={(e) => { setHideDuplicates(e.target.checked); setTimeout(() => doSearch(), 0); }}
+                        style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: 'var(--primary)' }}
+                    />
+                    Hide Duplicates
+                </label>
                 {(query.trim() || reviewStatus || docType || scoreFilter || dateFrom || dateTo) && (
                     <button className="btn btn-ghost" onClick={clearSearch}>Clear</button>
                 )}

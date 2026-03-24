@@ -2,6 +2,7 @@ import express from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../db.js';
@@ -102,6 +103,11 @@ async function processEmailData(eml, emailId, filename, originalName, sizeBytes)
 
         fs.writeFileSync(attPath, att.content);
 
+        // Compute content hash for deduplication
+        const attHash = crypto.createHash('md5').update(att.content).digest('hex');
+        const existingWithHash = db.prepare(`SELECT id FROM documents WHERE content_hash = ? LIMIT 1`).get(attHash);
+        const isDuplicate = existingWithHash ? 1 : 0;
+
         let attText = '';
         try {
             attText = await extractText(attPath, att.contentType);
@@ -112,10 +118,10 @@ async function processEmailData(eml, emailId, filename, originalName, sizeBytes)
         db.prepare(`
           INSERT INTO documents (
             id, filename, original_name, mime_type, size_bytes, text_content, status,
-            doc_type, parent_id, thread_id
+            doc_type, parent_id, thread_id, content_hash, is_duplicate
           ) VALUES (?, ?, ?, ?, ?, ?, 'ready',
-            'attachment', ?, ?)
-        `).run(attId, attFilename, att.filename, att.contentType, att.size, attText, emailId, threadId);
+            'attachment', ?, ?, ?, ?)
+        `).run(attId, attFilename, att.filename, att.contentType, att.size, attText, emailId, threadId, attHash, isDuplicate);
 
         result.attachments.push({ id: attId, name: att.filename, size: att.size, content_type: att.contentType });
     }
@@ -176,10 +182,16 @@ function spawnPstWorker(jobId, filename, filepath, originalname) {
 async function processRegularFile(file) {
     const id = path.basename(file.filename, path.extname(file.filename));
 
+    // Compute content hash for deduplication
+    const fileBuffer = fs.readFileSync(file.path);
+    const contentHash = crypto.createHash('md5').update(fileBuffer).digest('hex');
+    const existingWithHash = db.prepare(`SELECT id FROM documents WHERE content_hash = ? LIMIT 1`).get(contentHash);
+    const isDuplicate = existingWithHash ? 1 : 0;
+
     db.prepare(`
-    INSERT INTO documents (id, filename, original_name, mime_type, size_bytes, status, doc_type)
-    VALUES (?, ?, ?, ?, ?, 'processing', 'file')
-  `).run(id, file.filename, file.originalname, file.mimetype, file.size);
+    INSERT INTO documents (id, filename, original_name, mime_type, size_bytes, status, doc_type, content_hash, is_duplicate)
+    VALUES (?, ?, ?, ?, ?, 'processing', 'file', ?, ?)
+  `).run(id, file.filename, file.originalname, file.mimetype, file.size, contentHash, isDuplicate);
 
     try {
         const text = await extractText(file.path, file.mimetype);

@@ -116,6 +116,9 @@ const emailMigrations = [
   { col: 'doc_modified_at', type: 'TEXT' },
   { col: 'doc_creator_tool', type: 'TEXT' },
   { col: 'doc_keywords', type: 'TEXT' },
+  // Deduplication
+  { col: 'content_hash', type: 'TEXT' },
+  { col: 'is_duplicate', type: 'INTEGER DEFAULT 0' },
 ];
 
 for (const { col, type } of emailMigrations) {
@@ -137,7 +140,8 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_classifications_document_id ON classific
 db.exec(`CREATE INDEX IF NOT EXISTS idx_classifications_classified_at ON classifications(classified_at DESC)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_status_doctype ON documents(status, doc_type)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_thread_doctype ON documents(thread_id, doc_type)`);
-
+db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_is_duplicate ON documents(is_duplicate)`);
 // ═══════════════════════════════════════════════════
 // Migration: Add elapsed_seconds to classifications
 // ═══════════════════════════════════════════════════
