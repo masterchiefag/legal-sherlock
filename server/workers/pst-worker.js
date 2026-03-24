@@ -7,7 +7,7 @@ import fs from 'fs';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import db from '../db.js';
-import { extractText } from '../lib/extract.js';
+import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
 import { resolveThreadId, backfillThread } from '../lib/threading.js';
 
@@ -31,15 +31,19 @@ const insertEmail = db.prepare(`
     INSERT INTO documents (
         id, filename, original_name, mime_type, size_bytes, text_content, status,
         doc_type, thread_id, message_id, in_reply_to, email_references,
-        email_from, email_to, email_cc, email_subject, email_date
-    ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        email_from, email_to, email_cc, email_subject, email_date,
+        email_bcc, email_headers_raw, email_received_chain,
+        email_originating_ip, email_auth_results, email_server_info, email_delivery_date
+    ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const insertAttachment = db.prepare(`
     INSERT INTO documents (
         id, filename, original_name, mime_type, size_bytes, text_content, status,
-        doc_type, parent_id, thread_id
-    ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?)
+        doc_type, parent_id, thread_id,
+        doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords
+    ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
+        ?, ?, ?, ?, ?, ?)
 `);
 
 const updateProgress = db.prepare(
@@ -167,6 +171,12 @@ async function main() {
 
         const extractionBatch = [];
 
+        // Prepare statement for updating doc metadata
+        const updateDocMeta = db.prepare(
+            `UPDATE documents SET doc_author = ?, doc_title = ?, doc_created_at = ?,
+             doc_modified_at = ?, doc_creator_tool = ?, doc_keywords = ? WHERE id = ?`
+        );
+
         for (const doc of pendingDocs) {
             const filePath = path.join(UPLOADS_DIR, doc.filename);
             let text = '';
@@ -176,7 +186,17 @@ async function main() {
                 text = `[Could not extract text: ${e.message}]`;
             }
 
+            // Extract document metadata (author, title, dates, etc.)
+            let meta = { author: null, title: null, createdAt: null, modifiedAt: null, creatorTool: null, keywords: null };
+            try {
+                meta = await extractMetadata(filePath, doc.mime_type);
+            } catch (_) { /* best effort */ }
+
             extractionBatch.push(() => updateDocText.run(text, doc.id));
+            extractionBatch.push(() => updateDocMeta.run(
+                meta.author, meta.title, meta.createdAt,
+                meta.modifiedAt, meta.creatorTool, meta.keywords, doc.id
+            ));
             extracted++;
 
             // Flush extraction batch every 20 documents
@@ -278,12 +298,15 @@ function processEmail(eml) {
 
     const threadId = resolveThreadId(eml.messageId, eml.inReplyTo, eml.references);
 
-    // Queue email insert into batch
+    // Queue email insert into batch (with transport metadata)
     batchBuffer.push(() => {
         insertEmail.run(
             emailId, emailFilename, `${originalname} — ${subject}`, 'message/rfc822', sizeBytes, textBody,
             threadId, eml.messageId, eml.inReplyTo, eml.references,
-            eml.from, eml.to, eml.cc, subject, eml.date
+            eml.from, eml.to, eml.cc, subject, eml.date,
+            eml.bcc || null, eml.headersRaw || null, eml.receivedChain || null,
+            eml.originatingIp || null, eml.authResults || null,
+            eml.serverInfo || null, eml.deliveryDate || null
         );
     });
 
@@ -310,7 +333,8 @@ function processEmail(eml) {
             insertAttachment.run(
                 capturedAttId, capturedAttFilename, capturedAttName,
                 capturedContentType, capturedSize,
-                capturedEmailId, capturedThreadId
+                capturedEmailId, capturedThreadId,
+                null, null, null, null, null, null
             );
         });
 
