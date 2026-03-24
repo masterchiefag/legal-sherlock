@@ -24,7 +24,7 @@ const storage = multer.diskStorage({
 
 const upload = multer({
     storage,
-    limits: { fileSize: 5000 * 1024 * 1024 }, // 5GB (PST files can be massive)
+    // limits: { fileSize: 5000 * 1024 * 1024 }, // Removed to allow massive PST files
     fileFilter: (req, file, cb) => {
         const allowed = ['.pdf', '.docx', '.txt', '.csv', '.md', '.eml', '.pst'];
         const ext = path.extname(file.originalname).toLowerCase();
@@ -35,6 +35,8 @@ const upload = multer({
         }
     },
 });
+
+const multerUpload = upload.array('files', 50);
 
 const router = express.Router();
 
@@ -223,7 +225,16 @@ async function processRegularFile(file, investigation_id) {
 // ═══════════════════════════════════════════════════
 
 // Upload documents (supports multiple files)
-router.post('/upload', upload.array('files', 50), async (req, res) => {
+router.post('/upload', (req, res, next) => {
+    multerUpload(req, res, function (err) {
+        if (err instanceof multer.MulterError) {
+            return res.status(400).json({ error: `File upload error: ${err.message}` });
+        } else if (err) {
+            return res.status(500).json({ error: `Upload failed: ${err.message}` });
+        }
+        next();
+    });
+}, async (req, res) => {
     try {
         const { investigation_id } = req.body;
         if (!investigation_id) {
