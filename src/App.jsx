@@ -66,10 +66,6 @@ function App() {
                     <h1>Sherlock</h1>
                     <div className="brand-sub">eDiscovery Platform</div>
                 </div>
-                <div className="sidebar-brand">
-                    <h1>Sherlock</h1>
-                    <div className="brand-sub">eDiscovery Platform</div>
-                </div>
 
                 {/* Case Switcher */}
                 <div style={{ padding: '0 12px 16px', borderBottom: '1px solid var(--border-secondary)', marginBottom: '16px' }}>

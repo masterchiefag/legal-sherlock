@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { formatSize } from '../utils/format';
 
 function Investigations({ activeInvestigationId, onInvestigationChange, addToast }) {
@@ -127,9 +128,9 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
             </div>
 
             {/* Modal */}
-            {showModal && (
-                <div className="modal-overlay" onClick={() => setShowModal(false)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 100 }}>
-                    <div className="card" onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: '600px', maxHeight: '90vh', overflowY: 'auto' }}>
+            {showModal && createPortal(
+                <div className="modal-overlay" onClick={() => setShowModal(false)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 9999 }}>
+                    <div className="card fade-in" onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: '600px', maxHeight: '90vh', overflowY: 'auto' }}>
                         <div className="flex items-center justify-between mb-24">
                             <h3 className="m-0 text-lg fw-bold text-primary">Create New Investigation</h3>
                             <button className="btn btn-ghost btn-sm" onClick={() => setShowModal(false)}>✕</button>
@@ -179,7 +180,8 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
                             </div>
                         </form>
                     </div>
-                </div>
+                </div>,
+                document.body
             )}
         </div>
     );
