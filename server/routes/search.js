@@ -19,6 +19,7 @@ router.get('/', (req, res) => {
             score_min,
             score_max,
             hide_duplicates,
+            investigation_id,
         } = req.query;
 
         const offset = (parseInt(page) - 1) * parseInt(limit);
@@ -59,6 +60,12 @@ router.get('/', (req, res) => {
         // Deduplication filter
         if (hide_duplicates === '1') {
             filterWhere += ' AND (d.is_duplicate = 0 OR d.is_duplicate IS NULL)';
+        }
+
+        // Investigation scope
+        if (investigation_id) {
+            filterWhere += ' AND d.investigation_id = ?';
+            filterParams.push(investigation_id);
         }
 
         if (status) {

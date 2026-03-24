@@ -2,21 +2,32 @@ import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { formatSize } from '../utils/format';
 
-function Dashboard() {
+function Dashboard({ activeInvestigationId, addToast }) {
     const [stats, setStats] = useState(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
     const navigate = useNavigate();
 
     useEffect(() => {
-        fetch('/api/reviews/stats')
+        if (!activeInvestigationId) return;
+        fetch(`/api/reviews/stats?investigation_id=${activeInvestigationId}`)
             .then(r => {
                 if (!r.ok) throw new Error('Failed to load dashboard');
                 return r.json();
             })
             .then(data => { setStats(data); setLoading(false); })
             .catch(err => { setError(err.message); setLoading(false); });
-    }, []);
+    }, [activeInvestigationId]);
+
+    if (!activeInvestigationId) {
+        return (
+            <div className="empty-state">
+                <h3 className="empty-state-title">No Investigation Selected</h3>
+                <p className="empty-state-text">Please select or create an investigation to view its dashboard.</p>
+                <Link to="/investigations" className="btn btn-primary mt-16">Manage Investigations</Link>
+            </div>
+        );
+    }
 
     if (loading) {
         return <div className="loading-overlay"><div className="spinner"></div></div>;

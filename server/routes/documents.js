@@ -53,7 +53,7 @@ for (const job of stuckJobs) {
 // ═══════════════════════════════════════════════════
 // Shared: insert a parsed email + its attachments
 // ═══════════════════════════════════════════════════
-async function processEmailData(eml, emailId, filename, originalName, sizeBytes) {
+async function processEmailData(eml, emailId, filename, originalName, sizeBytes, investigation_id) {
     const result = {
         id: emailId,
         name: originalName,
@@ -77,18 +77,21 @@ async function processEmailData(eml, emailId, filename, originalName, sizeBytes)
         doc_type, thread_id, message_id, in_reply_to, email_references,
         email_from, email_to, email_cc, email_subject, email_date,
         email_bcc, email_headers_raw, email_received_chain,
-        email_originating_ip, email_auth_results, email_server_info, email_delivery_date
+        email_originating_ip, email_auth_results, email_server_info, email_delivery_date,
+        investigation_id
       ) VALUES (?, ?, ?, ?, ?, ?, 'ready',
         'email', ?, ?, ?, ?,
         ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?, ?, ?)
+        ?, ?, ?, ?, ?, ?, ?,
+        ?)
     `).run(
         emailId, filename, originalName, 'message/rfc822', sizeBytes, eml.textBody,
         threadId, eml.messageId, eml.inReplyTo, eml.references,
         eml.from, eml.to, eml.cc, eml.subject, eml.date,
         eml.bcc || null, eml.headersRaw || null, eml.receivedChain || null,
         eml.originatingIp || null, eml.authResults || null,
-        eml.serverInfo || null, eml.deliveryDate || null
+        eml.serverInfo || null, eml.deliveryDate || null,
+        investigation_id
     );
 
     // Backfill thread for late arrivals
@@ -118,10 +121,10 @@ async function processEmailData(eml, emailId, filename, originalName, sizeBytes)
         db.prepare(`
           INSERT INTO documents (
             id, filename, original_name, mime_type, size_bytes, text_content, status,
-            doc_type, parent_id, thread_id, content_hash, is_duplicate
+            doc_type, parent_id, thread_id, content_hash, is_duplicate, investigation_id
           ) VALUES (?, ?, ?, ?, ?, ?, 'ready',
-            'attachment', ?, ?, ?, ?)
-        `).run(attId, attFilename, att.filename, att.contentType, att.size, attText, emailId, threadId, attHash, isDuplicate);
+            'attachment', ?, ?, ?, ?, ?)
+        `).run(attId, attFilename, att.filename, att.contentType, att.size, attText, emailId, threadId, attHash, isDuplicate, investigation_id);
 
         result.attachments.push({ id: attId, name: att.filename, size: att.size, content_type: att.contentType });
     }
@@ -132,11 +135,11 @@ async function processEmailData(eml, emailId, filename, originalName, sizeBytes)
 // ═══════════════════════════════════════════════════
 // EML processing pipeline
 // ═══════════════════════════════════════════════════
-async function processEmlFile(file) {
+async function processEmlFile(file, investigation_id) {
     const emailId = path.basename(file.filename, path.extname(file.filename));
     try {
         const eml = await parseEml(file.path);
-        const result = await processEmailData(eml, emailId, file.filename, file.originalname, file.size);
+        const result = await processEmailData(eml, emailId, file.filename, file.originalname, file.size, investigation_id);
         return [result];
     } catch (err) {
         try {
@@ -154,10 +157,10 @@ async function processEmlFile(file) {
 // ═══════════════════════════════════════════════════
 import { Worker } from 'worker_threads';
 
-function spawnPstWorker(jobId, filename, filepath, originalname) {
+function spawnPstWorker(jobId, filename, filepath, originalname, investigation_id) {
     const workerPath = path.join(__dirname, '..', 'workers', 'pst-worker.js');
     const worker = new Worker(workerPath, {
-        workerData: { jobId, filename, filepath, originalname }
+        workerData: { jobId, filename, filepath, originalname, investigation_id }
     });
 
     worker.on('error', (err) => {
@@ -179,19 +182,19 @@ function spawnPstWorker(jobId, filename, filepath, originalname) {
 // ═══════════════════════════════════════════════════
 // Regular file processing (PDF, DOCX, TXT, etc.)
 // ═══════════════════════════════════════════════════
-async function processRegularFile(file) {
+async function processRegularFile(file, investigation_id) {
     const id = path.basename(file.filename, path.extname(file.filename));
 
     // Compute content hash for deduplication
     const fileBuffer = fs.readFileSync(file.path);
     const contentHash = crypto.createHash('md5').update(fileBuffer).digest('hex');
-    const existingWithHash = db.prepare(`SELECT id FROM documents WHERE content_hash = ? LIMIT 1`).get(contentHash);
+    const existingWithHash = db.prepare(`SELECT id FROM documents WHERE content_hash = ? AND investigation_id = ? LIMIT 1`).get(contentHash, investigation_id);
     const isDuplicate = existingWithHash ? 1 : 0;
 
     db.prepare(`
-    INSERT INTO documents (id, filename, original_name, mime_type, size_bytes, status, doc_type, content_hash, is_duplicate)
-    VALUES (?, ?, ?, ?, ?, 'processing', 'file', ?, ?)
-  `).run(id, file.filename, file.originalname, file.mimetype, file.size, contentHash, isDuplicate);
+    INSERT INTO documents (id, filename, original_name, mime_type, size_bytes, status, doc_type, content_hash, is_duplicate, investigation_id)
+    VALUES (?, ?, ?, ?, ?, 'processing', 'file', ?, ?, ?)
+  `).run(id, file.filename, file.originalname, file.mimetype, file.size, contentHash, isDuplicate, investigation_id);
 
     try {
         const text = await extractText(file.path, file.mimetype);
@@ -222,13 +225,18 @@ async function processRegularFile(file) {
 // Upload documents (supports multiple files)
 router.post('/upload', upload.array('files', 50), async (req, res) => {
     try {
+        const { investigation_id } = req.body;
+        if (!investigation_id) {
+            return res.status(400).json({ error: 'investigation_id is required' });
+        }
+
         const allResults = [];
 
         for (const file of req.files) {
             const ext = path.extname(file.originalname).toLowerCase();
 
             if (ext === '.eml') {
-                const emlResults = await processEmlFile(file);
+                const emlResults = await processEmlFile(file, investigation_id);
                 allResults.push(...emlResults);
             } else if (ext === '.pst') {
                 // Background job for PST
@@ -236,11 +244,11 @@ router.post('/upload', upload.array('files', 50), async (req, res) => {
                 
                 // Initialize job in database
                 db.prepare(`
-                    INSERT INTO import_jobs (id, filename, status)
-                    VALUES (?, ?, 'pending')
-                `).run(jobId, file.originalname);
+                    INSERT INTO import_jobs (id, filename, status, investigation_id)
+                    VALUES (?, ?, 'pending', ?)
+                `).run(jobId, file.originalname, investigation_id);
 
-                spawnPstWorker(jobId, file.filename, file.path, file.originalname);
+                spawnPstWorker(jobId, file.filename, file.path, file.originalname, investigation_id);
                 
                 // Return 202 Accepted instead of waiting for results
                 return res.status(202).json({ 
@@ -248,7 +256,7 @@ router.post('/upload', upload.array('files', 50), async (req, res) => {
                     jobId: jobId 
                 });
             } else {
-                const fileResults = await processRegularFile(file);
+                const fileResults = await processRegularFile(file, investigation_id);
                 allResults.push(...fileResults);
             }
         }

@@ -2,6 +2,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
+import crypto from 'crypto';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = path.join(__dirname, '..', 'data', 'ediscovery.db');
@@ -79,6 +80,20 @@ db.exec(`
     started_at TEXT DEFAULT (datetime('now')),
     completed_at TEXT
   );
+
+  CREATE TABLE IF NOT EXISTS investigations (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    description TEXT,
+    status TEXT DEFAULT 'open' CHECK(status IN ('open', 'closed', 'archived')),
+    allegation TEXT,
+    key_parties TEXT,
+    remarks TEXT,
+    date_range_start TEXT,
+    date_range_end TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
 `);
 
 // ═══════════════════════════════════════════════════
@@ -142,6 +157,36 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_status_doctype ON documents(st
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_thread_doctype ON documents(thread_id, doc_type)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_is_duplicate ON documents(is_duplicate)`);
+
+// ═══════════════════════════════════════════════════
+// Migration: Add investigation_id to documents and import_jobs
+// ═══════════════════════════════════════════════════
+if (!columnExists('documents', 'investigation_id')) {
+  db.exec(`ALTER TABLE documents ADD COLUMN investigation_id TEXT`);
+  console.log(`✦ Migration: added column documents.investigation_id`);
+}
+if (!columnExists('import_jobs', 'investigation_id')) {
+  db.exec(`ALTER TABLE import_jobs ADD COLUMN investigation_id TEXT`);
+  console.log(`✦ Migration: added column import_jobs.investigation_id`);
+}
+
+db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_investigation_id ON documents(investigation_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_import_jobs_investigation_id ON import_jobs(investigation_id)`);
+
+// Backfill: create default investigation and assign orphan documents
+{
+  const defaultInv = db.prepare(`SELECT id FROM investigations WHERE name = 'General Investigation'`).get();
+  if (!defaultInv) {
+    const orphanCount = db.prepare(`SELECT COUNT(*) as c FROM documents WHERE investigation_id IS NULL`).get().c;
+    if (orphanCount > 0) {
+      const defaultId = crypto.randomUUID();
+      db.prepare(`INSERT INTO investigations (id, name, description) VALUES (?, 'General Investigation', 'Default investigation for pre-existing documents')`).run(defaultId);
+      db.prepare(`UPDATE documents SET investigation_id = ? WHERE investigation_id IS NULL`).run(defaultId);
+      db.prepare(`UPDATE import_jobs SET investigation_id = ? WHERE investigation_id IS NULL`).run(defaultId);
+      console.log(`✦ Migration: created 'General Investigation' and assigned ${orphanCount} orphan documents`);
+    }
+  }
+}
 // ═══════════════════════════════════════════════════
 // Migration: Add elapsed_seconds to classifications
 // ═══════════════════════════════════════════════════

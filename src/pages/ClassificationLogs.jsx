@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getScoreColor } from '../utils/format';
 
-function ClassificationLogs() {
+function ClassificationLogs({ activeInvestigationId }) {
     const [logs, setLogs] = useState([]);
     const [pagination, setPagination] = useState(null);
     const [loading, setLoading] = useState(true);
@@ -11,12 +11,18 @@ function ClassificationLogs() {
 
     useEffect(() => {
         loadLogs(1);
-    }, []);
+    }, [activeInvestigationId]);
 
     const loadLogs = async (page) => {
         setLoading(true);
+        if (!activeInvestigationId) {
+            setLogs([]);
+            setPagination(null);
+            setLoading(false);
+            return;
+        }
         try {
-            const res = await fetch(`/api/classify/logs?page=${page}&limit=20`);
+            const res = await fetch(`/api/classify/logs?page=${page}&limit=20&investigation_id=${activeInvestigationId}`);
             const data = await res.json();
             setLogs(data.logs || []);
             setPagination(data.pagination);

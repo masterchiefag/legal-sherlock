@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { formatSize, getScoreColor } from '../utils/format';
 
-function Search({ addToast }) {
+function Search({ activeInvestigationId, addToast }) {
     const [searchParams, setSearchParams] = useSearchParams();
     const [query, setQuery] = useState(searchParams.get('q') || '');
     const [results, setResults] = useState([]);
@@ -56,6 +56,7 @@ function Search({ addToast }) {
         if (dateFrom) apiParams.set('date_from', dateFrom);
         if (dateTo) apiParams.set('date_to', dateTo);
         if (hideDuplicates) apiParams.set('hide_duplicates', '1');
+        if (activeInvestigationId) apiParams.set('investigation_id', activeInvestigationId);
 
         if (scoreFilter) {
             if (scoreFilter === 'unscored') {

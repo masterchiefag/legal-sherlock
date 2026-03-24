@@ -5,10 +5,42 @@ import Upload from './pages/Upload';
 import Search from './pages/Search';
 import DocumentReview from './pages/DocumentReview';
 import ClassificationLogs from './pages/ClassificationLogs';
+import Investigations from './pages/Investigations';
 
 function App() {
     const location = useLocation();
     const [toasts, setToasts] = useState([]);
+    
+    // Global investigation state
+    const [activeInvestigationId, setActiveInvestigationId] = useState(
+        localStorage.getItem('sherlock_investigation_id') || null
+    );
+    const [activeInvestigation, setActiveInvestigation] = useState(null);
+
+    // Fetch details for the active investigation
+    useEffect(() => {
+        if (!activeInvestigationId) {
+            setActiveInvestigation(null);
+            return;
+        }
+        fetch(`/api/investigations/${activeInvestigationId}`)
+            .then(r => r.ok ? r.json() : null)
+            .then(data => {
+                if (data && !data.error) setActiveInvestigation(data);
+                else setActiveInvestigation(null);
+            })
+            .catch(() => setActiveInvestigation(null));
+    }, [activeInvestigationId]);
+
+    const handleInvestigationChange = (id) => {
+        if (id) {
+            localStorage.setItem('sherlock_investigation_id', id);
+            setActiveInvestigationId(id);
+        } else {
+            localStorage.removeItem('sherlock_investigation_id');
+            setActiveInvestigationId(null);
+        }
+    };
 
     const addToast = useCallback((message, type = 'info') => {
         const id = Date.now();
@@ -20,6 +52,7 @@ function App() {
 
     const pageTitle = {
         '/': 'Dashboard',
+        '/investigations': 'Manage Cases',
         '/upload': 'Upload Documents',
         '/search': 'Search & Browse',
         '/ai-logs': 'AI Activity Logs',
@@ -33,6 +66,28 @@ function App() {
                     <h1>Sherlock</h1>
                     <div className="brand-sub">eDiscovery Platform</div>
                 </div>
+                <div className="sidebar-brand">
+                    <h1>Sherlock</h1>
+                    <div className="brand-sub">eDiscovery Platform</div>
+                </div>
+
+                {/* Case Switcher */}
+                <div style={{ padding: '0 12px 16px', borderBottom: '1px solid var(--border-secondary)', marginBottom: '16px' }}>
+                    <div style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-tertiary)', marginBottom: '8px', paddingLeft: '4px' }}>
+                        Active Case
+                    </div>
+                    {activeInvestigation ? (
+                        <div style={{ padding: '10px', background: 'var(--bg-tertiary)', borderRadius: '6px', fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', border: '1px solid var(--border-secondary)', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }} onClick={() => document.querySelector('a[href="/investigations"]').click()}>
+                            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--success)' }}></span>
+                            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{activeInvestigation.name}</span>
+                        </div>
+                    ) : (
+                        <div style={{ padding: '10px', background: 'var(--bg-tertiary)', borderRadius: '6px', fontSize: '12px', color: 'var(--danger)', border: '1px dashed var(--danger)' }}>
+                            No active case selected
+                        </div>
+                    )}
+                </div>
+
                 <nav className="sidebar-nav">
                     <NavLink to="/" end className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
                         <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -42,6 +97,12 @@ function App() {
                             <rect x="14" y="14" width="7" height="7" rx="1" />
                         </svg>
                         Dashboard
+                    </NavLink>
+                    <NavLink to="/investigations" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+                        <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
+                        </svg>
+                        Investigations
                     </NavLink>
                     <NavLink to="/upload" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
                         <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -84,11 +145,12 @@ function App() {
                 <div className="page-content">
                     <div className="page-enter" key={location.pathname}>
                         <Routes>
-                            <Route path="/" element={<Dashboard addToast={addToast} />} />
-                            <Route path="/upload" element={<Upload addToast={addToast} />} />
-                            <Route path="/search" element={<Search addToast={addToast} />} />
-                            <Route path="/ai-logs" element={<ClassificationLogs />} />
-                            <Route path="/documents/:id" element={<DocumentReview addToast={addToast} />} />
+                            <Route path="/" element={<Dashboard activeInvestigationId={activeInvestigationId} addToast={addToast} />} />
+                            <Route path="/investigations" element={<Investigations activeInvestigationId={activeInvestigationId} onInvestigationChange={handleInvestigationChange} addToast={addToast} />} />
+                            <Route path="/upload" element={<Upload activeInvestigationId={activeInvestigationId} activeInvestigation={activeInvestigation} addToast={addToast} />} />
+                            <Route path="/search" element={<Search activeInvestigationId={activeInvestigationId} addToast={addToast} />} />
+                            <Route path="/ai-logs" element={<ClassificationLogs activeInvestigationId={activeInvestigationId} />} />
+                            <Route path="/documents/:id" element={<DocumentReview activeInvestigationId={activeInvestigationId} addToast={addToast} />} />
                             <Route path="*" element={
                                 <div className="empty-state">
                                     <h3 className="empty-state-title">Page not found</h3>
