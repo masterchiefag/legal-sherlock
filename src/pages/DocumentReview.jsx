@@ -277,6 +277,12 @@ function DocumentReview({ addToast }) {
                                 <span style={{ color: 'var(--text-secondary)' }}>{doc.email_cc}</span>
                             </div>
                         )}
+                        {doc.email_bcc && (
+                            <div className="flex gap-8">
+                                <span style={{ color: 'var(--text-tertiary)', minWidth: '40px' }}>BCC</span>
+                                <span style={{ color: 'var(--text-secondary)' }}>{doc.email_bcc}</span>
+                            </div>
+                        )}
                         <div className="flex gap-8">
                             <span style={{ color: 'var(--text-tertiary)', minWidth: '40px' }}>Date</span>
                             <span style={{ color: 'var(--text-secondary)' }}>
@@ -403,6 +409,153 @@ function DocumentReview({ addToast }) {
                         </div>
                     </div>
                 </div>
+
+                {/* Metadata Section */}
+                {(isEmail || doc.doc_author || doc.doc_title || doc.doc_created_at || doc.doc_modified_at) && (
+                    <div className="doc-sidebar-section">
+                        <h3>📋 Metadata</h3>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12px' }}>
+                            {/* Email transport metadata */}
+                            {isEmail && (
+                                <>
+                                    {doc.email_originating_ip && (
+                                        <div className="flex justify-between">
+                                            <span className="text-muted">Originating IP</span>
+                                            <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)' }}>{doc.email_originating_ip}</span>
+                                        </div>
+                                    )}
+                                    {doc.email_server_info && (
+                                        <div className="flex justify-between">
+                                            <span className="text-muted">Mail Server</span>
+                                            <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontSize: '11px', maxWidth: '180px', wordBreak: 'break-all', textAlign: 'right' }}>{doc.email_server_info}</span>
+                                        </div>
+                                    )}
+                                    {doc.email_delivery_date && (
+                                        <div className="flex justify-between">
+                                            <span className="text-muted">Delivered</span>
+                                            <span style={{ color: 'var(--text-primary)' }}>{new Date(doc.email_delivery_date).toLocaleString()}</span>
+                                        </div>
+                                    )}
+                                    {doc.email_auth_results && (
+                                        <div style={{ marginTop: '4px' }}>
+                                            <span className="text-muted" style={{ display: 'block', marginBottom: '4px' }}>Auth Results</span>
+                                            <div style={{
+                                                padding: '6px 8px',
+                                                background: 'var(--bg-primary)',
+                                                borderRadius: 'var(--radius-sm)',
+                                                border: '1px solid var(--border-secondary)',
+                                                fontFamily: 'var(--font-mono)',
+                                                fontSize: '11px',
+                                                color: 'var(--text-secondary)',
+                                                wordBreak: 'break-word',
+                                                lineHeight: '1.4',
+                                            }}>{doc.email_auth_results}</div>
+                                        </div>
+                                    )}
+                                    {doc.email_received_chain && (() => {
+                                        try {
+                                            const hops = JSON.parse(doc.email_received_chain);
+                                            if (hops.length === 0) return null;
+                                            return (
+                                                <details style={{ marginTop: '4px' }}>
+                                                    <summary style={{ cursor: 'pointer', color: 'var(--text-tertiary)', fontSize: '11px' }}>
+                                                        Received chain ({hops.length} hops)
+                                                    </summary>
+                                                    <div style={{ display: 'flex', flexDirection: 'column', gap: '4px', marginTop: '6px' }}>
+                                                        {hops.map((hop, i) => (
+                                                            <div key={i} style={{
+                                                                padding: '6px 8px',
+                                                                background: 'var(--bg-primary)',
+                                                                borderRadius: 'var(--radius-sm)',
+                                                                border: '1px solid var(--border-secondary)',
+                                                                fontSize: '11px',
+                                                                fontFamily: 'var(--font-mono)',
+                                                            }}>
+                                                                {hop.from && <div style={{ color: 'var(--text-secondary)' }}>from {hop.from}</div>}
+                                                                {hop.by && <div style={{ color: 'var(--text-secondary)' }}>by {hop.by}</div>}
+                                                                {hop.with && <div style={{ color: 'var(--text-tertiary)' }}>with {hop.with}</div>}
+                                                                {hop.ip && <div style={{ color: 'var(--text-accent)' }}>IP: {hop.ip}</div>}
+                                                                {hop.date && <div style={{ color: 'var(--text-tertiary)', marginTop: '2px' }}>{new Date(hop.date).toLocaleString()}</div>}
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </details>
+                                            );
+                                        } catch (_) { return null; }
+                                    })()}
+                                </>
+                            )}
+
+                            {/* Document metadata */}
+                            {!isEmail && (
+                                <>
+                                    {doc.doc_author && (
+                                        <div className="flex justify-between">
+                                            <span className="text-muted">Author</span>
+                                            <span style={{ color: 'var(--text-primary)' }}>{doc.doc_author}</span>
+                                        </div>
+                                    )}
+                                    {doc.doc_title && (
+                                        <div className="flex justify-between">
+                                            <span className="text-muted">Title</span>
+                                            <span style={{ color: 'var(--text-primary)', maxWidth: '180px', textAlign: 'right', wordBreak: 'break-word' }}>{doc.doc_title}</span>
+                                        </div>
+                                    )}
+                                    {doc.doc_created_at && (
+                                        <div className="flex justify-between">
+                                            <span className="text-muted">Created</span>
+                                            <span style={{ color: 'var(--text-primary)' }}>{new Date(doc.doc_created_at).toLocaleString()}</span>
+                                        </div>
+                                    )}
+                                    {doc.doc_modified_at && (
+                                        <div className="flex justify-between">
+                                            <span className="text-muted">Modified</span>
+                                            <span style={{ color: 'var(--text-primary)' }}>{new Date(doc.doc_modified_at).toLocaleString()}</span>
+                                        </div>
+                                    )}
+                                    {doc.doc_creator_tool && (
+                                        <div className="flex justify-between">
+                                            <span className="text-muted">Created With</span>
+                                            <span style={{ color: 'var(--text-secondary)', fontSize: '11px', maxWidth: '180px', textAlign: 'right' }}>{doc.doc_creator_tool}</span>
+                                        </div>
+                                    )}
+                                    {doc.doc_keywords && (
+                                        <div className="flex justify-between">
+                                            <span className="text-muted">Keywords</span>
+                                            <span style={{ color: 'var(--text-secondary)', maxWidth: '180px', textAlign: 'right', wordBreak: 'break-word' }}>{doc.doc_keywords}</span>
+                                        </div>
+                                    )}
+                                </>
+                            )}
+                        </div>
+                    </div>
+                )}
+
+                {/* Raw Email Headers */}
+                {isEmail && doc.email_headers_raw && (
+                    <div className="doc-sidebar-section">
+                        <details>
+                            <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>
+                                📨 Raw Headers
+                            </summary>
+                            <pre style={{
+                                marginTop: '8px',
+                                padding: '10px',
+                                background: 'var(--bg-primary)',
+                                borderRadius: 'var(--radius-sm)',
+                                border: '1px solid var(--border-secondary)',
+                                fontSize: '10px',
+                                fontFamily: 'var(--font-mono)',
+                                color: 'var(--text-secondary)',
+                                whiteSpace: 'pre-wrap',
+                                wordBreak: 'break-all',
+                                maxHeight: '300px',
+                                overflowY: 'auto',
+                                lineHeight: '1.4',
+                            }}>{doc.email_headers_raw}</pre>
+                        </details>
+                    </div>
+                )}
 
                 {/* Email Thread */}
                 {doc.thread && doc.thread.length > 1 && (

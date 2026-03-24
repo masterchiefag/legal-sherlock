@@ -45,7 +45,7 @@ export function parsePst(filePath) {
 }
 
 /**
- * Extract structured data from a single PSTMessage.
+ * Extract structured data from a single PSTMessage, including transport metadata.
  */
 function extractEmailData(msg) {
     const from = msg.senderName
@@ -65,12 +65,41 @@ function extractEmailData(msg) {
         inReplyTo = inReplyTo.replace(/^</, '').replace(/>$/, '').trim();
     }
 
+    // ═══════════════════════════════════════════════════
+    // Transport headers & server metadata
+    // ═══════════════════════════════════════════════════
+    const headers = msg.transportMessageHeaders || '';
+
     // Parse References from transport headers
     let references = '';
-    const headers = msg.transportMessageHeaders || '';
     const refMatch = headers.match(/^References:\s*(.+?)(?:\r?\n(?!\s))/ms);
     if (refMatch) {
         references = refMatch[1].replace(/[\r\n\s]+/g, ' ').trim();
+    }
+
+    // Parse Received headers into structured hop chain
+    const receivedChain = parseReceivedFromHeaders(headers);
+
+    // X-Originating-IP
+    const ipMatch = headers.match(/^X-Originating-IP:\s*\[?([\d.]+)\]?/mi);
+    const originatingIp = ipMatch ? ipMatch[1] : null;
+
+    // Authentication-Results
+    const authMatch = headers.match(/^Authentication-Results:\s*(.+?)(?:\r?\n(?!\s))/ms);
+    const authResults = authMatch ? authMatch[1].replace(/[\r\n\s]+/g, ' ').trim() : null;
+
+    // Sending server from first Received header
+    const serverInfo = receivedChain.length > 0 ? receivedChain[0].by || null : null;
+
+    // Delivery date — use messageDeliveryTime property or last Received header date
+    let deliveryDate = null;
+    try {
+        if (msg.messageDeliveryTime) {
+            deliveryDate = msg.messageDeliveryTime.toISOString();
+        }
+    } catch (_) { /* property may not exist on all messages */ }
+    if (!deliveryDate && receivedChain.length > 0) {
+        deliveryDate = receivedChain[receivedChain.length - 1].date || null;
     }
 
     // Extract attachments
@@ -127,6 +156,53 @@ function extractEmailData(msg) {
         date: msg.clientSubmitTime ? msg.clientSubmitTime.toISOString() : null,
         textBody: msg.body || '',
         htmlBody: msg.bodyHTML || '',
+        // Transport metadata
+        headersRaw: headers,
+        receivedChain: JSON.stringify(receivedChain),
+        originatingIp,
+        authResults,
+        serverInfo,
+        deliveryDate,
         attachments,
     };
+}
+
+/**
+ * Parse Received headers from raw transport headers string.
+ * Returns array of hop objects: { from, by, with, date, ip }
+ */
+function parseReceivedFromHeaders(headersStr) {
+    if (!headersStr) return [];
+
+    const hops = [];
+    // Match all Received: header blocks (may span multiple lines via folding)
+    const receivedRegex = /^Received:\s*([\s\S]+?)(?=\r?\n(?:[\w-]+:|$))/gmi;
+    let match;
+
+    while ((match = receivedRegex.exec(headersStr)) !== null) {
+        const str = match[1].replace(/\r?\n\s+/g, ' ').trim();
+        const hop = {};
+
+        const fromMatch = str.match(/from\s+(\S+)/i);
+        if (fromMatch) hop.from = fromMatch[1];
+
+        const byMatch = str.match(/by\s+(\S+)/i);
+        if (byMatch) hop.by = byMatch[1];
+
+        const withMatch = str.match(/with\s+(\S+)/i);
+        if (withMatch) hop.with = withMatch[1];
+
+        const dateMatch = str.match(/;\s*(.+)$/);
+        if (dateMatch) {
+            const d = new Date(dateMatch[1].trim());
+            hop.date = isNaN(d.getTime()) ? dateMatch[1].trim() : d.toISOString();
+        }
+
+        const ipMatch = str.match(/\[(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})\]/);
+        if (ipMatch) hop.ip = ipMatch[1];
+
+        hops.push(hop);
+    }
+
+    return hops;
 }

@@ -5,7 +5,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../db.js';
-import { extractText } from '../lib/extract.js';
+import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
 import { resolveThreadId, backfillThread } from '../lib/threading.js';
 
@@ -69,19 +69,25 @@ async function processEmailData(eml, emailId, filename, originalName, sizeBytes)
     const threadId = resolveThreadId(eml.messageId, eml.inReplyTo, eml.references);
     result.thread_id = threadId;
 
-    // Insert email document
+    // Insert email document (with transport metadata)
     db.prepare(`
       INSERT INTO documents (
         id, filename, original_name, mime_type, size_bytes, text_content, status,
         doc_type, thread_id, message_id, in_reply_to, email_references,
-        email_from, email_to, email_cc, email_subject, email_date
+        email_from, email_to, email_cc, email_subject, email_date,
+        email_bcc, email_headers_raw, email_received_chain,
+        email_originating_ip, email_auth_results, email_server_info, email_delivery_date
       ) VALUES (?, ?, ?, ?, ?, ?, 'ready',
         'email', ?, ?, ?, ?,
-        ?, ?, ?, ?, ?)
+        ?, ?, ?, ?, ?,
+        ?, ?, ?, ?, ?, ?, ?)
     `).run(
         emailId, filename, originalName, 'message/rfc822', sizeBytes, eml.textBody,
         threadId, eml.messageId, eml.inReplyTo, eml.references,
-        eml.from, eml.to, eml.cc, eml.subject, eml.date
+        eml.from, eml.to, eml.cc, eml.subject, eml.date,
+        eml.bcc || null, eml.headersRaw || null, eml.receivedChain || null,
+        eml.originatingIp || null, eml.authResults || null,
+        eml.serverInfo || null, eml.deliveryDate || null
     );
 
     // Backfill thread for late arrivals
@@ -177,7 +183,19 @@ async function processRegularFile(file) {
 
     try {
         const text = await extractText(file.path, file.mimetype);
-        db.prepare(`UPDATE documents SET text_content = ?, status = 'ready' WHERE id = ?`).run(text, id);
+
+        // Extract document metadata (author, title, dates, etc.)
+        let meta = { author: null, title: null, createdAt: null, modifiedAt: null, creatorTool: null, keywords: null };
+        try {
+            meta = await extractMetadata(file.path, file.mimetype);
+        } catch (_) { /* best effort */ }
+
+        db.prepare(`UPDATE documents SET text_content = ?, status = 'ready',
+            doc_author = ?, doc_title = ?, doc_created_at = ?,
+            doc_modified_at = ?, doc_creator_tool = ?, doc_keywords = ?
+            WHERE id = ?`
+        ).run(text, meta.author, meta.title, meta.createdAt,
+            meta.modifiedAt, meta.creatorTool, meta.keywords, id);
         return [{ id, name: file.originalname, status: 'ready', size: file.size, doc_type: 'file' }];
     } catch (err) {
         db.prepare(`UPDATE documents SET status = 'error' WHERE id = ?`).run(id);

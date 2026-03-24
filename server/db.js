@@ -101,6 +101,21 @@ const emailMigrations = [
   { col: 'email_cc', type: 'TEXT' },
   { col: 'email_subject', type: 'TEXT' },
   { col: 'email_date', type: 'TEXT' },
+  // Email transport / server metadata
+  { col: 'email_bcc', type: 'TEXT' },
+  { col: 'email_headers_raw', type: 'TEXT' },
+  { col: 'email_received_chain', type: 'TEXT' },    // JSON array of hops
+  { col: 'email_originating_ip', type: 'TEXT' },
+  { col: 'email_auth_results', type: 'TEXT' },
+  { col: 'email_server_info', type: 'TEXT' },
+  { col: 'email_delivery_date', type: 'TEXT' },
+  // Document metadata (PDF, DOCX, etc.)
+  { col: 'doc_author', type: 'TEXT' },
+  { col: 'doc_title', type: 'TEXT' },
+  { col: 'doc_created_at', type: 'TEXT' },
+  { col: 'doc_modified_at', type: 'TEXT' },
+  { col: 'doc_creator_tool', type: 'TEXT' },
+  { col: 'doc_keywords', type: 'TEXT' },
 ];
 
 for (const { col, type } of emailMigrations) {
