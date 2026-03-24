@@ -327,9 +327,10 @@ function processEmail(eml) {
         fs.writeFileSync(attPath, att.content);
 
         // Compute content hash for deduplication
-        const attHash = crypto.createHash('md5').update(att.content).digest('hex');
-        const existingWithHash = db.prepare(`SELECT id FROM documents WHERE content_hash = ? LIMIT 1`).get(attHash);
-        const capturedIsDuplicate = existingWithHash ? 1 : 0;
+        const attContent = att.content;
+        const attHash = crypto.createHash('md5').update(attContent).digest('hex');
+        const existingWithHash = db.prepare(`SELECT id FROM documents WHERE content_hash = ? AND investigation_id = ? LIMIT 1`).get(attHash, investigation_id);
+        const isDuplicate = existingWithHash ? 1 : 0;
 
         const capturedAttId = attId;
         const capturedAttFilename = attFilename;
@@ -339,6 +340,7 @@ function processEmail(eml) {
         const capturedEmailId = emailId;
         const capturedThreadId = threadId;
         const capturedHash = attHash;
+        const capturedIsDuplicate = isDuplicate;
 
         batchBuffer.push(() => {
             insertAttachment.run(

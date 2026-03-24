@@ -110,7 +110,7 @@ async function processEmailData(eml, emailId, filename, originalName, sizeBytes,
 
         // Compute content hash for deduplication
         const attHash = crypto.createHash('md5').update(att.content).digest('hex');
-        const existingWithHash = db.prepare(`SELECT id FROM documents WHERE content_hash = ? LIMIT 1`).get(attHash);
+        const existingWithHash = db.prepare(`SELECT id FROM documents WHERE content_hash = ? AND investigation_id = ? LIMIT 1`).get(attHash, investigation_id);
         const isDuplicate = existingWithHash ? 1 : 0;
 
         let attText = '';
@@ -120,13 +120,20 @@ async function processEmailData(eml, emailId, filename, originalName, sizeBytes,
             attText = `[Could not extract text: ${e.message}]`;
         }
 
+        let meta = { author: null, title: null, createdAt: null, modifiedAt: null, creatorTool: null, keywords: null };
+        try {
+            meta = await extractMetadata(attPath, att.contentType);
+        } catch (e) { /* best effort */ }
+
         db.prepare(`
           INSERT INTO documents (
             id, filename, original_name, mime_type, size_bytes, text_content, status,
-            doc_type, parent_id, thread_id, content_hash, is_duplicate, investigation_id
+            doc_type, parent_id, thread_id, content_hash, is_duplicate, investigation_id,
+            doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords
           ) VALUES (?, ?, ?, ?, ?, ?, 'ready',
-            'attachment', ?, ?, ?, ?, ?)
-        `).run(attId, attFilename, att.filename, att.contentType, att.size, attText, emailId, threadId, attHash, isDuplicate, investigation_id);
+            'attachment', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(attId, attFilename, att.filename, att.contentType, att.size, attText, emailId, threadId, attHash, isDuplicate, investigation_id,
+               meta.author, meta.title, meta.createdAt, meta.modifiedAt, meta.creatorTool, meta.keywords);
 
         result.attachments.push({ id: attId, name: att.filename, size: att.size, content_type: att.contentType });
     }
