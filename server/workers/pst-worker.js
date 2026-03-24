@@ -4,6 +4,7 @@ import { promisify } from 'util';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
 import os from 'os';
 import { fileURLToPath } from 'url';
 import db from '../db.js';
@@ -41,9 +42,11 @@ const insertAttachment = db.prepare(`
     INSERT INTO documents (
         id, filename, original_name, mime_type, size_bytes, text_content, status,
         doc_type, parent_id, thread_id,
-        doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords
+        doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
+        content_hash, is_duplicate
     ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
-        ?, ?, ?, ?, ?, ?)
+        ?, ?, ?, ?, ?, ?,
+        ?, ?)
 `);
 
 const updateProgress = db.prepare(
@@ -321,6 +324,11 @@ function processEmail(eml) {
 
         fs.writeFileSync(attPath, att.content);
 
+        // Compute content hash for deduplication
+        const attHash = crypto.createHash('md5').update(att.content).digest('hex');
+        const existingWithHash = db.prepare(`SELECT id FROM documents WHERE content_hash = ? LIMIT 1`).get(attHash);
+        const capturedIsDuplicate = existingWithHash ? 1 : 0;
+
         const capturedAttId = attId;
         const capturedAttFilename = attFilename;
         const capturedAttName = att.filename;
@@ -328,13 +336,15 @@ function processEmail(eml) {
         const capturedSize = att.size;
         const capturedEmailId = emailId;
         const capturedThreadId = threadId;
+        const capturedHash = attHash;
 
         batchBuffer.push(() => {
             insertAttachment.run(
                 capturedAttId, capturedAttFilename, capturedAttName,
                 capturedContentType, capturedSize,
                 capturedEmailId, capturedThreadId,
-                null, null, null, null, null, null
+                null, null, null, null, null, null,
+                capturedHash, capturedIsDuplicate
             );
         });
 
