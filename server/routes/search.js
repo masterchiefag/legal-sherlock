@@ -26,7 +26,7 @@ router.get('/', (req, res) => {
 
         // Parse FTS5 query: support "exact phrase", OR, and -exclude
         const parseQuery = (raw) => {
-            const tokens = raw.match(/("[^"]+"|-[^\s]+|\bOR\b|[^\s]+)/g) || [];
+            const tokens = raw.match(/("[^"]+"|-[^\s]+|\bOR\b|[^\s]+)/gi) || [];
             const processed = [];
             for (const token of tokens) {
                 if (token.toUpperCase() === 'OR') {
