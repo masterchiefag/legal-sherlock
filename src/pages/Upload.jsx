@@ -2,7 +2,7 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formatSize } from '../utils/format';
 
-function Upload({ addToast }) {
+function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
     const [files, setFiles] = useState([]);
     const [uploading, setUploading] = useState(false);
     const [uploadProgress, setUploadProgress] = useState(0);
@@ -72,6 +72,7 @@ function Upload({ addToast }) {
         setResults([]);
 
         const formData = new FormData();
+        formData.append('investigation_id', activeInvestigationId);
         files.forEach(f => formData.append('files', f));
 
         try {
@@ -144,8 +145,22 @@ function Upload({ addToast }) {
 
     const getFileExt = (name) => name.split('.').pop().toLowerCase();
 
+    if (!activeInvestigationId) {
+        return (
+            <div className="empty-state">
+                <h3 className="empty-state-title">No Investigation Selected</h3>
+                <p className="empty-state-text">You must select an active investigation before uploading files.</p>
+            </div>
+        );
+    }
+
     return (
         <div className="fade-in" style={{ maxWidth: '800px' }}>
+            <div className="flex items-center gap-8 mb-24 p-12" style={{ background: 'var(--bg-tertiary)', borderRadius: '8px', border: '1px solid var(--border-secondary)' }}>
+                <span className="text-secondary" style={{ fontSize: '13px' }}>Uploading to:</span>
+                <span className="fw-bold" style={{ fontSize: '14px', color: 'var(--primary)' }}>{activeInvestigation?.name || 'Active Case'}</span>
+            </div>
+
             {/* Dropzone */}
             <div
                 className={`dropzone ${dragActive ? 'active' : ''}`}

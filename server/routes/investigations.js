@@ -1,0 +1,123 @@
+import express from 'express';
+import crypto from 'crypto';
+import db from '../db.js';
+
+const router = express.Router();
+
+// List all investigations with document counts
+router.get('/', (req, res) => {
+    try {
+        const investigations = db.prepare(`
+            SELECT i.*,
+                (SELECT COUNT(*) FROM documents d WHERE d.investigation_id = i.id) as document_count,
+                (SELECT COUNT(*) FROM documents d WHERE d.investigation_id = i.id AND d.doc_type = 'email') as email_count,
+                (SELECT COUNT(*) FROM documents d WHERE d.investigation_id = i.id AND d.doc_type = 'attachment') as attachment_count,
+                (SELECT COUNT(DISTINCT dr.document_id) FROM document_reviews dr
+                    JOIN documents d ON d.id = dr.document_id
+                    WHERE d.investigation_id = i.id AND dr.status != 'pending'
+                    AND dr.id IN (SELECT MAX(id) FROM document_reviews GROUP BY document_id)
+                ) as reviewed_count
+            FROM investigations i
+            ORDER BY i.created_at DESC
+        `).all();
+        res.json(investigations);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Get single investigation with full stats
+router.get('/:id', (req, res) => {
+    try {
+        const inv = db.prepare(`SELECT * FROM investigations WHERE id = ?`).get(req.params.id);
+        if (!inv) return res.status(404).json({ error: 'Investigation not found' });
+
+        const stats = db.prepare(`
+            SELECT
+                COUNT(*) as total_documents,
+                SUM(CASE WHEN doc_type = 'email' THEN 1 ELSE 0 END) as emails,
+                SUM(CASE WHEN doc_type = 'attachment' THEN 1 ELSE 0 END) as attachments,
+                SUM(CASE WHEN doc_type = 'file' THEN 1 ELSE 0 END) as files,
+                SUM(size_bytes) as total_size
+            FROM documents WHERE investigation_id = ?
+        `).get(req.params.id);
+
+        res.json({ ...inv, stats });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Create new investigation
+router.post('/', (req, res) => {
+    try {
+        const { name, description, allegation, key_parties, remarks, date_range_start, date_range_end } = req.body;
+        if (!name?.trim()) return res.status(400).json({ error: 'Investigation name is required' });
+
+        const id = crypto.randomUUID();
+        db.prepare(`
+            INSERT INTO investigations (id, name, description, allegation, key_parties, remarks, date_range_start, date_range_end)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(id, name.trim(), description || null, allegation || null, key_parties || null, remarks || null, date_range_start || null, date_range_end || null);
+
+        const inv = db.prepare(`SELECT * FROM investigations WHERE id = ?`).get(id);
+        res.status(201).json(inv);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Update investigation
+router.put('/:id', (req, res) => {
+    try {
+        const inv = db.prepare(`SELECT * FROM investigations WHERE id = ?`).get(req.params.id);
+        if (!inv) return res.status(404).json({ error: 'Investigation not found' });
+
+        const { name, description, status, allegation, key_parties, remarks, date_range_start, date_range_end } = req.body;
+
+        db.prepare(`
+            UPDATE investigations SET
+                name = COALESCE(?, name),
+                description = ?,
+                status = COALESCE(?, status),
+                allegation = ?,
+                key_parties = ?,
+                remarks = ?,
+                date_range_start = ?,
+                date_range_end = ?,
+                updated_at = datetime('now')
+            WHERE id = ?
+        `).run(
+            name || null, description ?? inv.description,
+            status || null, allegation ?? inv.allegation,
+            key_parties ?? inv.key_parties, remarks ?? inv.remarks,
+            date_range_start ?? inv.date_range_start, date_range_end ?? inv.date_range_end,
+            req.params.id
+        );
+
+        const updated = db.prepare(`SELECT * FROM investigations WHERE id = ?`).get(req.params.id);
+        res.json(updated);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Delete (archive) investigation
+router.delete('/:id', (req, res) => {
+    try {
+        const inv = db.prepare(`SELECT * FROM investigations WHERE id = ?`).get(req.params.id);
+        if (!inv) return res.status(404).json({ error: 'Investigation not found' });
+
+        db.prepare(`UPDATE investigations SET status = 'archived', updated_at = datetime('now') WHERE id = ?`).run(req.params.id);
+        res.json({ message: 'Investigation archived' });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+export default router;

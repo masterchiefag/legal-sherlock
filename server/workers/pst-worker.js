@@ -17,7 +17,7 @@ const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
 
-const { jobId, filepath, originalname } = workerData;
+const { jobId, filename, filepath, originalname, investigation_id } = workerData;
 
 let totalEmails = 0;
 let totalAttachments = 0;
@@ -34,8 +34,9 @@ const insertEmail = db.prepare(`
         doc_type, thread_id, message_id, in_reply_to, email_references,
         email_from, email_to, email_cc, email_subject, email_date,
         email_bcc, email_headers_raw, email_received_chain,
-        email_originating_ip, email_auth_results, email_server_info, email_delivery_date
-    ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        email_originating_ip, email_auth_results, email_server_info, email_delivery_date,
+        investigation_id
+    ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const insertAttachment = db.prepare(`
@@ -43,10 +44,10 @@ const insertAttachment = db.prepare(`
         id, filename, original_name, mime_type, size_bytes, text_content, status,
         doc_type, parent_id, thread_id,
         doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
-        content_hash, is_duplicate
+        content_hash, is_duplicate, investigation_id
     ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
         ?, ?, ?, ?, ?, ?,
-        ?, ?)
+        ?, ?, ?)
 `);
 
 const updateProgress = db.prepare(
@@ -309,7 +310,8 @@ function processEmail(eml) {
             eml.from, eml.to, eml.cc, subject, eml.date,
             eml.bcc || null, eml.headersRaw || null, eml.receivedChain || null,
             eml.originatingIp || null, eml.authResults || null,
-            eml.serverInfo || null, eml.deliveryDate || null
+            eml.serverInfo || null, eml.deliveryDate || null,
+            investigation_id
         );
     });
 
@@ -325,9 +327,10 @@ function processEmail(eml) {
         fs.writeFileSync(attPath, att.content);
 
         // Compute content hash for deduplication
-        const attHash = crypto.createHash('md5').update(att.content).digest('hex');
-        const existingWithHash = db.prepare(`SELECT id FROM documents WHERE content_hash = ? LIMIT 1`).get(attHash);
-        const capturedIsDuplicate = existingWithHash ? 1 : 0;
+        const attContent = att.content;
+        const attHash = crypto.createHash('md5').update(attContent).digest('hex');
+        const existingWithHash = db.prepare(`SELECT id FROM documents WHERE content_hash = ? AND investigation_id = ? LIMIT 1`).get(attHash, investigation_id);
+        const isDuplicate = existingWithHash ? 1 : 0;
 
         const capturedAttId = attId;
         const capturedAttFilename = attFilename;
@@ -337,6 +340,7 @@ function processEmail(eml) {
         const capturedEmailId = emailId;
         const capturedThreadId = threadId;
         const capturedHash = attHash;
+        const capturedIsDuplicate = isDuplicate;
 
         batchBuffer.push(() => {
             insertAttachment.run(
@@ -344,7 +348,7 @@ function processEmail(eml) {
                 capturedContentType, capturedSize,
                 capturedEmailId, capturedThreadId,
                 null, null, null, null, null, null,
-                capturedHash, capturedIsDuplicate
+                capturedHash, capturedIsDuplicate, investigation_id
             );
         });
 

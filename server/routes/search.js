@@ -19,13 +19,14 @@ router.get('/', (req, res) => {
             score_min,
             score_max,
             hide_duplicates,
+            investigation_id,
         } = req.query;
 
         const offset = (parseInt(page) - 1) * parseInt(limit);
 
         // Parse FTS5 query: support "exact phrase", OR, and -exclude
         const parseQuery = (raw) => {
-            const tokens = raw.match(/("[^"]+"|-[^\s]+|\bOR\b|[^\s]+)/g) || [];
+            const tokens = raw.match(/("[^"]+"|-[^\s]+|\bOR\b|[^\s]+)/gi) || [];
             const processed = [];
             for (const token of tokens) {
                 if (token.toUpperCase() === 'OR') {
@@ -59,6 +60,12 @@ router.get('/', (req, res) => {
         // Deduplication filter
         if (hide_duplicates === '1') {
             filterWhere += ' AND (d.is_duplicate = 0 OR d.is_duplicate IS NULL)';
+        }
+
+        // Investigation scope
+        if (investigation_id) {
+            filterWhere += ' AND d.investigation_id = ?';
+            filterParams.push(investigation_id);
         }
 
         if (status) {

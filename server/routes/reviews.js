@@ -47,35 +47,47 @@ router.get('/documents/:docId/review', (req, res) => {
 // Get stats for dashboard
 router.get('/stats', (req, res) => {
     try {
-        const totalDocs = db.prepare('SELECT COUNT(*) as count FROM documents').get().count;
-        const readyDocs = db.prepare("SELECT COUNT(*) as count FROM documents WHERE status = 'ready'").get().count;
+        const { investigation_id } = req.query;
+        const invFilter = investigation_id ? ' AND investigation_id = ?' : '';
+        const invFilterWhere = investigation_id ? ' WHERE investigation_id = ?' : '';
+        const invParams = investigation_id ? [investigation_id] : [];
+
+        const totalDocs = db.prepare(`SELECT COUNT(*) as count FROM documents WHERE 1=1${invFilter}`).get(...invParams).count;
+        const readyDocs = db.prepare(`SELECT COUNT(*) as count FROM documents WHERE status = 'ready'${invFilter}`).get(...invParams).count;
 
         const reviewedDocs = db.prepare(`
-      SELECT COUNT(DISTINCT document_id) as count
-      FROM document_reviews WHERE status != 'pending'
-    `).get().count;
+      SELECT COUNT(DISTINCT dr.document_id) as count
+      FROM document_reviews dr
+      JOIN documents d ON d.id = dr.document_id
+      WHERE dr.status != 'pending'${investigation_id ? ' AND d.investigation_id = ?' : ''}
+    `).get(...invParams).count;
 
         const statusCounts = db.prepare(`
       SELECT dr.status, COUNT(DISTINCT dr.document_id) as count
       FROM document_reviews dr
+      JOIN documents d ON d.id = dr.document_id
       WHERE dr.id IN (SELECT MAX(id) FROM document_reviews GROUP BY document_id)
+      ${investigation_id ? 'AND d.investigation_id = ?' : ''}
       GROUP BY dr.status
-    `).all();
+    `).all(...invParams);
 
         const tagCounts = db.prepare(`
       SELECT t.name, t.color, COUNT(dt.document_id) as count
       FROM tags t
       LEFT JOIN document_tags dt ON dt.tag_id = t.id
+      ${investigation_id ? 'LEFT JOIN documents d ON d.id = dt.document_id' : ''}
+      ${investigation_id ? 'WHERE (d.investigation_id = ? OR dt.document_id IS NULL)' : ''}
       GROUP BY t.id
       ORDER BY count DESC
-    `).all();
+    `).all(...invParams);
 
         const recentUploads = db.prepare(`
       SELECT id, original_name, size_bytes, uploaded_at, status
       FROM documents
+      WHERE 1=1${invFilter}
       ORDER BY uploaded_at DESC
       LIMIT 5
-    `).all();
+    `).all(...invParams);
 
         res.json({
             total_documents: totalDocs,
