@@ -142,7 +142,7 @@ router.get('/', (req, res) => {
             snippet(documents_fts, 1, '<mark>', '</mark>', '…', 40) as snippet,
             rank,
             (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
-            (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email') as thread_count,
+            (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email' AND t.investigation_id = d.investigation_id) as thread_count,
             (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score,
             (SELECT cl.reasoning FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_reasoning,
             (SELECT json_group_array(json_object('id', t.id, 'name', t.name, 'color', t.color))
@@ -173,7 +173,7 @@ router.get('/', (req, res) => {
             d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at,
             NULL as snippet,
             (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
-            (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email') as thread_count,
+            (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email' AND t.investigation_id = d.investigation_id) as thread_count,
             (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score,
             (SELECT cl.reasoning FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_reasoning,
             (SELECT json_group_array(json_object('id', t.id, 'name', t.name, 'color', t.color))

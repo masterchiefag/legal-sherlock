@@ -260,11 +260,11 @@ router.post('/upload', (req, res, next) => {
                 // Background job for PST
                 const jobId = uuidv4();
                 
-                // Initialize job in database
+                // Initialize job in database (store filepath for resume support)
                 db.prepare(`
-                    INSERT INTO import_jobs (id, filename, status, investigation_id)
-                    VALUES (?, ?, 'pending', ?)
-                `).run(jobId, file.originalname, investigation_id);
+                    INSERT INTO import_jobs (id, filename, filepath, status, investigation_id)
+                    VALUES (?, ?, ?, 'pending', ?)
+                `).run(jobId, file.originalname, file.path, investigation_id);
 
                 spawnPstWorker(jobId, file.filename, file.path, file.originalname, investigation_id);
                 
@@ -287,6 +287,32 @@ router.post('/upload', (req, res, next) => {
     }
 });
 
+// Get recent failed jobs for the active investigation (must be before /jobs/:id)
+router.get('/jobs/failed/:investigation_id', (req, res) => {
+    try {
+        const jobs = db.prepare(
+            "SELECT * FROM import_jobs WHERE investigation_id = ? AND status = 'failed' ORDER BY started_at DESC LIMIT 5"
+        ).all(req.params.investigation_id);
+        res.json({ jobs });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Get recent import jobs for the active investigation (all statuses)
+router.get('/jobs/recent/:investigation_id', (req, res) => {
+    try {
+        const jobs = db.prepare(
+            "SELECT * FROM import_jobs WHERE investigation_id = ? ORDER BY started_at DESC LIMIT 5"
+        ).all(req.params.investigation_id);
+        res.json({ jobs });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // GET /api/documents/jobs/:id - Poll job status
 router.get('/jobs/:id', (req, res) => {
     try {
@@ -295,6 +321,56 @@ router.get('/jobs/:id', (req, res) => {
             return res.status(404).json({ error: "Job not found" });
         }
         res.json(job);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Resume a failed PST import job
+router.post('/jobs/:id/resume', (req, res) => {
+    try {
+        const job = db.prepare('SELECT * FROM import_jobs WHERE id = ?').get(req.params.id);
+        if (!job) return res.status(404).json({ error: 'Job not found' });
+        if (job.status !== 'failed') return res.status(400).json({ error: 'Only failed jobs can be resumed' });
+
+        // Check if PST file still exists
+        if (!fs.existsSync(job.filepath)) {
+            return res.status(400).json({ error: 'PST file no longer exists on disk. Please re-upload.' });
+        }
+
+        // Reset job status and restart timer
+        db.prepare(`
+            UPDATE import_jobs SET status = 'processing', phase = 'importing',
+            error_log = NULL, completed_at = NULL, phase1_completed_at = NULL,
+            started_at = datetime('now') WHERE id = ?
+        `).run(job.id);
+
+        // Spawn worker with resume flag
+        const workerPath = path.join(__dirname, '..', 'workers', 'pst-worker.js');
+        const worker = new Worker(workerPath, {
+            workerData: {
+                jobId: job.id,
+                filename: job.filename,
+                filepath: job.filepath,
+                originalname: job.filename,
+                investigation_id: job.investigation_id,
+                resume: true,
+            }
+        });
+
+        worker.on('error', (err) => {
+            console.error(`⚠ PST Worker resume error for job ${job.id}:`, err);
+            db.prepare(`UPDATE import_jobs SET status = 'failed', error_log = ?, completed_at = datetime('now') WHERE id = ?`).run(
+                JSON.stringify([{ error: `Worker crashed: ${err.message}` }]), job.id
+            );
+        });
+
+        worker.on('exit', (code) => {
+            if (code !== 0) console.error(`⚠ PST Worker resume for job ${job.id} stopped with exit code ${code}`);
+        });
+
+        res.json({ message: 'Import resumed', jobId: job.id });
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Internal server error' });
@@ -352,7 +428,7 @@ router.get('/', (req, res) => {
          WHERE dr.document_id = d.id
          ORDER BY dr.reviewed_at DESC LIMIT 1) as review_status,
         (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
-        (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email') as thread_count,
+        (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email' AND t.investigation_id = d.investigation_id) as thread_count,
         (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score
       FROM documents d
       ${where}
@@ -402,9 +478,9 @@ router.get('/:id', (req, res) => {
             doc.thread = db.prepare(`
         SELECT id, original_name, email_from, email_to, email_subject, email_date, doc_type
         FROM documents
-        WHERE thread_id = ? AND doc_type = 'email'
+        WHERE thread_id = ? AND doc_type = 'email' AND investigation_id = ?
         ORDER BY email_date ASC
-      `).all(doc.thread_id);
+      `).all(doc.thread_id, doc.investigation_id);
         } else {
             doc.thread = [];
         }

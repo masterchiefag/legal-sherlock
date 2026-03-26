@@ -89,8 +89,8 @@ router.post('/:documentId', async (req, res) => {
         let thread = [];
         if (doc.thread_id) {
             thread = db.prepare(
-                "SELECT id, email_from, email_subject, email_date FROM documents WHERE thread_id = ? AND doc_type = 'email' ORDER BY email_date ASC"
-            ).all(doc.thread_id);
+                "SELECT id, email_from, email_subject, email_date FROM documents WHERE thread_id = ? AND doc_type = 'email' AND investigation_id = ? ORDER BY email_date ASC"
+            ).all(doc.thread_id, doc.investigation_id);
         }
 
         // Fetch attachments
@@ -164,6 +164,117 @@ router.get('/logs', (req, res) => {
                 pages: Math.ceil(countRow.total / parseInt(limit))
             }
         });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ═══════════════════════════════════════════════════
+// GET /api/classify/compare/prompts — Prompts with multi-model runs
+// ═══════════════════════════════════════════════════
+router.get('/compare/prompts', (req, res) => {
+    try {
+        const prompts = db.prepare(`
+            SELECT investigation_prompt, COUNT(DISTINCT model) as model_count, COUNT(*) as total_runs
+            FROM classifications
+            GROUP BY investigation_prompt
+            HAVING COUNT(DISTINCT model) >= 2
+            ORDER BY MAX(classified_at) DESC
+        `).all();
+        res.json({ prompts });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ═══════════════════════════════════════════════════
+// GET /api/classify/compare — Compare models side-by-side
+// ═══════════════════════════════════════════════════
+router.get('/compare', (req, res) => {
+    try {
+        const { prompt } = req.query;
+        if (!prompt) return res.status(400).json({ error: 'prompt query parameter required' });
+
+        // Get all classifications for this prompt
+        const rows = db.prepare(`
+            SELECT c.document_id, c.score, c.reasoning, c.model, c.elapsed_seconds,
+                   d.original_name, d.email_subject, d.doc_type
+            FROM classifications c
+            JOIN documents d ON c.document_id = d.id
+            WHERE c.investigation_prompt = ?
+            ORDER BY c.classified_at DESC
+        `).all(prompt);
+
+        // Group by document, keeping only the latest per model
+        const byDoc = {};
+        const modelStats = {};
+        for (const row of rows) {
+            if (!byDoc[row.document_id]) {
+                byDoc[row.document_id] = {
+                    document_id: row.document_id,
+                    original_name: row.original_name,
+                    email_subject: row.email_subject,
+                    doc_type: row.doc_type,
+                    scores: {}
+                };
+            }
+            // Keep first (latest) per model per doc
+            if (!byDoc[row.document_id].scores[row.model]) {
+                byDoc[row.document_id].scores[row.model] = {
+                    score: row.score,
+                    reasoning: row.reasoning,
+                    elapsed: row.elapsed_seconds
+                };
+            }
+            // Accumulate model stats
+            if (!modelStats[row.model]) {
+                modelStats[row.model] = { count: 0, total_time: 0, total_score: 0, scores: {} };
+            }
+        }
+
+        // Build comparisons: only docs classified by 2+ models
+        const models = {};
+        const comparisons = [];
+        for (const doc of Object.values(byDoc)) {
+            const docModels = Object.keys(doc.scores);
+            if (docModels.length < 2) continue;
+
+            // Check if scores agree
+            const scoreValues = docModels.map(m => doc.scores[m].score);
+            doc.disagree = new Set(scoreValues).size > 1;
+            doc.score_diff = Math.max(...scoreValues) - Math.min(...scoreValues);
+            comparisons.push(doc);
+
+            // Accumulate per-model stats (only for compared docs)
+            for (const m of docModels) {
+                if (!models[m]) {
+                    models[m] = { count: 0, total_time: 0, total_score: 0, score_distribution: {} };
+                }
+                models[m].count++;
+                models[m].total_time += doc.scores[m].elapsed || 0;
+                models[m].total_score += doc.scores[m].score;
+                const s = String(doc.scores[m].score);
+                models[m].score_distribution[s] = (models[m].score_distribution[s] || 0) + 1;
+            }
+        }
+
+        // Compute averages
+        for (const m of Object.keys(models)) {
+            models[m].avg_time = models[m].count ? +(models[m].total_time / models[m].count).toFixed(2) : 0;
+            models[m].avg_score = models[m].count ? +(models[m].total_score / models[m].count).toFixed(2) : 0;
+            delete models[m].total_time;
+            delete models[m].total_score;
+        }
+
+        // Sort: biggest disagreements first
+        comparisons.sort((a, b) => b.score_diff - a.score_diff);
+
+        const agree = comparisons.filter(c => !c.disagree).length;
+        const agreement_rate = comparisons.length ? +(agree / comparisons.length).toFixed(3) : 0;
+
+        res.json({ models, comparisons, agreement_rate, total: comparisons.length });
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Internal server error' });
