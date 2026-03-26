@@ -1,5 +1,5 @@
 import express from 'express';
-import db from '../db.js';
+import { readDb as db } from '../db.js';
 
 const router = express.Router();
 
@@ -59,7 +59,7 @@ router.get('/', (req, res) => {
 
         // Deduplication filter
         if (hide_duplicates === '1') {
-            filterWhere += ' AND (d.is_duplicate = 0 OR d.is_duplicate IS NULL)';
+            filterWhere += ' AND d.is_duplicate = 0';
         }
 
         // Investigation scope
@@ -125,11 +125,12 @@ router.get('/', (req, res) => {
         let countRow, results;
 
         if (useFts) {
-            // FTS search with filters
+            // FTS search with filters — CROSS JOIN forces FTS-first execution
+            // (prevents SQLite from scanning documents index then doing per-row FTS lookups)
             countRow = db.prepare(`
           SELECT COUNT(*) as total
           FROM documents_fts fts
-          JOIN documents d ON d.rowid = fts.rowid
+          CROSS JOIN documents d ON d.rowid = fts.rowid
           WHERE documents_fts MATCH ?
           ${filterWhere}
         `).get(ftsQuery, ...filterParams);
@@ -152,7 +153,7 @@ router.get('/', (req, res) => {
              WHERE dr.document_id = d.id
              ORDER BY dr.reviewed_at DESC LIMIT 1) as review_status
           FROM documents_fts fts
-          JOIN documents d ON d.rowid = fts.rowid
+          CROSS JOIN documents d ON d.rowid = fts.rowid
           WHERE documents_fts MATCH ?
           ${filterWhere}
           ORDER BY rank

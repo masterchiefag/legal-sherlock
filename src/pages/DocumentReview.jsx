@@ -360,6 +360,23 @@ function DocumentReview({ addToast }) {
                             <div className="doc-text-content" dangerouslySetInnerHTML={{ __html: highlightedText }} />
                         );
                     }
+                    // For emails with no body, show metadata summary
+                    if (doc.doc_type === 'email') {
+                        return (
+                            <div style={{ padding: '24px', color: 'var(--text-secondary)', fontSize: '14px', lineHeight: '1.8' }}>
+                                <p style={{ color: 'var(--text-muted)', fontStyle: 'italic', marginBottom: '16px' }}>
+                                    This email has no text body{doc.attachments?.length > 0 ? ' — content may be in the attachments below.' : '.'}
+                                </p>
+                                <div style={{ background: 'var(--bg-tertiary)', padding: '16px', borderRadius: '8px', border: '1px solid var(--border-secondary)' }}>
+                                    {doc.email_subject && <p style={{ margin: '0 0 8px' }}><strong>Subject:</strong> {doc.email_subject}</p>}
+                                    {doc.email_from && <p style={{ margin: '0 0 8px' }}><strong>From:</strong> {doc.email_from}</p>}
+                                    {doc.email_to && <p style={{ margin: '0 0 8px' }}><strong>To:</strong> {doc.email_to}</p>}
+                                    {doc.email_cc && <p style={{ margin: '0 0 8px' }}><strong>Cc:</strong> {doc.email_cc}</p>}
+                                    {doc.email_date && <p style={{ margin: '0' }}><strong>Date:</strong> {new Date(doc.email_date).toLocaleString()}</p>}
+                                </div>
+                            </div>
+                        );
+                    }
                     return (
                         <div className="empty-state">
                             <p className="empty-state-text">No text content available for this document.</p>

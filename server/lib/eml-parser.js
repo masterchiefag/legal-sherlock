@@ -1,63 +1,98 @@
-import { simpleParser } from 'mailparser';
+import PostalMime from 'postal-mime';
 import fs from 'fs';
 
 /**
  * Parse an .eml file and extract all structured data including transport metadata.
- *
- * Returns:
- * {
- *   messageId, inReplyTo, references,
- *   from, to, cc, bcc, subject, date,
- *   textBody, htmlBody,
- *   headersRaw, receivedChain, originatingIp, authResults, serverInfo, deliveryDate,
- *   attachments: [{ filename, contentType, size, content (Buffer) }]
- * }
+ * Uses postal-mime (official mailparser successor) for faster parsing.
  */
+
+/**
+ * Strip HTML tags and decode entities to get plain text from HTML body.
+ */
+function stripHtml(html) {
+    if (!html) return '';
+    return html
+        .replace(/<style[^>]*>[\s\S]*?<\/style>/gi, '')  // remove style blocks
+        .replace(/<script[^>]*>[\s\S]*?<\/script>/gi, '') // remove script blocks
+        .replace(/<br\s*\/?>/gi, '\n')                     // br → newline
+        .replace(/<\/p>/gi, '\n\n')                        // closing p → double newline
+        .replace(/<\/div>/gi, '\n')                        // closing div → newline
+        .replace(/<\/tr>/gi, '\n')                         // table rows → newline
+        .replace(/<td[^>]*>/gi, '\t')                      // table cells → tab
+        .replace(/<[^>]+>/g, '')                           // strip remaining tags
+        .replace(/&nbsp;/gi, ' ')
+        .replace(/&amp;/gi, '&')
+        .replace(/&lt;/gi, '<')
+        .replace(/&gt;/gi, '>')
+        .replace(/&quot;/gi, '"')
+        .replace(/&#39;/gi, "'")
+        .replace(/\n{3,}/g, '\n\n')                       // collapse excess newlines
+        .trim();
+}
+
+/**
+ * Strip angle brackets from message IDs.
+ */
+function cleanId(id) {
+    if (!id) return null;
+    return id.replace(/^</, '').replace(/>$/, '').trim();
+}
+
+/**
+ * Format address objects to "Name <email>" strings.
+ */
+function formatAddresses(addrList) {
+    if (!addrList || !Array.isArray(addrList)) return '';
+    return addrList
+        .map(a => a.name ? `${a.name} <${a.address}>` : a.address)
+        .join(', ');
+}
+
 export async function parseEml(filePath) {
     const raw = fs.readFileSync(filePath);
-    const parsed = await simpleParser(raw);
-
-    // Extract addresses as readable strings
-    const formatAddresses = (addrObj) => {
-        if (!addrObj || !addrObj.value) return '';
-        return addrObj.value
-            .map(a => a.name ? `${a.name} <${a.address}>` : a.address)
-            .join(', ');
-    };
-
-    // Extract Message-ID (strip angle brackets)
-    const cleanId = (id) => {
-        if (!id) return null;
-        return id.replace(/^</, '').replace(/>$/, '').trim();
-    };
+    const parser = new PostalMime();
+    const parsed = await parser.parse(raw);
 
     // References can be a string of space-separated message IDs
     const parseReferences = (refs) => {
         if (!refs) return '';
-        if (typeof refs === 'string') return refs;
+        if (typeof refs === 'string') {
+            // postal-mime returns references as a space/comma-separated string
+            return refs.split(/[\s,]+/).filter(Boolean).map(r => cleanId(r)).join(' ');
+        }
         if (Array.isArray(refs)) return refs.map(r => cleanId(r)).join(' ');
         return '';
     };
 
     // ═══════════════════════════════════════════════════
-    // Transport / server metadata
+    // Transport / server metadata from raw headers
     // ═══════════════════════════════════════════════════
 
+    // postal-mime gives us parsed.headers as an array of {key, value}
+    const headers = parsed.headers || [];
+    const getHeader = (name) => {
+        const h = headers.find(h => h.key.toLowerCase() === name.toLowerCase());
+        return h ? h.value : null;
+    };
+    const getHeaders = (name) => {
+        return headers.filter(h => h.key.toLowerCase() === name.toLowerCase()).map(h => h.value);
+    };
+
     // Raw headers as text (forensic copy)
-    const headersRaw = (parsed.headerLines || []).map(h => h.line).join('\n');
+    const headersRaw = headers.map(h => `${h.key}: ${h.value}`).join('\n');
 
     // Parse Received headers into structured hop chain
-    const receivedRaw = parsed.headers?.get('received');
-    const receivedChain = parseReceivedHeaders(receivedRaw);
+    const receivedHeaders = getHeaders('received');
+    const receivedChain = parseReceivedHeaders(receivedHeaders);
 
     // X-Originating-IP
-    const originatingIpRaw = parsed.headers?.get('x-originating-ip');
+    const originatingIpRaw = getHeader('x-originating-ip');
     const originatingIp = originatingIpRaw
         ? String(originatingIpRaw).replace(/[\[\]]/g, '').trim()
         : null;
 
     // Authentication-Results (SPF / DKIM / DMARC)
-    const authResultsRaw = parsed.headers?.get('authentication-results');
+    const authResultsRaw = getHeader('authentication-results');
     const authResults = authResultsRaw ? String(authResultsRaw).trim() : null;
 
     // Sending server from first Received header
@@ -68,25 +103,31 @@ export async function parseEml(filePath) {
         ? receivedChain[receivedChain.length - 1].date || null
         : null;
 
-    // Extract attachments (skip inline images with content-id used in HTML)
+    // Extract attachments
     const attachments = (parsed.attachments || []).map(att => ({
         filename: att.filename || `attachment_${Date.now()}`,
-        contentType: att.contentType || 'application/octet-stream',
-        size: att.size || att.content.length,
-        content: att.content, // Buffer
+        contentType: att.mimeType || 'application/octet-stream',
+        size: att.content?.byteLength || att.content?.length || 0,
+        content: Buffer.from(att.content), // postal-mime gives ArrayBuffer/Uint8Array
     }));
+
+    // postal-mime uses .from/.to as {name, address} or arrays
+    const from = parsed.from ? formatAddresses(Array.isArray(parsed.from) ? parsed.from : [parsed.from]) : '';
+    const to = parsed.to ? formatAddresses(Array.isArray(parsed.to) ? parsed.to : [parsed.to]) : '';
+    const cc = parsed.cc ? formatAddresses(Array.isArray(parsed.cc) ? parsed.cc : [parsed.cc]) : '';
+    const bcc = parsed.bcc ? formatAddresses(Array.isArray(parsed.bcc) ? parsed.bcc : [parsed.bcc]) : '';
 
     return {
         messageId: cleanId(parsed.messageId),
         inReplyTo: cleanId(parsed.inReplyTo),
         references: parseReferences(parsed.references),
-        from: formatAddresses(parsed.from),
-        to: formatAddresses(parsed.to),
-        cc: formatAddresses(parsed.cc),
-        bcc: formatAddresses(parsed.bcc),
+        from,
+        to,
+        cc,
+        bcc,
         subject: parsed.subject || '(no subject)',
-        date: parsed.date ? parsed.date.toISOString() : null,
-        textBody: parsed.text || '',
+        date: parsed.date ? new Date(parsed.date).toISOString() : null,
+        textBody: parsed.text || stripHtml(parsed.html) || '',
         htmlBody: parsed.html || '',
         // Transport metadata
         headersRaw,
@@ -103,10 +144,9 @@ export async function parseEml(filePath) {
  * Parse Received header(s) into structured hop objects.
  * Each hop: { from, by, with, date }
  */
-function parseReceivedHeaders(raw) {
-    if (!raw) return [];
+function parseReceivedHeaders(entries) {
+    if (!entries || entries.length === 0) return [];
 
-    const entries = Array.isArray(raw) ? raw : [raw];
     const hops = [];
 
     for (const entry of entries) {
