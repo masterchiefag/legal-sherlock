@@ -266,4 +266,10 @@ db.exec(`
   END;
 `);
 
+// Read-only connection for queries — doesn't block on write locks during imports
+const readDb = new Database(DB_PATH, { readonly: true });
+readDb.pragma('journal_mode = WAL');
+readDb.pragma('busy_timeout = 1000');
+
+export { readDb };
 export default db;
