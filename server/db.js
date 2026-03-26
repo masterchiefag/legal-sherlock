@@ -207,6 +207,11 @@ if (!columnExists('import_jobs', 'phase')) {
   console.log(`✦ Migration: added column import_jobs.phase`);
 }
 
+if (!columnExists('import_jobs', 'filepath')) {
+  db.exec(`ALTER TABLE import_jobs ADD COLUMN filepath TEXT`);
+  console.log(`✦ Migration: added column import_jobs.filepath`);
+}
+
 // ═══════════════════════════════════════════════════
 // Rebuild FTS to include email fields
 // ═══════════════════════════════════════════════════
