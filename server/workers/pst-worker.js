@@ -4,6 +4,7 @@ import { promisify } from 'util';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
+import fsp from 'fs/promises';
 import crypto from 'crypto';
 import os from 'os';
 import { fileURLToPath } from 'url';
@@ -17,17 +18,18 @@ const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
 
-const { jobId, filename, filepath, originalname, investigation_id } = workerData;
+const { jobId, filename, filepath, originalname, investigation_id, resume } = workerData;
+
+// Adaptive concurrency — only parallelize for large imports
+const PHASE2_CONCURRENCY = 4;
+const DB_BATCH_SIZE = 100;
 
 let totalEmails = 0;
 let totalAttachments = 0;
 let errorLog = [];
-
-// Batch size for transaction commits
-const BATCH_SIZE = 50;
 let batchBuffer = [];
 
-// Prepared statements for Phase 1
+// Prepared statements
 const insertEmail = db.prepare(`
     INSERT INTO documents (
         id, filename, original_name, mime_type, size_bytes, text_content, status,
@@ -62,11 +64,14 @@ const updateDocText = db.prepare(
     "UPDATE documents SET text_content = ?, status = 'ready' WHERE id = ?"
 );
 
+const updateDocMeta = db.prepare(
+    `UPDATE documents SET doc_author = ?, doc_title = ?, doc_created_at = ?,
+     doc_modified_at = ?, doc_creator_tool = ?, doc_keywords = ? WHERE id = ?`
+);
+
 // Batched transaction wrapper
 const flushBatch = db.transaction((ops) => {
-    for (const op of ops) {
-        op();
-    }
+    for (const op of ops) op();
 });
 
 function flushPendingOps() {
@@ -75,7 +80,9 @@ function flushPendingOps() {
     batchBuffer = [];
 }
 
-// Recursively find all .eml files in a directory
+// In-memory hash set for fast dedup within this import
+const seenHashes = new Set();
+
 function findEmlFiles(dir) {
     const results = [];
     const entries = fs.readdirSync(dir, { withFileTypes: true });
@@ -90,25 +97,34 @@ function findEmlFiles(dir) {
     return results;
 }
 
+// Bounded concurrency helper
+async function runConcurrent(items, concurrency, fn) {
+    let index = 0;
+    async function worker() {
+        while (index < items.length) {
+            const i = index++;
+            await fn(items[i], i);
+        }
+    }
+    await Promise.all(Array.from({ length: Math.min(concurrency, items.length) }, () => worker()));
+}
+
 async function main() {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pst-import-'));
 
     try {
         db.prepare("UPDATE import_jobs SET status = 'processing', phase = 'importing' WHERE id = ?").run(jobId);
 
-        // ═══════════════════════════════════════════
         // Disable FTS triggers for bulk import
-        // ═══════════════════════════════════════════
         db.exec('DROP TRIGGER IF EXISTS documents_ai');
         db.exec('DROP TRIGGER IF EXISTS documents_au');
         console.log('✦ PST Import: disabled FTS triggers for bulk import');
 
         // ═══════════════════════════════════════════
-        // Phase 1a: Run readpst to extract .eml files
+        // Phase 0: Run readpst to extract .eml files
         // ═══════════════════════════════════════════
         console.log(`✦ PST Import: extracting with readpst: ${filepath}`);
 
-        // Verify readpst is installed
         try {
             await execFileAsync('which', ['readpst']);
         } catch (_) {
@@ -117,11 +133,10 @@ async function main() {
 
         try {
             await execFileAsync('readpst', ['-e', '-D', '-o', tmpDir, filepath], {
-                maxBuffer: 50 * 1024 * 1024, // 50MB stdout buffer
-                timeout: 30 * 60 * 1000, // 30 min timeout
+                maxBuffer: 50 * 1024 * 1024,
+                timeout: 30 * 60 * 1000,
             });
         } catch (err) {
-            // readpst may exit non-zero but still produce valid output
             const emlCount = findEmlFiles(tmpDir).length;
             if (emlCount === 0) {
                 throw new Error(`readpst failed: ${err.stderr?.substring(0, 500) || err.message}`);
@@ -133,18 +148,40 @@ async function main() {
         console.log(`✦ PST Import: readpst extracted ${emlFiles.length} .eml files`);
 
         // ═══════════════════════════════════════════
-        // Phase 1b: Parse each .eml and insert into DB
+        // Phase 1: Parse .eml files sequentially, async file writes
+        // Sequential because: threading/backfill needs consistent DB state,
+        // and SQLite single-writer means concurrent DB ops just contend.
+        // Optimization: async file writes + in-memory dedup hash set.
+        // Resume mode: skip emails already imported (by message_id).
         // ═══════════════════════════════════════════
+
+        // Build set of already-imported message_ids for resume
+        const knownMessageIds = new Set();
+        if (resume) {
+            const existing = db.prepare(
+                "SELECT message_id FROM documents WHERE investigation_id = ? AND doc_type = 'email' AND message_id IS NOT NULL"
+            ).all(investigation_id);
+            for (const row of existing) knownMessageIds.add(row.message_id);
+            console.log(`✦ PST Import (RESUME): ${knownMessageIds.size} emails already imported, will skip`);
+        }
+        let skipped = 0;
+
         console.log('✦ PST Import Phase 1: Importing emails and attachments...');
 
         for (const emlPath of emlFiles) {
             try {
                 const eml = await parseEml(emlPath);
-                processEmail(eml);
+
+                // Skip already-imported emails in resume mode
+                if (resume && eml.messageId && knownMessageIds.has(eml.messageId)) {
+                    skipped++;
+                    continue;
+                }
+
+                await processEmail(eml);
                 totalEmails++;
 
-                // Flush batch and update progress periodically
-                if (totalEmails === 1 || totalEmails % BATCH_SIZE === 0) {
+                if (totalEmails === 1 || totalEmails % DB_BATCH_SIZE === 0) {
                     flushPendingOps();
                     updateProgress.run(totalEmails, totalAttachments, 'importing', jobId);
                     console.log(`✦ PST Import: ${totalEmails} emails, ${totalAttachments} attachments processed`);
@@ -154,34 +191,30 @@ async function main() {
             }
         }
 
-        // Flush any remaining batched operations
         flushPendingOps();
         updateProgress.run(totalEmails, totalAttachments, 'importing', jobId);
+        console.log(`✦ PST Import Phase 1 complete: ${totalEmails} new emails, ${totalAttachments} attachments${resume ? `, ${skipped} skipped (already imported)` : ''}`);
 
-        console.log(`✦ PST Import Phase 1 complete: ${totalEmails} emails, ${totalAttachments} attachments`);
+        // Record Phase 1 completion time
+        db.prepare("UPDATE import_jobs SET phase1_completed_at = datetime('now') WHERE id = ?").run(jobId);
 
         // ═══════════════════════════════════════════
-        // Phase 2: Extract text from attachments
+        // Phase 2: Extract text from attachments (concurrent I/O, batched DB writes)
+        // Text extraction (pdf-parse, mammoth) is async I/O-bound, so concurrency helps.
+        // DB writes are collected and flushed in batches to avoid lock contention.
         // ═══════════════════════════════════════════
-        console.log('✦ PST Import Phase 2: Extracting text from attachments...');
+        console.log(`✦ PST Import Phase 2: Extracting text (concurrency=${PHASE2_CONCURRENCY})...`);
         updateProgress.run(totalEmails, totalAttachments, 'extracting', jobId);
 
         const pendingDocs = db.prepare(
-            "SELECT id, filename, mime_type FROM documents WHERE status = 'processing' AND doc_type = 'attachment'"
-        ).all();
+            "SELECT id, filename, mime_type FROM documents WHERE status = 'processing' AND doc_type = 'attachment' AND investigation_id = ?"
+        ).all(investigation_id);
 
         const totalPending = pendingDocs.length;
         let extracted = 0;
+        let extractionOps = [];
 
-        const extractionBatch = [];
-
-        // Prepare statement for updating doc metadata
-        const updateDocMeta = db.prepare(
-            `UPDATE documents SET doc_author = ?, doc_title = ?, doc_created_at = ?,
-             doc_modified_at = ?, doc_creator_tool = ?, doc_keywords = ? WHERE id = ?`
-        );
-
-        for (const doc of pendingDocs) {
+        await runConcurrent(pendingDocs, PHASE2_CONCURRENCY, async (doc) => {
             const filePath = path.join(UPLOADS_DIR, doc.filename);
             let text = '';
             try {
@@ -190,40 +223,38 @@ async function main() {
                 text = `[Could not extract text: ${e.message}]`;
             }
 
-            // Extract document metadata (author, title, dates, etc.)
             let meta = { author: null, title: null, createdAt: null, modifiedAt: null, creatorTool: null, keywords: null };
             try {
                 meta = await extractMetadata(filePath, doc.mime_type);
             } catch (_) { /* best effort */ }
 
-            extractionBatch.push(() => updateDocText.run(text, doc.id));
-            extractionBatch.push(() => updateDocMeta.run(
-                meta.author, meta.title, meta.createdAt,
-                meta.modifiedAt, meta.creatorTool, meta.keywords, doc.id
-            ));
+            const docId = doc.id;
+            extractionOps.push(
+                () => updateDocText.run(text, docId),
+                () => updateDocMeta.run(meta.author, meta.title, meta.createdAt, meta.modifiedAt, meta.creatorTool, meta.keywords, docId)
+            );
             extracted++;
 
-            // Flush extraction batch every 20 documents
-            if (extractionBatch.length >= 20) {
-                db.transaction((ops) => { for (const op of ops) op(); })(extractionBatch);
-                extractionBatch.length = 0;
+            // Flush DB writes in batches — all at once, not per-document
+            if (extractionOps.length >= DB_BATCH_SIZE) {
+                const ops = extractionOps;
+                extractionOps = [];
+                flushBatch(ops);
             }
 
-            if (extracted % 5 === 0 || extracted === totalPending) {
+            if (extracted % 50 === 0 || extracted === totalPending) {
                 const pct = Math.round((extracted / totalPending) * 100);
                 updateExtractionProgress.run(pct, jobId);
+                console.log(`✦ PST Import Phase 2: ${extracted}/${totalPending} (${pct}%)`);
             }
-        }
+        });
 
-        // Flush remaining extraction batch
-        if (extractionBatch.length > 0) {
-            db.transaction((ops) => { for (const op of ops) op(); })(extractionBatch);
-        }
+        if (extractionOps.length > 0) flushBatch(extractionOps);
 
         console.log(`✦ PST Import Phase 2 complete: extracted text from ${extracted} attachments`);
 
         // ═══════════════════════════════════════════
-        // Recreate FTS INSERT trigger + rebuild index
+        // Recreate FTS triggers + rebuild index
         // ═══════════════════════════════════════════
         console.log('✦ Rebuilding FTS index...');
         db.exec(`
@@ -257,7 +288,6 @@ async function main() {
 
     } catch (err) {
         console.error("Worker fatal error:", err);
-        // Ensure FTS triggers are restored even on failure
         try {
             db.exec(`
                 CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
@@ -284,7 +314,6 @@ async function main() {
             WHERE id = ?
         `).run(JSON.stringify([{ error: err.message, fatal: true }]), jobId);
     } finally {
-        // Clean up temp directory
         try {
             fs.rmSync(tmpDir, { recursive: true, force: true });
             console.log('✦ PST Import: cleaned up temp directory');
@@ -292,17 +321,15 @@ async function main() {
     }
 }
 
-function processEmail(eml) {
+async function processEmail(eml) {
     const emailId = uuidv4();
     const emailFilename = `${emailId}.eml`;
-
     const textBody = eml.textBody || '';
     const sizeBytes = textBody.length;
     const subject = eml.subject || '(no subject)';
 
     const threadId = resolveThreadId(eml.messageId, eml.inReplyTo, eml.references);
 
-    // Queue email insert into batch (with transport metadata)
     batchBuffer.push(() => {
         insertEmail.run(
             emailId, emailFilename, `${originalname} — ${subject}`, 'message/rfc822', sizeBytes, textBody,
@@ -317,43 +344,38 @@ function processEmail(eml) {
 
     batchBuffer.push(() => backfillThread(threadId, eml.messageId, eml.references));
 
-    // Write attachments to disk
+    // Write attachments async, hash in-memory for dedup
+    const writePromises = [];
+
     for (const att of eml.attachments) {
         const attId = uuidv4();
         const attExt = path.extname(att.filename) || '.bin';
         const attFilename = `${attId}${attExt}`;
         const attPath = path.join(UPLOADS_DIR, attFilename);
 
-        fs.writeFileSync(attPath, att.content);
+        // Hash in memory — check in-memory set instead of DB query per attachment
+        const attHash = crypto.createHash('md5').update(att.content).digest('hex');
+        const isDuplicate = seenHashes.has(attHash) ? 1 : 0;
+        seenHashes.add(attHash);
 
-        // Compute content hash for deduplication
-        const attContent = att.content;
-        const attHash = crypto.createHash('md5').update(attContent).digest('hex');
-        const existingWithHash = db.prepare(`SELECT id FROM documents WHERE content_hash = ? AND investigation_id = ? LIMIT 1`).get(attHash, investigation_id);
-        const isDuplicate = existingWithHash ? 1 : 0;
-
-        const capturedAttId = attId;
-        const capturedAttFilename = attFilename;
-        const capturedAttName = att.filename;
-        const capturedContentType = att.contentType;
-        const capturedSize = att.size;
-        const capturedEmailId = emailId;
-        const capturedThreadId = threadId;
-        const capturedHash = attHash;
-        const capturedIsDuplicate = isDuplicate;
+        // Async file write (non-blocking)
+        writePromises.push(fsp.writeFile(attPath, att.content));
 
         batchBuffer.push(() => {
             insertAttachment.run(
-                capturedAttId, capturedAttFilename, capturedAttName,
-                capturedContentType, capturedSize,
-                capturedEmailId, capturedThreadId,
+                attId, attFilename, att.filename,
+                att.contentType, att.size,
+                emailId, threadId,
                 null, null, null, null, null, null,
-                capturedHash, capturedIsDuplicate, investigation_id
+                attHash, isDuplicate, investigation_id
             );
         });
 
         totalAttachments++;
     }
+
+    // Wait for all file writes to finish before moving to next email
+    if (writePromises.length > 0) await Promise.all(writePromises);
 }
 
 // Start worker

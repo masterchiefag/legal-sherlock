@@ -405,6 +405,9 @@ function Search({ activeInvestigationId, addToast }) {
                             )}
                         </div>
                     </div>
+                    <div className="text-xs text-muted" style={{ marginTop: '10px', fontStyle: 'italic' }}>
+                        Tip: Re-run with a different model and the same prompt to compare results in AI Logs → Model Comparison
+                    </div>
                 </div>
             )}
 

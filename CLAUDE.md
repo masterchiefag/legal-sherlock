@@ -1,6 +1,6 @@
 # Sherlock
 
-eDiscovery platform for uploading, searching, reviewing, and tagging documents for litigation and compliance workflows.
+eDiscovery platform for uploading, searching, reviewing, and tagging documents for litigation and compliance workflows. Supports multi-case investigations with email threading, deduplication, and AI-powered relevance scoring.
 
 ## Dev Commands
 
@@ -19,7 +19,7 @@ No test framework or linter is configured.
 - **Frontend**: React 18, React Router, Vite
 - **Backend**: Express.js (Node.js, ES modules)
 - **Database**: SQLite via better-sqlite3 (WAL mode, foreign keys enabled)
-- **Document processing**: pdf-parse, mammoth (DOCX), mailparser, pst-extractor
+- **Document processing**: pdf-parse, mammoth (DOCX), mailparser, readpst (native CLI for PST)
 - **File uploads**: Multer (5GB limit)
 - **AI classification**: Pluggable LLM providers (Ollama, OpenAI, Anthropic)
 - **Package manager**: npm
@@ -28,11 +28,18 @@ No test framework or linter is configured.
 
 ```
 src/                    # React frontend
-  pages/                # Page components (Dashboard, Upload, Search, DocumentReview, ClassificationLogs)
+  pages/                # Page components
+    Dashboard.jsx       # Overview stats, recent uploads
+    Upload.jsx          # File upload with progress, PST import
+    Search.jsx          # FTS5 search with filters, batch AI classify
+    DocumentReview.jsx  # Document viewer with inline PDF/image rendering
+    ClassificationLogs.jsx  # AI classification logs + model comparison
+    Investigations.jsx  # Case/investigation CRUD and management
+    Playground.jsx      # Interactive LLM testing interface
   utils/                # Shared utilities
     format.js           # formatSize, getScoreColor, getScoreLabel
     sanitize.js         # escapeHtml, highlightText (XSS-safe)
-  App.jsx               # Root layout with sidebar + routing
+  App.jsx               # Root layout with sidebar + routing + investigation context
   main.jsx              # Entry point
   index.css             # Global styles with CSS variables
 
@@ -44,15 +51,17 @@ server/                 # Express backend
     search.js           # FTS5 full-text search with filters
     tags.js             # Tag CRUD
     reviews.js          # Document review status + dashboard stats
-    classify.js         # AI classification + batch ops + logs
+    classify.js         # AI classification + batch ops + logs + model comparison
+    investigations.js   # Investigation/case CRUD with aggregated stats
+    playground.js       # Freeform LLM queries with model/temperature selection
   lib/                  # Utilities
     extract.js          # Text extraction (PDF, DOCX, TXT, CSV, MD)
     eml-parser.js       # .eml email parsing
     pst-parser.js       # Outlook PST folder walking
-    llm-providers.js    # LLM provider abstraction
+    llm-providers.js    # LLM provider abstraction (Ollama, OpenAI, Anthropic)
     threading.js        # Email thread resolution and backfill
   workers/
-    pst-worker.js       # Background PST extraction (Worker thread)
+    pst-worker.js       # Background PST extraction via native readpst CLI
 
 uploads/                # Uploaded files (git-ignored)
 data/                   # SQLite database (git-ignored)
@@ -77,7 +86,18 @@ Conventional commits with imperative mood:
 
 ## Database
 
-SQLite at `data/ediscovery.db`. Programmatic migrations in `server/db.js` using a `columnExists()` helper to add columns idempotently. Key tables: `documents`, `tags`, `document_tags`, `document_reviews`, `classifications`, `import_jobs`, `documents_fts` (FTS5 virtual table with auto-sync triggers).
+SQLite at `data/ediscovery.db`. Programmatic migrations in `server/db.js` using a `columnExists()` helper to add columns idempotently.
+
+Key tables:
+- `documents` — Core document store with email metadata, threading, deduplication, and investigation scoping
+- `investigations` — Case management (name, description, status, allegation, key_parties, date_range)
+- `classifications` — AI scores with model, elapsed time, reasoning, investigation_prompt
+- `tags`, `document_tags` — Tagging system
+- `document_reviews` — Review status tracking (pending/relevant/not_relevant/privileged)
+- `import_jobs` — PST import job tracking with phase and investigation_id
+- `documents_fts` — FTS5 virtual table (original_name, text_content, email_subject, email_from, email_to) with auto-sync triggers
+
+Notable document columns: `doc_type` (file/email/attachment), `parent_id` (attachment→email), `thread_id`, `message_id`, `in_reply_to`, `email_references`, `content_hash`, `is_duplicate`, `investigation_id`, full email headers (from/to/cc/bcc/subject/date), document metadata (author/title/created_at/keywords).
 
 ## Environment Variables
 
@@ -94,8 +114,13 @@ SQLite at `data/ediscovery.db`. Programmatic migrations in `server/db.js` using 
 
 ## Key Patterns
 
-- **PST import**: Background Worker thread (`pst-worker.js`) with job tracking in `import_jobs` table, polled from frontend every 3s
-- **Email threading**: Resolves `thread_id` via `In-Reply-To`/`References` headers with backfill for late-arriving emails
-- **Search**: FTS5 with support for OR, exact phrases, and exclusion operators; filterable by status, tags, date range, doc_type, and AI score
-- **AI classification**: Scores documents 1-5 with reasoning, tracks elapsed time; supports batch classification from search results
+- **Investigations**: Multi-case support; all documents, imports, and searches scoped to active investigation via `investigation_id`; default "General Investigation" for backward compatibility; investigation selector in sidebar
+- **PST import**: Two-phase ingestion via native `readpst -e -D` CLI — Phase 1 parses emails + writes attachments, Phase 2 extracts text; job tracking in `import_jobs` table, polled from frontend every 3s
+- **Email threading**: Resolves `thread_id` via `In-Reply-To`/`References` headers with exact message-ID matching; backfill unifies orphan threads on late-arriving emails
+- **Email hierarchy**: `doc_type` (file/email/attachment) with `parent_id` linking attachments to parent emails
+- **Deduplication**: SHA256 `content_hash` on upload; `is_duplicate` flag for duplicate detection
+- **Search**: FTS5 with support for AND (implicit), OR, exact phrases, and exclusion operators; filterable by status, tags, date range, doc_type, AI score, and investigation; search state persisted in URL params for back-button support
+- **AI classification**: Scores documents 1-5 with reasoning via pluggable LLM providers; supports batch classification from search results; model comparison via AI Logs page
+- **LLM Playground**: Freeform model testing with configurable temperature, max tokens, context window, and system prompts
 - **Text extraction**: `server/lib/extract.js` dispatches by file extension with graceful fallback on parse failure
+- **Document viewer**: Inline rendering for PDFs (`<object>` tag) and images; fallback to extracted text; "Open in new tab" link for PDFs

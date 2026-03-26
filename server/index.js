@@ -11,6 +11,7 @@ import tagsRouter from './routes/tags.js';
 import reviewsRouter from './routes/reviews.js';
 import classifyRouter from './routes/classify.js';
 import investigationsRouter from './routes/investigations.js';
+import playgroundRouter from './routes/playground.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
@@ -50,6 +51,7 @@ app.use('/api/tags', tagsRouter);
 app.use('/api/reviews', reviewsRouter);
 app.use('/api/classify', classifyRouter);
 app.use('/api/investigations', investigationsRouter);
+app.use('/api/playground', playgroundRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {

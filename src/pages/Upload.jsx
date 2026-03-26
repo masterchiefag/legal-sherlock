@@ -8,9 +8,31 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
     const [uploadProgress, setUploadProgress] = useState(0);
     const [results, setResults] = useState([]);
     const [activeJob, setActiveJob] = useState(null);
+    const [failedJobs, setFailedJobs] = useState([]);
     const [dragActive, setDragActive] = useState(false);
     const inputRef = useRef(null);
     const navigate = useNavigate();
+
+    // Load recent jobs for this investigation on mount
+    useEffect(() => {
+        if (!activeInvestigationId) return;
+        fetch(`/api/documents/jobs/recent/${activeInvestigationId}`)
+            .then(r => r.json())
+            .then(data => {
+                const jobs = data.jobs || [];
+                setFailedJobs(jobs.filter(j => j.status === 'failed'));
+                // Resume polling for in-progress jobs, or show the latest completed one
+                const active = jobs.find(j => j.status === 'processing' || j.status === 'pending');
+                const recent = jobs.find(j => j.status === 'completed');
+                if (active) {
+                    setActiveJob(active);
+                    pollJobStatus(active.id);
+                } else if (recent) {
+                    setActiveJob(recent);
+                }
+            })
+            .catch(() => {});
+    }, [activeInvestigationId]);
 
     const pollJobStatus = async (jobId) => {
         try {
@@ -124,6 +146,15 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
     };
 
     const [elapsed, setElapsed] = useState('');
+    const [phase1Time, setPhase1Time] = useState('');
+    const [phase2Time, setPhase2Time] = useState('');
+
+    const formatDuration = (ms) => {
+        const secs = Math.floor(ms / 1000);
+        const m = Math.floor(secs / 60);
+        const s = secs % 60;
+        return m > 0 ? `${m}m ${s}s` : `${s}s`;
+    };
 
     useEffect(() => {
         if (!activeJob?.started_at || activeJob.status === 'failed') return;
@@ -132,16 +163,44 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
             const end = activeJob.completed_at
                 ? new Date(activeJob.completed_at + 'Z').getTime()
                 : Date.now();
-            const secs = Math.floor((end - start) / 1000);
-            const m = Math.floor(secs / 60);
-            const s = secs % 60;
-            setElapsed(m > 0 ? `${m}m ${s}s` : `${s}s`);
+            setElapsed(formatDuration(end - start));
+
+            // Phase 1 time: started_at → phase1_completed_at
+            if (activeJob.phase1_completed_at) {
+                const p1End = new Date(activeJob.phase1_completed_at + 'Z').getTime();
+                setPhase1Time(formatDuration(p1End - start));
+                // Phase 2 time: phase1_completed_at → completed_at (or now)
+                const p2End = activeJob.completed_at
+                    ? new Date(activeJob.completed_at + 'Z').getTime()
+                    : Date.now();
+                setPhase2Time(formatDuration(p2End - p1End));
+            } else {
+                setPhase1Time('');
+                setPhase2Time('');
+            }
         };
         update();
         if (activeJob.status === 'completed') return;
         const id = setInterval(update, 1000);
         return () => clearInterval(id);
-    }, [activeJob?.started_at, activeJob?.completed_at, activeJob?.status]);
+    }, [activeJob?.started_at, activeJob?.completed_at, activeJob?.phase1_completed_at, activeJob?.status]);
+
+    const resumeJob = async (jobId) => {
+        try {
+            const res = await fetch(`/api/documents/jobs/${jobId}/resume`, { method: 'POST' });
+            const data = await res.json();
+            if (res.ok) {
+                addToast('Import resumed', 'info');
+                setFailedJobs(prev => prev.filter(j => j.id !== jobId));
+                setActiveJob({ id: jobId, status: 'processing', phase: 'importing' });
+                pollJobStatus(jobId);
+            } else {
+                addToast(data.error || 'Resume failed', 'error');
+            }
+        } catch (err) {
+            addToast('Resume failed: ' + err.message, 'error');
+        }
+    };
 
     const getFileExt = (name) => name.split('.').pop().toLowerCase();
 
@@ -160,6 +219,37 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                 <span className="text-secondary" style={{ fontSize: '13px' }}>Uploading to:</span>
                 <span className="fw-bold" style={{ fontSize: '14px', color: 'var(--primary)' }}>{activeInvestigation?.name || 'Active Case'}</span>
             </div>
+
+            {/* Failed Jobs — Resume */}
+            {failedJobs.length > 0 && !activeJob && (
+                <div className="mb-24">
+                    {failedJobs.map(job => (
+                        <div key={job.id} className="p-16 mb-12" style={{ background: 'var(--bg-secondary)', borderRadius: '12px', border: '1px solid var(--warning)', borderLeftWidth: '4px' }}>
+                            <div className="flex items-center justify-between">
+                                <div>
+                                    <div className="flex items-center gap-8">
+                                        <span style={{ color: 'var(--warning)', fontSize: '16px' }}>⚠</span>
+                                        <span className="fw-bold text-primary">{job.filename}</span>
+                                        <span className="text-sm text-muted">— Import failed</span>
+                                    </div>
+                                    <p className="text-sm text-muted m-0 mt-4">
+                                        {job.total_emails || 0} emails, {job.total_attachments || 0} attachments imported before failure.
+                                        {job.total_emails > 0 && ' Resume will skip already-imported emails.'}
+                                    </p>
+                                </div>
+                                <div className="flex gap-8">
+                                    <button className="btn btn-primary btn-sm" onClick={() => resumeJob(job.id)}>
+                                        ↻ Resume
+                                    </button>
+                                    <button className="btn btn-ghost btn-sm" onClick={() => setFailedJobs(prev => prev.filter(j => j.id !== job.id))}>
+                                        Dismiss
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    ))}
+                </div>
+            )}
 
             {/* Dropzone */}
             <div
@@ -187,7 +277,10 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                     <strong>Drop files here</strong> or click to browse
                 </p>
                 <p className="dropzone-sub">
-                    Supports PDF, DOCX, TXT, CSV, MD, EML, PST — up to 500MB each
+                    Supports PDF, DOCX, TXT, CSV, MD, EML, PST
+                </p>
+                <p className="dropzone-sub" style={{ fontSize: '11px', marginTop: '4px', color: 'var(--text-muted)' }}>
+                    💡 For large PST files, keep your laptop awake during import (run <code>caffeinate -i</code> in Terminal)
                 </p>
             </div>
 
@@ -299,8 +392,20 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                                 </div>
                                 {elapsed && (
                                     <div>
-                                        <p className="text-xs text-muted m-0 uppercase tracking-wide">Elapsed</p>
+                                        <p className="text-xs text-muted m-0 uppercase tracking-wide">Total Time</p>
                                         <p className="text-lg fw-bold m-0">{elapsed}</p>
+                                    </div>
+                                )}
+                                {phase1Time && (
+                                    <div>
+                                        <p className="text-xs text-muted m-0 uppercase tracking-wide">Phase 1 (Import)</p>
+                                        <p className="text-lg fw-bold m-0">{phase1Time}</p>
+                                    </div>
+                                )}
+                                {phase2Time && (
+                                    <div>
+                                        <p className="text-xs text-muted m-0 uppercase tracking-wide">Phase 2 (Extract)</p>
+                                        <p className="text-lg fw-bold m-0">{phase2Time}</p>
                                     </div>
                                 )}
                             </div>
