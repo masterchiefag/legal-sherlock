@@ -20,8 +20,8 @@ class OllamaProvider {
     get modelName() { return this.model; }
 
     async classify(systemPrompt, documentContent, overrideModel = null) {
-        const fullPrompt = `${systemPrompt}\n\n--- DOCUMENT START ---\n${documentContent}\n--- DOCUMENT END ---\n\nRespond ONLY with valid JSON in this exact format: {"score": <1-5>, "reasoning": "<brief explanation>"}`;
         const activeModel = overrideModel || this.model;
+        const fullPrompt = `${systemPrompt}\n\n--- DOCUMENT START ---\n${documentContent}\n--- DOCUMENT END ---\n\nRespond ONLY with valid JSON in this exact format: {"score": <1-5>, "reasoning": "<brief explanation>"}`;
 
         const response = await fetch(`${this.baseUrl}/api/generate`, {
             method: 'POST',
