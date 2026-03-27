@@ -22,9 +22,18 @@ export function highlightText(text, searchTerm) {
     const escaped = escapeHtml(text);
     if (!searchTerm?.trim()) return escaped;
 
-    const safeSearch = searchTerm.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    // Split search term into individual words, strip FTS operators and quotes
+    const FTS_OPERATORS = new Set(['AND', 'OR', 'NOT', 'NEAR']);
+    const words = searchTerm.trim().split(/\s+/)
+        .filter(Boolean)
+        .filter(w => !FTS_OPERATORS.has(w.toUpperCase()))
+        .map(w => w.replace(/^["']+|["']+$/g, ''))  // strip surrounding quotes
+        .filter(w => w.length > 0);
+    if (words.length === 0) return escaped;
+    const safeWords = words.map(w => w.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'));
+    const pattern = safeWords.join('|');
     return escaped.replace(
-        new RegExp(`(${safeSearch})`, 'gi'),
+        new RegExp(`(${pattern})`, 'gi'),
         '<mark>$1</mark>'
     );
 }

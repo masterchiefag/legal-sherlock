@@ -25,9 +25,14 @@ const { jobId, filename, filepath, originalname, investigation_id, resume } = wo
 const PARSE_CONCURRENCY = Math.max(2, Math.min(os.cpus().length - 1, 6));
 const PHASE2_CONCURRENCY = 4;
 const DB_BATCH_SIZE = 100;
+const MAX_ATTACHMENT_SIZE = 100 * 1024 * 1024; // 100MB — skip writing larger files to disk
 
-let totalEmails = 0;
-let totalAttachments = 0;
+// Initialize from existing job counts on resume so UI doesn't reset to 0
+const existingJob = resume
+    ? db.prepare('SELECT total_emails, total_attachments FROM import_jobs WHERE id = ?').get(jobId)
+    : null;
+let totalEmails = existingJob?.total_emails || 0;
+let totalAttachments = existingJob?.total_attachments || 0;
 let errorLog = [];
 let batchBuffer = [];
 
@@ -84,6 +89,7 @@ function flushPendingOps() {
 
 // In-memory hash set for fast dedup within this import
 const seenHashes = new Map(); // hash → filename (so duplicates can reference existing file)
+const seenMessageIds = new Set(); // deduplicate emails by message_id (OST/PST store same email in multiple folders)
 
 function findEmlFiles(dir) {
     const results = [];
@@ -115,7 +121,7 @@ async function main() {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pst-import-'));
 
     try {
-        db.prepare("UPDATE import_jobs SET status = 'processing', phase = 'importing' WHERE id = ?").run(jobId);
+        db.prepare("UPDATE import_jobs SET status = 'processing', phase = 'reading' WHERE id = ?").run(jobId);
 
         // Disable FTS triggers for bulk import
         db.exec('DROP TRIGGER IF EXISTS documents_ai');
@@ -148,6 +154,9 @@ async function main() {
 
         const emlFiles = findEmlFiles(tmpDir);
         console.log(`✦ PST Import: readpst extracted ${emlFiles.length} .eml files`);
+
+        // Store total eml count and switch to importing phase
+        db.prepare("UPDATE import_jobs SET total_eml_files = ?, phase = 'importing' WHERE id = ?").run(emlFiles.length, jobId);
 
         // ═══════════════════════════════════════════
         // Phase 1: Parse .eml files sequentially, async file writes
@@ -192,6 +201,11 @@ async function main() {
             console.log(`✦ PST Import (RESUME): skipped ${skipped} in ${Date.now() - scanStart}ms, ${filesToProcess.length} to process`);
         }
 
+        // Seed message_id dedup set from known emails (covers resume + multi-folder dedup)
+        if (knownMessageIds.size > 0) {
+            for (const mid of knownMessageIds) seenMessageIds.add(mid);
+        }
+
         // Initialize threading cache — avoids 3-5 DB SELECTs per email
         initCache(investigation_id);
 
@@ -199,6 +213,12 @@ async function main() {
         for (const emlPath of filesToProcess) {
             try {
                 const eml = await parseEml(emlPath);
+
+                // Skip duplicate emails (same message in multiple Outlook folders)
+                if (eml.messageId && seenMessageIds.has(eml.messageId)) {
+                    continue;
+                }
+                if (eml.messageId) seenMessageIds.add(eml.messageId);
 
                 await processEmail(eml);
                 totalEmails++;
@@ -237,6 +257,11 @@ async function main() {
         let extractionOps = [];
 
         await runConcurrent(pendingDocs, PHASE2_CONCURRENCY, async (doc) => {
+            // Skip text extraction for oversized files (no file on disk)
+            if (!doc.filename) {
+                extracted++;
+                return;
+            }
             const filePath = path.join(UPLOADS_DIR, doc.filename);
             let text = '';
             try {
@@ -308,6 +333,14 @@ async function main() {
             WHERE id = ?
         `).run(totalEmails, totalAttachments, JSON.stringify(errorLog), jobId);
 
+        // Auto-cleanup: delete source PST/OST file after successful import
+        try {
+            fs.unlinkSync(filepath);
+            console.log('✦ PST Import: deleted source file to free disk space');
+        } catch (e) {
+            console.warn('✦ PST Import: could not delete source file:', e.message);
+        }
+
     } catch (err) {
         console.error("Worker fatal error:", err);
         try {
@@ -375,13 +408,18 @@ async function processEmail(eml) {
         const attFilename = `${attId}${attExt}`;
         const attPath = path.join(UPLOADS_DIR, attFilename);
 
-        // Hash in memory — check in-memory map instead of DB query per attachment
-        const attHash = crypto.createHash('md5').update(att.content).digest('hex');
-        const isDuplicate = seenHashes.has(attHash) ? 1 : 0;
+        // Skip writing large attachments to disk (>100MB) — record in DB with note
+        const isOversized = att.size > MAX_ATTACHMENT_SIZE;
 
-        // Skip file write for duplicates — reuse existing file, save ~80% of I/O
+        // Hash in memory — check in-memory map instead of DB query per attachment
+        const attHash = isOversized ? null : crypto.createHash('md5').update(att.content).digest('hex');
+        const isDuplicate = attHash && seenHashes.has(attHash) ? 1 : 0;
+
+        // Skip file write for duplicates or oversized — reuse existing file or skip entirely
         let finalFilename = attFilename;
-        if (isDuplicate) {
+        if (isOversized) {
+            finalFilename = null; // no file on disk
+        } else if (isDuplicate) {
             finalFilename = seenHashes.get(attHash); // point to existing file
         } else {
             seenHashes.set(attHash, attFilename);
@@ -389,12 +427,15 @@ async function processEmail(eml) {
         }
 
         const dbFilename = finalFilename;
+        const oversizeNote = isOversized
+            ? `[File too large: ${(att.size / 1e6).toFixed(0)}MB — raw file not saved to conserve disk space]`
+            : null;
         batchBuffer.push(() => {
             insertAttachment.run(
                 attId, dbFilename, att.filename,
                 att.contentType, att.size,
                 emailId, threadId,
-                null, null, null, null, null, null,
+                oversizeNote, null, null, null, null, null,
                 attHash, isDuplicate, investigation_id
             );
         });

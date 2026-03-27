@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { useParams, useNavigate, Link } from 'react-router-dom';
+import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { formatSize, getScoreColor, getScoreLabel } from '../utils/format';
 import { highlightText } from '../utils/sanitize';
 
@@ -20,7 +20,8 @@ function DocumentReview({ addToast }) {
     const [saving, setSaving] = useState(false);
     const [newTagName, setNewTagName] = useState('');
     const [showNewTag, setShowNewTag] = useState(false);
-    const [textSearch, setTextSearch] = useState('');
+    const [searchParams] = useSearchParams();
+    const [textSearch, setTextSearch] = useState(() => searchParams.get('q') || '');
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
 
     // AI Classification state
@@ -302,6 +303,23 @@ function DocumentReview({ addToast }) {
                     const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg'];
                     const isImage = imageExts.includes(ext);
                     const isPdf = ext === 'pdf';
+                    // Oversized files — no raw file on disk
+                    if (!doc.filename) {
+                        const sizeMB = doc.size_bytes ? (doc.size_bytes / 1e6).toFixed(0) : '?';
+                        return (
+                            <div style={{ padding: '24px', textAlign: 'center' }}>
+                                <div style={{ background: 'var(--bg-tertiary)', padding: '24px', borderRadius: '12px', border: '1px solid var(--border-secondary)', display: 'inline-block', maxWidth: '500px' }}>
+                                    <div style={{ fontSize: '36px', marginBottom: '12px' }}>📦</div>
+                                    <p style={{ color: 'var(--text-primary)', fontWeight: 600, marginBottom: '8px' }}>
+                                        Large file ({sizeMB} MB)
+                                    </p>
+                                    <p style={{ color: 'var(--text-muted)', fontSize: '13px', margin: 0 }}>
+                                        Raw file was not saved to conserve disk space. Metadata and parent email are still available.
+                                    </p>
+                                </div>
+                            </div>
+                        );
+                    }
                     if (isImage) {
                         return (
                             <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px' }}>

@@ -2,6 +2,9 @@ import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
 import { formatSize } from '../utils/format';
 
+const thStyle = { padding: '10px 14px', textAlign: 'left', fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' };
+const tdStyle = { padding: '12px 14px', color: 'var(--text-secondary)' };
+
 function Investigations({ activeInvestigationId, onInvestigationChange, addToast }) {
     const [investigations, setInvestigations] = useState([]);
     const [loading, setLoading] = useState(true);
@@ -77,54 +80,86 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
                 </button>
             </div>
 
-            <div className="grid-stats">
-                {investigations.filter(inv => inv.status !== 'archived').map(inv => {
-                    const isActive = inv.id === activeInvestigationId;
-                    return (
-                        <div key={inv.id} className={`card ${isActive ? 'ring-2 ring-primary bg-primary-10' : ''}`} style={{ display: 'flex', flexDirection: 'column', gap: '16px', position: 'relative' }}>
-                            {isActive && (
-                                <div style={{ position: 'absolute', top: '12px', right: '12px' }}>
-                                    <span className="status-badge ready">Active Case</span>
-                                </div>
-                            )}
-                            <div>
-                                <h3 className="text-lg fw-bold m-0" style={{ color: 'var(--text-primary)' }}>{inv.name}</h3>
-                                {inv.description && <p className="text-sm text-secondary mt-4 mb-0">{inv.description}</p>}
-                            </div>
-
-                            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '12px' }}>
-                                <div>
-                                    <span className="text-xs text-muted block uppercase tracking-wide">Documents</span>
-                                    <span className="text-sm fw-bold">{inv.document_count?.toLocaleString() || 0}</span>
-                                </div>
-                                <div>
-                                    <span className="text-xs text-muted block uppercase tracking-wide">Reviewed</span>
-                                    <span className="text-sm fw-bold">{inv.reviewed_count?.toLocaleString() || 0}</span>
-                                </div>
-                            </div>
-                            
-                            {(inv.date_range_start || inv.date_range_end) && (
-                                <div className="text-xs text-muted">
-                                    <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ verticalAlign: 'middle', marginRight: '4px' }}>
-                                        <rect x="3" y="4" width="18" height="18" rx="2" ry="2"></rect><line x1="16" y1="2" x2="16" y2="6"></line><line x1="8" y1="2" x2="8" y2="6"></line><line x1="3" y1="10" x2="21" y2="10"></line>
-                                    </svg>
-                                    Period: {inv.date_range_start || 'Any'} to {inv.date_range_end || 'Any'}
-                                </div>
-                            )}
-
-                            <div style={{ marginTop: 'auto', paddingTop: '16px', borderTop: '1px solid var(--border-secondary)', display: 'flex', justifyContent: 'flex-end' }}>
-                                {!isActive && (
-                                    <button className="btn btn-outline" onClick={() => {
-                                        if (onInvestigationChange) onInvestigationChange(inv.id);
-                                        addToast(`Switched to ${inv.name}`, 'success');
-                                    }}>
-                                        Switch to Case
-                                    </button>
-                                )}
-                            </div>
-                        </div>
-                    );
-                })}
+            <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
+                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                    <thead>
+                        <tr style={{ background: 'var(--bg-tertiary)', borderBottom: '1px solid var(--border-secondary)' }}>
+                            <th style={thStyle}>Case Name</th>
+                            <th style={thStyle}>Source File</th>
+                            <th style={{ ...thStyle, textAlign: 'right' }}>Emails</th>
+                            <th style={{ ...thStyle, textAlign: 'right' }}>Attachments</th>
+                            <th style={{ ...thStyle, textAlign: 'right' }}>Total Docs</th>
+                            <th style={thStyle}>Imported</th>
+                            <th style={thStyle}>Status</th>
+                            <th style={{ ...thStyle, textAlign: 'center' }}>Action</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {investigations.filter(inv => inv.status !== 'archived').map(inv => {
+                            const isActive = inv.id === activeInvestigationId;
+                            const jobs = inv.import_jobs || [];
+                            const latestJob = jobs[0];
+                            const sourceFiles = jobs.map(j => j.original_name).filter(Boolean);
+                            const uniqueFiles = [...new Set(sourceFiles)];
+                            return (
+                                <tr key={inv.id} style={{
+                                    borderBottom: '1px solid var(--border-secondary)',
+                                    background: isActive ? 'var(--bg-primary-subtle, rgba(99, 102, 241, 0.06))' : 'transparent'
+                                }}>
+                                    <td style={tdStyle}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            <span className="fw-bold" style={{ color: 'var(--text-primary)' }}>{inv.name}</span>
+                                            {isActive && <span className="status-badge ready" style={{ fontSize: '10px', padding: '2px 6px' }}>Active</span>}
+                                        </div>
+                                        {inv.description && <div className="text-xs text-muted" style={{ marginTop: '2px' }}>{inv.description}</div>}
+                                    </td>
+                                    <td style={tdStyle}>
+                                        {uniqueFiles.length > 0
+                                            ? uniqueFiles.map((f, i) => <div key={i} className="text-xs" style={{ color: 'var(--text-secondary)' }}>{f}</div>)
+                                            : <span className="text-xs text-muted">-</span>
+                                        }
+                                    </td>
+                                    <td style={{ ...tdStyle, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                                        {inv.email_count?.toLocaleString() || 0}
+                                    </td>
+                                    <td style={{ ...tdStyle, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                                        {inv.attachment_count?.toLocaleString() || 0}
+                                    </td>
+                                    <td style={{ ...tdStyle, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
+                                        {inv.document_count?.toLocaleString() || 0}
+                                    </td>
+                                    <td style={tdStyle}>
+                                        {latestJob?.completed_at
+                                            ? <span className="text-xs">{new Date(latestJob.completed_at + 'Z').toLocaleDateString()}</span>
+                                            : latestJob?.started_at
+                                                ? <span className="text-xs text-muted">{new Date(latestJob.started_at + 'Z').toLocaleDateString()}</span>
+                                                : <span className="text-xs text-muted">-</span>
+                                        }
+                                    </td>
+                                    <td style={tdStyle}>
+                                        {latestJob ? (
+                                            <span className={`status-badge ${latestJob.status === 'completed' ? 'ready' : latestJob.status === 'processing' ? 'processing' : 'error'}`} style={{ fontSize: '11px' }}>
+                                                {latestJob.status === 'completed' ? 'Imported' : latestJob.status === 'processing' ? 'Importing...' : 'Failed'}
+                                            </span>
+                                        ) : (
+                                            <span className="text-xs text-muted">No imports</span>
+                                        )}
+                                    </td>
+                                    <td style={{ ...tdStyle, textAlign: 'center' }}>
+                                        {!isActive && (
+                                            <button className="btn btn-outline btn-sm" style={{ fontSize: '11px', padding: '4px 10px' }} onClick={() => {
+                                                if (onInvestigationChange) onInvestigationChange(inv.id);
+                                                addToast(`Switched to ${inv.name}`, 'success');
+                                            }}>
+                                                Switch
+                                            </button>
+                                        )}
+                                    </td>
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                </table>
             </div>
 
             {/* Modal */}

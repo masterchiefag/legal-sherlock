@@ -20,6 +20,17 @@ router.get('/', (req, res) => {
             FROM investigations i
             ORDER BY i.created_at DESC
         `).all();
+
+        // Attach import job summaries per investigation
+        const jobStmt = db.prepare(`
+            SELECT original_name, status, total_emails, total_attachments, started_at, completed_at
+            FROM import_jobs WHERE investigation_id = ?
+            ORDER BY rowid DESC
+        `);
+        for (const inv of investigations) {
+            inv.import_jobs = jobStmt.all(inv.id);
+        }
+
         res.json(investigations);
     } catch (err) {
         console.error(err);
