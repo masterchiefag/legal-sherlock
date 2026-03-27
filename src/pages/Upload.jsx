@@ -264,7 +264,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                     ref={inputRef}
                     type="file"
                     multiple
-                    accept=".pdf,.docx,.txt,.csv,.md,.eml,.pst"
+                    accept=".pdf,.docx,.txt,.csv,.md,.eml,.pst,.ost"
                     onChange={(e) => handleFiles(e.target.files)}
                     style={{ display: 'none' }}
                 />
