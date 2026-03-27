@@ -91,6 +91,19 @@ export function resolveThreadId(messageId, inReplyTo, references) {
     return uuidv4();
 }
 
+/**
+ * Update in-memory cache only — no DB writes. Used during bulk import
+ * to defer expensive backfill operations to end of Phase 1.
+ */
+export function updateCacheOnly(threadId, messageId, references) {
+    if (messageId) msgIdToThreadId.set(messageId, threadId);
+    if (references) {
+        for (const ref of references.split(/\s+/).filter(Boolean)) {
+            referencesIndex.set(ref, threadId);
+        }
+    }
+}
+
 export function backfillThread(threadId, messageId, references) {
     if (!messageId && !references) return;
 

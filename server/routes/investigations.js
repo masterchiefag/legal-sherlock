@@ -1,6 +1,12 @@
 import express from 'express';
 import crypto from 'crypto';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 import db from '../db.js';
+
+const __dirname = path.dirname(fileURLToPath(import.meta.url));
+const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
 
 const router = express.Router();
 
@@ -23,7 +29,7 @@ router.get('/', (req, res) => {
 
         // Attach import job summaries per investigation
         const jobStmt = db.prepare(`
-            SELECT original_name, status, total_emails, total_attachments, started_at, completed_at
+            SELECT filename as original_name, status, total_emails, total_attachments, started_at, completed_at
             FROM import_jobs WHERE investigation_id = ?
             ORDER BY rowid DESC
         `);
@@ -117,14 +123,51 @@ router.put('/:id', (req, res) => {
     }
 });
 
-// Delete (archive) investigation
+// Delete investigation and all associated data
 router.delete('/:id', (req, res) => {
     try {
-        const inv = db.prepare(`SELECT * FROM investigations WHERE id = ?`).get(req.params.id);
+        const invId = req.params.id;
+        const inv = db.prepare(`SELECT * FROM investigations WHERE id = ?`).get(invId);
         if (!inv) return res.status(404).json({ error: 'Investigation not found' });
 
-        db.prepare(`UPDATE investigations SET status = 'archived', updated_at = datetime('now') WHERE id = ?`).run(req.params.id);
-        res.json({ message: 'Investigation archived' });
+        // Get all document filenames to delete from disk
+        const docs = db.prepare('SELECT filename FROM documents WHERE investigation_id = ? AND filename IS NOT NULL').all(invId);
+
+        // Delete in correct order for foreign key constraints
+        const tx = db.transaction(() => {
+            // Delete tags for these documents
+            db.prepare(`DELETE FROM document_tags WHERE document_id IN (SELECT id FROM documents WHERE investigation_id = ?)`).run(invId);
+            // Delete reviews
+            db.prepare(`DELETE FROM document_reviews WHERE document_id IN (SELECT id FROM documents WHERE investigation_id = ?)`).run(invId);
+            // Delete classifications
+            db.prepare(`DELETE FROM classifications WHERE document_id IN (SELECT id FROM documents WHERE investigation_id = ?)`).run(invId);
+            // Delete documents
+            const delResult = db.prepare('DELETE FROM documents WHERE investigation_id = ?').run(invId);
+            // Delete import jobs
+            db.prepare('DELETE FROM import_jobs WHERE investigation_id = ?').run(invId);
+            // Delete investigation
+            db.prepare('DELETE FROM investigations WHERE id = ?').run(invId);
+            return delResult.changes;
+        });
+
+        const deletedDocs = tx();
+
+        // Delete files from disk (best effort, don't fail the request)
+        let filesDeleted = 0;
+        for (const doc of docs) {
+            try {
+                const filePath = path.join(UPLOADS_DIR, doc.filename);
+                if (fs.existsSync(filePath)) {
+                    fs.unlinkSync(filePath);
+                    filesDeleted++;
+                }
+            } catch (_) { /* best effort */ }
+        }
+
+        // Rebuild FTS index
+        try { db.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')"); } catch (_) {}
+
+        res.json({ message: `Deleted ${inv.name}: ${deletedDocs} documents, ${filesDeleted} files removed from disk` });
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Internal server error' });
