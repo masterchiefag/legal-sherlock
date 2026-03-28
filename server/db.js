@@ -212,6 +212,11 @@ if (!columnExists('import_jobs', 'filepath')) {
   console.log(`✦ Migration: added column import_jobs.filepath`);
 }
 
+if (!columnExists('import_jobs', 'total_eml_files')) {
+  db.exec(`ALTER TABLE import_jobs ADD COLUMN total_eml_files INTEGER DEFAULT 0`);
+  console.log(`✦ Migration: added column import_jobs.total_eml_files`);
+}
+
 // ═══════════════════════════════════════════════════
 // Rebuild FTS to include email fields
 // ═══════════════════════════════════════════════════

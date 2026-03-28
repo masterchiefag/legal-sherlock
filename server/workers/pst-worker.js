@@ -11,7 +11,7 @@ import { fileURLToPath } from 'url';
 import db from '../db.js';
 import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
-import { resolveThreadId, backfillThread, initCache } from '../lib/threading-cached.js';
+import { resolveThreadId, backfillThread, updateCacheOnly, initCache } from '../lib/threading-cached.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -24,10 +24,15 @@ const { jobId, filename, filepath, originalname, investigation_id, resume } = wo
 // Thread pool size for parallel email parsing
 const PARSE_CONCURRENCY = Math.max(2, Math.min(os.cpus().length - 1, 6));
 const PHASE2_CONCURRENCY = 4;
-const DB_BATCH_SIZE = 100;
+const DB_BATCH_SIZE = 500; // Larger batches = fewer transactions = faster
+const MAX_ATTACHMENT_SIZE = 100 * 1024 * 1024; // 100MB — skip writing larger files to disk
 
-let totalEmails = 0;
-let totalAttachments = 0;
+// Initialize from existing job counts on resume so UI doesn't reset to 0
+const existingJob = resume
+    ? db.prepare('SELECT total_emails, total_attachments FROM import_jobs WHERE id = ?').get(jobId)
+    : null;
+let totalEmails = existingJob?.total_emails || 0;
+let totalAttachments = existingJob?.total_attachments || 0;
 let errorLog = [];
 let batchBuffer = [];
 
@@ -84,6 +89,32 @@ function flushPendingOps() {
 
 // In-memory hash set for fast dedup within this import
 const seenHashes = new Map(); // hash → filename (so duplicates can reference existing file)
+const seenMessageIds = new Set(); // deduplicate emails by message_id (OST/PST store same email in multiple folders)
+
+// ═══════════════════════════════════════════════════
+// Performance instrumentation
+// ═══════════════════════════════════════════════════
+const perfStats = {
+    parseTime: 0,      // time in parseEml()
+    threadTime: 0,     // time in resolveThreadId + backfillThread
+    hashTime: 0,       // time hashing attachments
+    writeTime: 0,      // time writing files to disk
+    dbFlushTime: 0,    // time flushing DB batches
+    dbFlushCount: 0,
+    emailCount: 0,
+    attWritten: 0,
+    attSkippedDupe: 0,
+    attSkippedSize: 0,
+    largestAttMs: 0,
+    largestAttName: '',
+};
+
+function logPerfSummary() {
+    const total = perfStats.parseTime + perfStats.threadTime + perfStats.hashTime + perfStats.writeTime + perfStats.dbFlushTime;
+    const pct = (ms) => total > 0 ? ((ms / total) * 100).toFixed(1) + '%' : '0%';
+    console.log(`✦ PERF [${perfStats.emailCount} emails] parse=${(perfStats.parseTime/1000).toFixed(1)}s(${pct(perfStats.parseTime)}) thread=${(perfStats.threadTime/1000).toFixed(1)}s(${pct(perfStats.threadTime)}) hash=${(perfStats.hashTime/1000).toFixed(1)}s(${pct(perfStats.hashTime)}) write=${(perfStats.writeTime/1000).toFixed(1)}s(${pct(perfStats.writeTime)}) dbFlush=${(perfStats.dbFlushTime/1000).toFixed(1)}s(${pct(perfStats.dbFlushTime)}) | att: ${perfStats.attWritten} written, ${perfStats.attSkippedDupe} dupe-skip, ${perfStats.attSkippedSize} size-skip`);
+    if (perfStats.largestAttName) console.log(`✦ PERF slowest write: ${perfStats.largestAttName} (${perfStats.largestAttMs}ms)`);
+}
 
 function findEmlFiles(dir) {
     const results = [];
@@ -115,12 +146,38 @@ async function main() {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pst-import-'));
 
     try {
-        db.prepare("UPDATE import_jobs SET status = 'processing', phase = 'importing' WHERE id = ?").run(jobId);
+        db.prepare("UPDATE import_jobs SET status = 'processing', phase = 'reading' WHERE id = ?").run(jobId);
 
         // Disable FTS triggers for bulk import
         db.exec('DROP TRIGGER IF EXISTS documents_ai');
         db.exec('DROP TRIGGER IF EXISTS documents_au');
         console.log('✦ PST Import: disabled FTS triggers for bulk import');
+
+        // Drop non-essential indexes for faster bulk INSERTs (rebuilt after import)
+        const BULK_DROP_INDEXES = [
+            'idx_documents_status',
+            'idx_documents_doc_type',
+            'idx_documents_status_doctype',
+            'idx_documents_thread_doctype',
+            'idx_documents_content_hash',
+            'idx_documents_is_duplicate',
+            'idx_documents_inv_doctype',
+        ];
+        for (const idx of BULK_DROP_INDEXES) {
+            db.exec(`DROP INDEX IF EXISTS ${idx}`);
+        }
+        console.log(`✦ PST Import: dropped ${BULK_DROP_INDEXES.length} non-essential indexes for bulk import`);
+
+        // Checkpoint WAL to reduce write overhead
+        try {
+            db.pragma('wal_checkpoint(TRUNCATE)');
+            console.log('✦ PST Import: WAL checkpointed');
+        } catch (e) {
+            console.warn('✦ PST Import: WAL checkpoint failed:', e.message);
+        }
+
+        // Increase page cache for bulk operations
+        db.pragma('cache_size = -64000'); // 64MB cache
 
         // ═══════════════════════════════════════════
         // Phase 0: Run readpst to extract .eml files
@@ -148,6 +205,9 @@ async function main() {
 
         const emlFiles = findEmlFiles(tmpDir);
         console.log(`✦ PST Import: readpst extracted ${emlFiles.length} .eml files`);
+
+        // Store total eml count and switch to importing phase
+        db.prepare("UPDATE import_jobs SET total_eml_files = ?, phase = 'importing' WHERE id = ?").run(emlFiles.length, jobId);
 
         // ═══════════════════════════════════════════
         // Phase 1: Parse .eml files sequentially, async file writes
@@ -192,21 +252,55 @@ async function main() {
             console.log(`✦ PST Import (RESUME): skipped ${skipped} in ${Date.now() - scanStart}ms, ${filesToProcess.length} to process`);
         }
 
+        // Seed message_id dedup set from known emails (covers resume + multi-folder dedup)
+        if (knownMessageIds.size > 0) {
+            for (const mid of knownMessageIds) seenMessageIds.add(mid);
+        }
+
         // Initialize threading cache — avoids 3-5 DB SELECTs per email
         initCache(investigation_id);
 
+        // Initialize counter from existing emails so resume doesn't overwrite
+        if (resume) {
+            const existingCount = db.prepare("SELECT COUNT(*) as c FROM documents WHERE investigation_id = ? AND doc_type = 'email'").get(investigation_id);
+            const existingAtts = db.prepare("SELECT COUNT(*) as c FROM documents WHERE investigation_id = ? AND doc_type = 'attachment'").get(investigation_id);
+            totalEmails = existingCount.c;
+            totalAttachments = existingAtts.c;
+            console.log(`✦ PST Import (RESUME): starting counters at ${totalEmails} emails, ${totalAttachments} attachments`);
+        }
+
         // Single-threaded parsing with postal-mime (5.8x faster than simpleParser)
+        let fileIdx = 0;
         for (const emlPath of filesToProcess) {
+            fileIdx++;
             try {
+                if (fileIdx <= 3 || fileIdx % 50 === 0) {
+                    console.log(`✦ PST Import: parsing file ${fileIdx}/${filesToProcess.length}: ${path.basename(emlPath)}`);
+                }
+                const t0 = Date.now();
                 const eml = await parseEml(emlPath);
+                const parseMs = Date.now() - t0;
+                perfStats.parseTime += parseMs;
+                if (parseMs > 5000) console.log(`✦ PERF WARNING: slow parse ${parseMs}ms for ${path.basename(emlPath)} (${eml.attachments.length} attachments)`);
+
+                // Skip duplicate emails (same message in multiple Outlook folders)
+                if (eml.messageId && seenMessageIds.has(eml.messageId)) {
+                    continue;
+                }
+                if (eml.messageId) seenMessageIds.add(eml.messageId);
 
                 await processEmail(eml);
                 totalEmails++;
+                perfStats.emailCount = totalEmails;
 
                 if (totalEmails === 1 || totalEmails % DB_BATCH_SIZE === 0) {
+                    const tFlush = Date.now();
                     flushPendingOps();
+                    perfStats.dbFlushTime += Date.now() - tFlush;
+                    perfStats.dbFlushCount++;
                     updateProgress.run(totalEmails, totalAttachments, 'importing', jobId);
                     console.log(`✦ PST Import: ${totalEmails} emails, ${totalAttachments} attachments processed`);
+                    logPerfSummary();
                 }
             } catch (err) {
                 errorLog.push({ file: path.basename(emlPath), error: err.message });
@@ -216,9 +310,50 @@ async function main() {
         flushPendingOps();
         updateProgress.run(totalEmails, totalAttachments, 'importing', jobId);
         console.log(`✦ PST Import Phase 1 complete: ${totalEmails} new emails, ${totalAttachments} attachments${resume ? `, ${skipped} skipped (already imported)` : ''}`);
+        logPerfSummary();
+
+        // Bulk backfill threading — deferred from per-email processing for performance
+        // Now that all emails are inserted, resolve threads in a single pass
+        console.log('✦ PST Import: backfilling thread IDs...');
+        const backfillStart = Date.now();
+        const allEmails = db.prepare(
+            "SELECT id, thread_id, message_id, in_reply_to, email_references FROM documents WHERE investigation_id = ? AND doc_type = 'email' AND message_id IS NOT NULL"
+        ).all(investigation_id);
+        let backfillUpdates = 0;
+        const backfillTx = db.transaction(() => {
+            for (const email of allEmails) {
+                const resolvedThread = resolveThreadId(email.message_id, email.in_reply_to, email.email_references);
+                if (resolvedThread !== email.thread_id) {
+                    db.prepare('UPDATE documents SET thread_id = ? WHERE id = ?').run(resolvedThread, email.id);
+                    // Also update attachments of this email
+                    db.prepare('UPDATE documents SET thread_id = ? WHERE parent_id = ?').run(resolvedThread, email.id);
+                    backfillUpdates++;
+                }
+            }
+        });
+        backfillTx();
+        console.log(`✦ PST Import: thread backfill done in ${((Date.now() - backfillStart) / 1000).toFixed(1)}s (${backfillUpdates} updates)`);
 
         // Record Phase 1 completion time
         db.prepare("UPDATE import_jobs SET phase1_completed_at = datetime('now') WHERE id = ?").run(jobId);
+
+        // Rebuild indexes dropped for bulk import
+        console.log('✦ PST Import: rebuilding indexes...');
+        const rebuildStart = Date.now();
+        db.exec('CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status)');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_documents_doc_type ON documents(doc_type)');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_documents_status_doctype ON documents(status, doc_type)');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_documents_thread_doctype ON documents(thread_id, doc_type)');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash)');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_documents_is_duplicate ON documents(is_duplicate)');
+        db.exec('CREATE INDEX IF NOT EXISTS idx_documents_inv_doctype ON documents(investigation_id, doc_type)');
+        console.log(`✦ PST Import: indexes rebuilt in ${((Date.now() - rebuildStart) / 1000).toFixed(1)}s`);
+
+        // Checkpoint WAL after bulk writes
+        try {
+            db.pragma('wal_checkpoint(TRUNCATE)');
+            console.log('✦ PST Import: WAL checkpointed after Phase 1');
+        } catch (_) {}
 
         // ═══════════════════════════════════════════
         // Phase 2: Extract text from attachments (concurrent I/O, batched DB writes)
@@ -237,6 +372,11 @@ async function main() {
         let extractionOps = [];
 
         await runConcurrent(pendingDocs, PHASE2_CONCURRENCY, async (doc) => {
+            // Skip text extraction for oversized files (no file on disk)
+            if (!doc.filename) {
+                extracted++;
+                return;
+            }
             const filePath = path.join(UPLOADS_DIR, doc.filename);
             let text = '';
             try {
@@ -308,6 +448,14 @@ async function main() {
             WHERE id = ?
         `).run(totalEmails, totalAttachments, JSON.stringify(errorLog), jobId);
 
+        // Auto-cleanup: delete source PST/OST file after successful import
+        try {
+            fs.unlinkSync(filepath);
+            console.log('✦ PST Import: deleted source file to free disk space');
+        } catch (e) {
+            console.warn('✦ PST Import: could not delete source file:', e.message);
+        }
+
     } catch (err) {
         console.error("Worker fatal error:", err);
         try {
@@ -326,6 +474,17 @@ async function main() {
                 END;
             `);
             db.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')");
+        } catch (_) { /* best effort */ }
+
+        // Rebuild indexes in case they were dropped
+        try {
+            db.exec('CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status)');
+            db.exec('CREATE INDEX IF NOT EXISTS idx_documents_doc_type ON documents(doc_type)');
+            db.exec('CREATE INDEX IF NOT EXISTS idx_documents_status_doctype ON documents(status, doc_type)');
+            db.exec('CREATE INDEX IF NOT EXISTS idx_documents_thread_doctype ON documents(thread_id, doc_type)');
+            db.exec('CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash)');
+            db.exec('CREATE INDEX IF NOT EXISTS idx_documents_is_duplicate ON documents(is_duplicate)');
+            db.exec('CREATE INDEX IF NOT EXISTS idx_documents_inv_doctype ON documents(investigation_id, doc_type)');
         } catch (_) { /* best effort */ }
 
         db.prepare(`
@@ -350,7 +509,9 @@ async function processEmail(eml) {
     const sizeBytes = textBody.length;
     const subject = eml.subject || '(no subject)';
 
+    const tThread = Date.now();
     const threadId = resolveThreadId(eml.messageId, eml.inReplyTo, eml.references);
+    perfStats.threadTime += Date.now() - tThread;
 
     batchBuffer.push(() => {
         insertEmail.run(
@@ -364,7 +525,10 @@ async function processEmail(eml) {
         );
     });
 
-    batchBuffer.push(() => backfillThread(threadId, eml.messageId, eml.references));
+    // Defer backfill to end of Phase 1 — during bulk import, backfillThread does
+    // expensive UPDATE...WHERE thread_id=? scans that account for 96% of flush time.
+    // Instead, just update the in-memory cache and do a single backfill pass at the end.
+    updateCacheOnly(threadId, eml.messageId, eml.references);
 
     // Write attachments async, hash in-memory for dedup
     const writePromises = [];
@@ -375,26 +539,47 @@ async function processEmail(eml) {
         const attFilename = `${attId}${attExt}`;
         const attPath = path.join(UPLOADS_DIR, attFilename);
 
-        // Hash in memory — check in-memory map instead of DB query per attachment
-        const attHash = crypto.createHash('md5').update(att.content).digest('hex');
-        const isDuplicate = seenHashes.has(attHash) ? 1 : 0;
+        // Skip writing large attachments to disk (>100MB) — record in DB with note
+        const isOversized = att.size > MAX_ATTACHMENT_SIZE;
 
-        // Skip file write for duplicates — reuse existing file, save ~80% of I/O
+        // Hash in memory — check in-memory map instead of DB query per attachment
+        const tHash = Date.now();
+        const attHash = isOversized ? null : crypto.createHash('md5').update(att.content).digest('hex');
+        perfStats.hashTime += Date.now() - tHash;
+        const isDuplicate = attHash && seenHashes.has(attHash) ? 1 : 0;
+
+        // Skip file write for duplicates or oversized — reuse existing file or skip entirely
         let finalFilename = attFilename;
-        if (isDuplicate) {
+        if (isOversized) {
+            finalFilename = null; // no file on disk
+            perfStats.attSkippedSize++;
+        } else if (isDuplicate) {
             finalFilename = seenHashes.get(attHash); // point to existing file
+            perfStats.attSkippedDupe++;
         } else {
             seenHashes.set(attHash, attFilename);
-            writePromises.push(fsp.writeFile(attPath, att.content));
+            const tWrite = Date.now();
+            writePromises.push(fsp.writeFile(attPath, att.content).then(() => {
+                const writeMs = Date.now() - tWrite;
+                perfStats.writeTime += writeMs;
+                perfStats.attWritten++;
+                if (writeMs > perfStats.largestAttMs) {
+                    perfStats.largestAttMs = writeMs;
+                    perfStats.largestAttName = `${att.filename} (${(att.size/1024).toFixed(0)}KB)`;
+                }
+            }));
         }
 
         const dbFilename = finalFilename;
+        const oversizeNote = isOversized
+            ? `[File too large: ${(att.size / 1e6).toFixed(0)}MB — raw file not saved to conserve disk space]`
+            : null;
         batchBuffer.push(() => {
             insertAttachment.run(
                 attId, dbFilename, att.filename,
                 att.contentType, att.size,
                 emailId, threadId,
-                null, null, null, null, null, null,
+                oversizeNote, null, null, null, null, null,
                 attHash, isDuplicate, investigation_id
             );
         });

@@ -34,6 +34,43 @@ function Search({ activeInvestigationId, addToast }) {
     // Selection for batch classification
     const [selectedIds, setSelectedIds] = useState(new Set());
 
+    // Saved searches (bookmarks)
+    const [savedSearches, setSavedSearches] = useState(() => {
+        try { return JSON.parse(localStorage.getItem('sherlock_saved_searches') || '[]'); } catch { return []; }
+    });
+
+    const saveCurrentSearch = () => {
+        if (!query.trim() && !hasActiveFilters) return;
+        const bookmark = {
+            id: Date.now(),
+            label: query.trim() || [reviewStatus, docType, scoreFilter].filter(Boolean).join(', '),
+            q: query.trim(),
+            status: reviewStatus, type: docType, score: scoreFilter,
+            from: dateFrom, to: dateTo, dedup: hideDuplicates ? '1' : '0'
+        };
+        const updated = [bookmark, ...savedSearches.filter(s => s.label !== bookmark.label)].slice(0, 20);
+        setSavedSearches(updated);
+        localStorage.setItem('sherlock_saved_searches', JSON.stringify(updated));
+        addToast('Search bookmarked', 'success');
+    };
+
+    const loadSavedSearch = (s) => {
+        setQuery(s.q || '');
+        setReviewStatus(s.status || '');
+        setDocType(s.type || '');
+        setScoreFilter(s.score || '');
+        setDateFrom(s.from || '');
+        setDateTo(s.to || '');
+        setHideDuplicates(s.dedup !== '0');
+        setTimeout(() => doSearch(), 0);
+    };
+
+    const removeSavedSearch = (id) => {
+        const updated = savedSearches.filter(s => s.id !== id);
+        setSavedSearches(updated);
+        localStorage.setItem('sherlock_saved_searches', JSON.stringify(updated));
+    };
+
     const navigate = useNavigate();
 
     // Load documents on mount — restore page from URL if present
@@ -319,8 +356,13 @@ function Search({ activeInvestigationId, addToast }) {
                     />
                     Hide Duplicates
                 </label>
-                {(query.trim() || reviewStatus || docType || scoreFilter || dateFrom || dateTo) && (
-                    <button className="btn btn-ghost" onClick={clearSearch}>Clear</button>
+                {(query.trim() || hasActiveFilters) && (
+                    <>
+                        <button className="btn btn-ghost" onClick={clearSearch}>Clear</button>
+                        <button className="btn btn-ghost" onClick={saveCurrentSearch} title="Bookmark this search" style={{ padding: '6px 10px', fontSize: '16px' }}>
+                            &#9733;
+                        </button>
+                    </>
                 )}
                 {results.length > 0 && (
                     <button className="btn btn-secondary" style={{ marginLeft: 'auto' }} onClick={toggleBatchPanel}>
@@ -331,6 +373,29 @@ function Search({ activeInvestigationId, addToast }) {
                     </button>
                 )}
             </div>
+
+            {/* Saved Searches */}
+            {savedSearches.length > 0 && (
+                <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px', marginBottom: '16px', alignItems: 'center' }}>
+                    <span className="text-xs text-muted" style={{ marginRight: '4px' }}>Saved:</span>
+                    {savedSearches.map(s => (
+                        <span key={s.id} style={{
+                            display: 'inline-flex', alignItems: 'center', gap: '4px',
+                            background: 'var(--bg-tertiary)', border: '1px solid var(--border-secondary)',
+                            borderRadius: '16px', padding: '3px 10px', fontSize: '12px', color: 'var(--text-secondary)',
+                            cursor: 'pointer'
+                        }}>
+                            <span onClick={() => loadSavedSearch(s)} style={{ maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                {s.label}
+                            </span>
+                            <span onClick={(e) => { e.stopPropagation(); removeSavedSearch(s.id); }}
+                                style={{ cursor: 'pointer', color: 'var(--text-muted)', fontSize: '14px', lineHeight: 1, marginLeft: '2px' }}
+                                title="Remove bookmark"
+                            >&times;</span>
+                        </span>
+                    ))}
+                </div>
+            )}
 
             {/* Batch AI Classification Panel */}
             {showBatchPanel && (
@@ -440,7 +505,7 @@ function Search({ activeInvestigationId, addToast }) {
                                     <div
                                         key={r.id}
                                         className="search-result-card"
-                                        onClick={() => navigate(`/documents/${r.id}`)}
+                                        onClick={() => navigate(`/documents/${r.id}${query ? `?q=${encodeURIComponent(query)}` : ''}`)}
                                         style={selectedIds.has(r.id) ? { borderColor: 'var(--primary)', background: 'var(--bg-tertiary)' } : {}}
                                     >
                                         <div className="flex items-center gap-8">

@@ -26,7 +26,7 @@ const upload = multer({
     storage,
     // limits: { fileSize: 5000 * 1024 * 1024 }, // Removed to allow massive PST files
     fileFilter: (req, file, cb) => {
-        const allowed = ['.pdf', '.docx', '.txt', '.csv', '.md', '.eml', '.pst'];
+        const allowed = ['.pdf', '.docx', '.txt', '.csv', '.md', '.eml', '.pst', '.ost'];
         const ext = path.extname(file.originalname).toLowerCase();
         if (allowed.includes(ext)) {
             cb(null, true);
@@ -256,7 +256,7 @@ router.post('/upload', (req, res, next) => {
             if (ext === '.eml') {
                 const emlResults = await processEmlFile(file, investigation_id);
                 allResults.push(...emlResults);
-            } else if (ext === '.pst') {
+            } else if (ext === '.pst' || ext === '.ost') {
                 // Background job for PST
                 const jobId = uuidv4();
                 
