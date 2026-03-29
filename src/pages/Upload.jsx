@@ -57,7 +57,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
     const handleFiles = useCallback((fileList) => {
         const newFiles = Array.from(fileList).filter(f => {
             const ext = f.name.split('.').pop().toLowerCase();
-            return ['pdf', 'docx', 'txt', 'csv', 'md', 'eml', 'pst'].includes(ext);
+            return ['pdf', 'docx', 'txt', 'csv', 'md', 'eml', 'pst', 'ost'].includes(ext);
         });
         setFiles(prev => [...prev, ...newFiles]);
         setResults([]);
@@ -264,7 +264,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                     ref={inputRef}
                     type="file"
                     multiple
-                    accept=".pdf,.docx,.txt,.csv,.md,.eml,.pst"
+                    accept=".pdf,.docx,.txt,.csv,.md,.eml,.pst,.ost"
                     onChange={(e) => handleFiles(e.target.files)}
                     style={{ display: 'none' }}
                 />
@@ -349,7 +349,9 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                             <div>
                                 <h3 className="text-md fw-bold m-0 text-primary">PST Import: {activeJob.filename || 'Archive'}</h3>
                                 <p className="text-sm text-muted m-0 capitalize">
-                                    {activeJob.phase === 'extracting'
+                                    {activeJob.phase === 'reading'
+                                        ? 'Reading PST file (this takes a few minutes)...'
+                                        : activeJob.phase === 'extracting'
                                         ? 'Extracting text from attachments...'
                                         : activeJob.phase === 'importing' || activeJob.status === 'processing'
                                         ? 'Importing emails & attachments...'
@@ -364,6 +366,37 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                     
                     {(activeJob.status === 'processing' || activeJob.status === 'completed' || activeJob.status === 'failed') && (
                         <>
+                            {activeJob.phase === 'importing' && activeJob.total_eml_files > 0 && (() => {
+                                const pct = Math.min(100, Math.round((activeJob.total_emails / activeJob.total_eml_files) * 100));
+                                const elapsedMs = activeJob.started_at ? Date.now() - new Date(activeJob.started_at + 'Z').getTime() : 0;
+                                const rate = elapsedMs > 0 && activeJob.total_emails > 0 ? activeJob.total_emails / (elapsedMs / 60000) : 0;
+                                const remaining = rate > 0 ? Math.round((activeJob.total_eml_files - activeJob.total_emails) / rate) : 0;
+                                const etaText = remaining > 60 ? `~${Math.round(remaining / 60)}h ${remaining % 60}m` : remaining > 0 ? `~${remaining}m` : '';
+                                return (
+                                    <div className="mt-12" style={{ marginBottom: '12px' }}>
+                                        <div className="flex items-center justify-between mb-4">
+                                            <span className="text-xs text-muted">
+                                                Importing: {activeJob.total_emails?.toLocaleString()} / {activeJob.total_eml_files?.toLocaleString()} emails
+                                            </span>
+                                            <span className="text-xs fw-bold">
+                                                {pct}%{etaText ? ` · ETA ${etaText}` : ''}
+                                            </span>
+                                        </div>
+                                        <div style={{ height: '6px', background: 'var(--bg-tertiary)', borderRadius: '3px', overflow: 'hidden' }}>
+                                            <div style={{
+                                                height: '100%',
+                                                width: `${pct}%`,
+                                                background: 'var(--accent)',
+                                                borderRadius: '3px',
+                                                transition: 'width 0.3s ease'
+                                            }} />
+                                        </div>
+                                        {rate > 0 && (
+                                            <p className="text-xs text-muted m-0 mt-4">{Math.round(rate)} emails/min</p>
+                                        )}
+                                    </div>
+                                );
+                            })()}
                             {activeJob.phase === 'extracting' && (
                                 <div className="mt-12" style={{ marginBottom: '12px' }}>
                                     <div className="flex items-center justify-between mb-4">
