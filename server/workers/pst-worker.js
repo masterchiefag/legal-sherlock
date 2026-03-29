@@ -11,7 +11,7 @@ import { fileURLToPath } from 'url';
 import db from '../db.js';
 import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
-import { resolveThreadId, backfillThread, updateCacheOnly, initCache } from '../lib/threading-cached.js';
+import { resolveThreadId, backfillThread, updateCacheOnly, resolveThreadIdFromCache, initCache } from '../lib/threading-cached.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -320,13 +320,14 @@ async function main() {
             "SELECT id, thread_id, message_id, in_reply_to, email_references FROM documents WHERE investigation_id = ? AND doc_type = 'email' AND message_id IS NOT NULL"
         ).all(investigation_id);
         let backfillUpdates = 0;
+        const updateEmailThread = db.prepare('UPDATE documents SET thread_id = ? WHERE id = ?');
+        const updateAttThread = db.prepare('UPDATE documents SET thread_id = ? WHERE parent_id = ?');
         const backfillTx = db.transaction(() => {
             for (const email of allEmails) {
-                const resolvedThread = resolveThreadId(email.message_id, email.in_reply_to, email.email_references);
-                if (resolvedThread !== email.thread_id) {
-                    db.prepare('UPDATE documents SET thread_id = ? WHERE id = ?').run(resolvedThread, email.id);
-                    // Also update attachments of this email
-                    db.prepare('UPDATE documents SET thread_id = ? WHERE parent_id = ?').run(resolvedThread, email.id);
+                const resolvedThread = resolveThreadIdFromCache(email.message_id, email.in_reply_to, email.email_references);
+                if (resolvedThread && resolvedThread !== email.thread_id) {
+                    updateEmailThread.run(resolvedThread, email.id);
+                    updateAttThread.run(resolvedThread, email.id);
                     backfillUpdates++;
                 }
             }
@@ -528,7 +529,7 @@ async function processEmail(eml) {
     // Defer backfill to end of Phase 1 — during bulk import, backfillThread does
     // expensive UPDATE...WHERE thread_id=? scans that account for 96% of flush time.
     // Instead, just update the in-memory cache and do a single backfill pass at the end.
-    updateCacheOnly(threadId, eml.messageId, eml.references);
+    updateCacheOnly(threadId, eml.messageId, eml.inReplyTo, eml.references);
 
     // Write attachments async, hash in-memory for dedup
     const writePromises = [];

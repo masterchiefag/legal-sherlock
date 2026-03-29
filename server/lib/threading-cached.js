@@ -92,11 +92,39 @@ export function resolveThreadId(messageId, inReplyTo, references) {
 }
 
 /**
+ * Cache-only thread resolution — no DB fallback. Used during bulk backfill
+ * after all emails are inserted and cache is fully populated.
+ * Returns null if no match found (caller should keep existing thread_id).
+ */
+export function resolveThreadIdFromCache(messageId, inReplyTo, references) {
+    if (inReplyTo) {
+        const cached = msgIdToThreadId.get(inReplyTo);
+        if (cached) return cached;
+    }
+
+    if (references) {
+        const refIds = references.split(/\s+/).filter(Boolean).reverse();
+        for (const refId of refIds) {
+            const cached = msgIdToThreadId.get(refId);
+            if (cached) return cached;
+        }
+    }
+
+    if (messageId) {
+        const cached = referencesIndex.get(messageId) || inReplyToIndex.get(messageId);
+        if (cached) return cached;
+    }
+
+    return null;
+}
+
+/**
  * Update in-memory cache only — no DB writes. Used during bulk import
  * to defer expensive backfill operations to end of Phase 1.
  */
-export function updateCacheOnly(threadId, messageId, references) {
+export function updateCacheOnly(threadId, messageId, inReplyTo, references) {
     if (messageId) msgIdToThreadId.set(messageId, threadId);
+    if (inReplyTo) inReplyToIndex.set(inReplyTo, threadId);
     if (references) {
         for (const ref of references.split(/\s+/).filter(Boolean)) {
             referencesIndex.set(ref, threadId);
