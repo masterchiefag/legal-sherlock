@@ -528,7 +528,7 @@ function Search({ activeInvestigationId, addToast }) {
                                         <div className="search-result-meta">
                                             <span>{formatSize(r.size_bytes)}</span>
                                             <span>•</span>
-                                            <span>{new Date(r.uploaded_at).toLocaleDateString()}</span>
+                                            <span>{r.email_date ? new Date(r.email_date).toLocaleDateString() : 'No date'}</span>
                                             {r.doc_type === 'email' && r.attachment_count > 0 && (
                                                 <>
                                                     <span>•</span>

@@ -339,11 +339,13 @@ router.post('/jobs/:id/resume', (req, res) => {
             return res.status(400).json({ error: 'PST file no longer exists on disk. Please re-upload.' });
         }
 
-        // Reset job status and restart timer
+        // Accumulate time spent before failure, then reset started_at for this attempt
         db.prepare(`
             UPDATE import_jobs SET status = 'processing', phase = 'importing',
-            error_log = NULL, completed_at = NULL, phase1_completed_at = NULL,
-            started_at = datetime('now') WHERE id = ?
+            error_log = NULL, completed_at = NULL,
+            elapsed_seconds = COALESCE(elapsed_seconds, 0) + CAST((julianday(COALESCE(completed_at, datetime('now'))) - julianday(started_at)) * 86400 AS INTEGER),
+            started_at = datetime('now')
+            WHERE id = ?
         `).run(job.id);
 
         // Spawn worker with resume flag
