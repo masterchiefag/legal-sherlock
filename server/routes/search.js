@@ -124,24 +124,13 @@ router.get('/', (req, res) => {
 
         let countRow, results;
 
-        if (useFts) {
-            // FTS search with filters — CROSS JOIN forces FTS-first execution
-            // (prevents SQLite from scanning documents index then doing per-row FTS lookups)
-            countRow = db.prepare(`
-          SELECT COUNT(*) as total
-          FROM documents_fts fts
-          CROSS JOIN documents d ON d.rowid = fts.rowid
-          WHERE documents_fts MATCH ?
-          ${filterWhere}
-        `).get(ftsQuery, ...filterParams);
-
-            results = db.prepare(`
-          SELECT
+        // Enrichment subqueries — applied only to the paged result set via CTE
+        const enrichSelect = `
             d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,
             d.doc_type, d.thread_id, d.parent_id,
             d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at,
-            snippet(documents_fts, 1, '<mark>', '</mark>', '…', 40) as snippet,
-            rank,
+            d._snippet as snippet,
+            d._rank as rank,
             (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
             (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email' AND t.investigation_id = d.investigation_id) as thread_count,
             (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score,
@@ -151,13 +140,36 @@ router.get('/', (req, res) => {
              WHERE dt.document_id = d.id) as tags_json,
             (SELECT dr.status FROM document_reviews dr
              WHERE dr.document_id = d.id
-             ORDER BY dr.reviewed_at DESC LIMIT 1) as review_status
+             ORDER BY dr.reviewed_at DESC LIMIT 1) as review_status`;
+
+        if (useFts) {
+            // FTS search with filters — CROSS JOIN forces FTS-first execution
+            countRow = db.prepare(`
+          SELECT COUNT(*) as total
           FROM documents_fts fts
           CROSS JOIN documents d ON d.rowid = fts.rowid
           WHERE documents_fts MATCH ?
           ${filterWhere}
-          ORDER BY rank
-          LIMIT ? OFFSET ?
+        `).get(ftsQuery, ...filterParams);
+
+            // CTE: get the page of rows first, then enrich only those rows
+            results = db.prepare(`
+          WITH page AS (
+            SELECT
+              d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,
+              d.doc_type, d.thread_id, d.parent_id, d.investigation_id,
+              d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at,
+              snippet(documents_fts, 1, '<mark>', '</mark>', '…', 40) as _snippet,
+              rank as _rank
+            FROM documents_fts fts
+            CROSS JOIN documents d ON d.rowid = fts.rowid
+            WHERE documents_fts MATCH ?
+            ${filterWhere}
+            ORDER BY rank
+            LIMIT ? OFFSET ?
+          )
+          SELECT ${enrichSelect} FROM page d
+          ORDER BY d._rank
         `).all(ftsQuery, ...filterParams, parseInt(limit), offset);
         } else {
             // Filter-only (no search query)
@@ -167,26 +179,22 @@ router.get('/', (req, res) => {
           WHERE 1=1 ${filterWhere}
         `).get(...filterParams);
 
+            // CTE: get the page of rows first, then enrich only those rows
             results = db.prepare(`
-          SELECT
-            d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,
-            d.doc_type, d.thread_id, d.parent_id,
-            d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at,
-            NULL as snippet,
-            (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
-            (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email' AND t.investigation_id = d.investigation_id) as thread_count,
-            (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score,
-            (SELECT cl.reasoning FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_reasoning,
-            (SELECT json_group_array(json_object('id', t.id, 'name', t.name, 'color', t.color))
-             FROM document_tags dt JOIN tags t ON dt.tag_id = t.id
-             WHERE dt.document_id = d.id) as tags_json,
-            (SELECT dr.status FROM document_reviews dr
-             WHERE dr.document_id = d.id
-             ORDER BY dr.reviewed_at DESC LIMIT 1) as review_status
-          FROM documents d
-          WHERE 1=1 ${filterWhere}
+          WITH page AS (
+            SELECT
+              d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,
+              d.doc_type, d.thread_id, d.parent_id, d.investigation_id,
+              d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at,
+              NULL as _snippet,
+              NULL as _rank
+            FROM documents d
+            WHERE 1=1 ${filterWhere}
+            ORDER BY COALESCE(d.email_date, d.uploaded_at) DESC
+            LIMIT ? OFFSET ?
+          )
+          SELECT ${enrichSelect} FROM page d
           ORDER BY COALESCE(d.email_date, d.uploaded_at) DESC
-          LIMIT ? OFFSET ?
         `).all(...filterParams, parseInt(limit), offset);
         }
 

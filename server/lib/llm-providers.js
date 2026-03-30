@@ -30,6 +30,7 @@ class OllamaProvider {
                 model: activeModel,
                 prompt: fullPrompt,
                 stream: false,
+                keep_alive: 10,                 // Unload model after 10s idle (saves ~8GB RAM)
                 options: {
                     temperature: 0.1,       // Low temp for consistent scoring
                     num_predict: 80,        // JSON response is ~30-50 tokens

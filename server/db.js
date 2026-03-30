@@ -217,6 +217,16 @@ if (!columnExists('import_jobs', 'total_eml_files')) {
   console.log(`✦ Migration: added column import_jobs.total_eml_files`);
 }
 
+if (!columnExists('import_jobs', 'phase1_completed_at')) {
+  db.exec(`ALTER TABLE import_jobs ADD COLUMN phase1_completed_at TEXT`);
+  console.log(`✦ Migration: added column import_jobs.phase1_completed_at`);
+}
+
+if (!columnExists('import_jobs', 'elapsed_seconds')) {
+  db.exec(`ALTER TABLE import_jobs ADD COLUMN elapsed_seconds INTEGER DEFAULT 0`);
+  console.log(`✦ Migration: added column import_jobs.elapsed_seconds`);
+}
+
 // ═══════════════════════════════════════════════════
 // Rebuild FTS to include email fields
 // ═══════════════════════════════════════════════════

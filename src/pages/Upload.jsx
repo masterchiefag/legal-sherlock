@@ -163,10 +163,12 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
             const end = activeJob.completed_at
                 ? new Date(activeJob.completed_at + 'Z').getTime()
                 : Date.now();
-            setElapsed(formatDuration(end - start));
+            const priorMs = (activeJob.elapsed_seconds || 0) * 1000;
+            setElapsed(formatDuration(end - start + priorMs));
 
             // Phase 1 time: started_at → phase1_completed_at
-            if (activeJob.phase1_completed_at) {
+            // Skip phase breakdown on resumed jobs (timestamps span different runs)
+            if (activeJob.phase1_completed_at && !activeJob.elapsed_seconds) {
                 const p1End = new Date(activeJob.phase1_completed_at + 'Z').getTime();
                 setPhase1Time(formatDuration(p1End - start));
                 // Phase 2 time: phase1_completed_at → completed_at (or now)
@@ -183,7 +185,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
         if (activeJob.status === 'completed') return;
         const id = setInterval(update, 1000);
         return () => clearInterval(id);
-    }, [activeJob?.started_at, activeJob?.completed_at, activeJob?.phase1_completed_at, activeJob?.status]);
+    }, [activeJob?.started_at, activeJob?.completed_at, activeJob?.phase1_completed_at, activeJob?.status, activeJob?.elapsed_seconds]);
 
     const resumeJob = async (jobId) => {
         try {
