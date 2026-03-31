@@ -228,6 +228,25 @@ if (!columnExists('import_jobs', 'elapsed_seconds')) {
 }
 
 // ═══════════════════════════════════════════════════
+// Image extraction jobs (E01 forensic disk images)
+// ═══════════════════════════════════════════════════
+db.exec(`
+  CREATE TABLE IF NOT EXISTS image_jobs (
+    id TEXT PRIMARY KEY,
+    type TEXT NOT NULL CHECK(type IN ('scan', 'extract')),
+    status TEXT NOT NULL CHECK(status IN ('pending', 'processing', 'completed', 'failed')),
+    image_path TEXT NOT NULL,
+    output_dir TEXT,
+    phase TEXT,
+    progress_percent INTEGER DEFAULT 0,
+    result_data TEXT,
+    error_log TEXT,
+    started_at TEXT DEFAULT (datetime('now')),
+    completed_at TEXT
+  )
+`);
+
+// ═══════════════════════════════════════════════════
 // Rebuild FTS to include email fields
 // ═══════════════════════════════════════════════════
 
