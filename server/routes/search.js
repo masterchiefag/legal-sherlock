@@ -109,12 +109,12 @@ router.get('/', (req, res) => {
         }
 
         if (date_from) {
-            filterWhere += ' AND COALESCE(d.email_date, d.uploaded_at) >= ?';
+            filterWhere += ' AND COALESCE(d.email_date, d.doc_created_at, d.doc_modified_at, d.uploaded_at) >= ?';
             filterParams.push(date_from);
         }
 
         if (date_to) {
-            filterWhere += ' AND COALESCE(d.email_date, d.uploaded_at) <= ?';
+            filterWhere += ' AND COALESCE(d.email_date, d.doc_created_at, d.doc_modified_at, d.uploaded_at) <= ?';
             filterParams.push(date_to + 'T23:59:59');
         }
 
