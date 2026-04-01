@@ -197,7 +197,7 @@ router.get('/', (req, res) => {
               d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,
               d.doc_type, d.thread_id, d.parent_id, d.investigation_id,
               d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at,
-              NULL as _snippet,
+              SUBSTR(d.text_content, 1, 200) as _snippet,
               NULL as _rank
             FROM documents d
             WHERE 1=1 ${filterWhere}

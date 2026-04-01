@@ -133,7 +133,7 @@ async function processEmailData(eml, emailId, filename, originalName, sizeBytes,
           ) VALUES (?, ?, ?, ?, ?, ?, 'ready',
             'attachment', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(attId, attFilename, att.filename, att.contentType, att.size, attText, emailId, threadId, attHash, isDuplicate, investigation_id,
-               meta.author, meta.title, meta.createdAt, meta.modifiedAt, meta.creatorTool, meta.keywords);
+            meta.author, meta.title, meta.createdAt, meta.modifiedAt, meta.creatorTool, meta.keywords);
 
         result.attachments.push({ id: attId, name: att.filename, size: att.size, content_type: att.contentType });
     }
@@ -259,7 +259,7 @@ router.post('/upload', (req, res, next) => {
             } else if (ext === '.pst' || ext === '.ost') {
                 // Background job for PST
                 const jobId = uuidv4();
-                
+
                 // Initialize job in database (store filepath for resume support)
                 db.prepare(`
                     INSERT INTO import_jobs (id, filename, filepath, status, investigation_id)
@@ -267,11 +267,11 @@ router.post('/upload', (req, res, next) => {
                 `).run(jobId, file.originalname, file.path, investigation_id);
 
                 spawnPstWorker(jobId, file.filename, file.path, file.originalname, investigation_id);
-                
+
                 // Return 202 Accepted instead of waiting for results
-                return res.status(202).json({ 
-                    message: "PST file uploaded. Processing in background.", 
-                    jobId: jobId 
+                return res.status(202).json({
+                    message: "PST file uploaded. Processing in background.",
+                    jobId: jobId
                 });
             } else {
                 const fileResults = await processRegularFile(file, investigation_id);
@@ -478,7 +478,7 @@ router.get('/:id', (req, res) => {
         // If email, fetch thread siblings
         if (doc.thread_id) {
             doc.thread = db.prepare(`
-        SELECT id, original_name, email_from, email_to, email_subject, email_date, doc_type
+        SELECT id, original_name, email_from, email_to, email_subject, email_date, doc_type, message_id, in_reply_to
         FROM documents
         WHERE thread_id = ? AND doc_type = 'email' AND investigation_id = ?
         ORDER BY email_date ASC
