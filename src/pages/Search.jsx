@@ -352,6 +352,7 @@ function Search({ activeInvestigationId, addToast }) {
                     <select className="filter-select" value={docType} onChange={e => setDocType(e.target.value)}>
                         <option value="">All Types</option>
                         <option value="email">Emails</option>
+                        <option value="chat">Chats / WhatsApp</option>
                         <option value="file">Files</option>
                         <option value="attachment">Attachments</option>
                     </select>
