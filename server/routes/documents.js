@@ -26,7 +26,7 @@ const upload = multer({
     storage,
     // limits: { fileSize: 5000 * 1024 * 1024 }, // Removed to allow massive PST files
     fileFilter: (req, file, cb) => {
-        const allowed = ['.pdf', '.docx', '.txt', '.csv', '.md', '.eml', '.pst', '.ost'];
+        const allowed = ['.pdf', '.docx', '.txt', '.csv', '.md', '.eml', '.pst', '.ost', '.sqlite', '.db'];
         const ext = path.extname(file.originalname).toLowerCase();
         if (allowed.includes(ext)) {
             cb(null, true);
@@ -189,6 +189,31 @@ function spawnPstWorker(jobId, filename, filepath, originalname, investigation_i
 }
 
 // ═══════════════════════════════════════════════════
+// Chat/SQLite processing pipeline (Delegated to Worker)
+// ═══════════════════════════════════════════════════
+function spawnChatWorker(jobId, filename, filepath, originalname, investigation_id) {
+    const workerPath = path.join(__dirname, '..', 'workers', 'chat-worker.js');
+    const worker = new Worker(workerPath, {
+        workerData: { jobId, filename, filepath, originalname, investigation_id }
+    });
+
+    worker.on('error', (err) => {
+        console.error(`⚠ Chat Worker error for job ${jobId}:`, err);
+        db.prepare(`UPDATE import_jobs SET status = 'failed', error_log = ?, completed_at = datetime('now') WHERE id = ?`).run(
+            JSON.stringify([{ error: `Worker crashed: ${err.message}` }]), jobId
+        );
+    });
+
+    worker.on('exit', (code) => {
+        if (code !== 0) {
+            console.error(`⚠ Chat Worker for job ${jobId} stopped with exit code ${code}`);
+        }
+    });
+
+    return worker;
+}
+
+// ═══════════════════════════════════════════════════
 // Regular file processing (PDF, DOCX, TXT, etc.)
 // ═══════════════════════════════════════════════════
 async function processRegularFile(file, investigation_id) {
@@ -271,6 +296,21 @@ router.post('/upload', (req, res, next) => {
                 // Return 202 Accepted instead of waiting for results
                 return res.status(202).json({
                     message: "PST file uploaded. Processing in background.",
+                    jobId: jobId
+                });
+            } else if (ext === '.sqlite' || ext === '.db') {
+                // Background job for Chat DBs
+                const jobId = uuidv4();
+
+                db.prepare(`
+                    INSERT INTO import_jobs (id, filename, filepath, status, investigation_id)
+                    VALUES (?, ?, ?, 'pending', ?)
+                `).run(jobId, file.originalname, file.path, investigation_id);
+
+                spawnChatWorker(jobId, file.filename, file.path, file.originalname, investigation_id);
+
+                return res.status(202).json({
+                    message: "Chat DB uploaded. Processing in background.",
                     jobId: jobId
                 });
             } else {

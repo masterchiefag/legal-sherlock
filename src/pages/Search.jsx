@@ -289,6 +289,7 @@ function Search({ activeInvestigationId, addToast }) {
 
     const getDocIcon = (doc) => {
         if (doc.doc_type === 'email') return '✉';
+        if (doc.doc_type === 'chat') return '💬';
         const ext = doc.original_name?.split('.').pop().toLowerCase();
         if (ext === 'pdf') return '📄';
         if (ext === 'docx') return '📝';
@@ -296,7 +297,7 @@ function Search({ activeInvestigationId, addToast }) {
     };
 
     const getDisplayName = (doc) => {
-        if (doc.doc_type === 'email' && doc.email_subject) {
+        if ((doc.doc_type === 'email' || doc.doc_type === 'chat') && doc.email_subject) {
             return doc.email_subject;
         }
         return doc.original_name;
@@ -306,6 +307,12 @@ function Search({ activeInvestigationId, addToast }) {
         if (doc.doc_type === 'email') {
             const parts = [];
             if (doc.email_from) parts.push(`From: ${doc.email_from.split('<')[0].trim()}`);
+            if (doc.email_date) parts.push(new Date(doc.email_date).toLocaleDateString());
+            return parts.join(' • ');
+        }
+        if (doc.doc_type === 'chat') {
+            const parts = [];
+            if (doc.email_from) parts.push(`Participants: ${doc.email_from}`);
             if (doc.email_date) parts.push(new Date(doc.email_date).toLocaleDateString());
             return parts.join(' • ');
         }
