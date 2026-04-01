@@ -10,6 +10,11 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const { jobId, filename, filepath, originalname, investigation_id } = workerData;
 
+// TODO (Feature Request): Add support for WhatsApp media attachments.
+// This requires a mechanism to upload a ZIP containing both ChatStorage.sqlite 
+// and the Message/Media folder. The worker would then extract images to the 
+// uploads directory and link them via parent_id to the created chat document.
+
 // CoreData epoch offset (seconds between Jan 1 1970 and Jan 1 2001)
 const CORE_DATA_OFFSET = 978307200;
 
