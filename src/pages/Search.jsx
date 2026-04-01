@@ -100,6 +100,10 @@ function Search({ activeInvestigationId, addToast }) {
         if (scoreFilter) {
             if (scoreFilter === 'unscored') {
                 apiParams.set('score_min', 'unscored');
+            } else if (scoreFilter === 'scored') {
+                apiParams.set('score_min', '1');
+            } else if (scoreFilter.endsWith('+')) {
+                apiParams.set('score_min', scoreFilter.replace('+', ''));
             } else {
                 apiParams.set('score_min', scoreFilter);
                 apiParams.set('score_max', scoreFilter);
@@ -214,6 +218,10 @@ function Search({ activeInvestigationId, addToast }) {
         if (scoreFilter) {
             if (scoreFilter === 'unscored') {
                 params.set('score_min', 'unscored');
+            } else if (scoreFilter === 'scored') {
+                params.set('score_min', '1');
+            } else if (scoreFilter.endsWith('+')) {
+                params.set('score_min', scoreFilter.replace('+', ''));
             } else {
                 params.set('score_min', scoreFilter);
                 params.set('score_max', scoreFilter);
@@ -342,12 +350,12 @@ function Search({ activeInvestigationId, addToast }) {
                     </select>
                     <select className="filter-select" value={scoreFilter} onChange={e => setScoreFilter(e.target.value)}>
                         <option value="">All Scores</option>
-                        <option value="5">5 — Smoking Gun</option>
-                        <option value="4">4 — Highly Relevant</option>
-                        <option value="3">3 — Potentially Relevant</option>
-                        <option value="2">2 — Unlikely Relevant</option>
-                        <option value="1">1 — Not Relevant</option>
+                        <option value="scored">Scored</option>
                         <option value="unscored">Unscored</option>
+                        <option disabled>──────────</option>
+                        <option value="3+">3+ Relevant</option>
+                        <option value="4+">4+ Highly Relevant</option>
+                        <option value="5">5 — Smoking Gun</option>
                     </select>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                         <input type="date" className="input" style={{ width: 'auto', padding: '8px 12px', fontSize: '13px' }} value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
