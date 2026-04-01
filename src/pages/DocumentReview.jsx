@@ -603,37 +603,184 @@ function DocumentReview({ addToast }) {
                 )}
 
                 {/* Email Thread */}
-                {doc.thread && doc.thread.length > 1 && (
-                    <div className="doc-sidebar-section">
-                        <h3>Thread ({doc.thread.length} emails)</h3>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                            {doc.thread.map((t, i) => (
-                                <Link
-                                    key={t.id}
-                                    to={`/documents/${t.id}`}
-                                    style={{
-                                        display: 'block',
-                                        padding: '10px 12px',
-                                        borderRadius: 'var(--radius-sm)',
-                                        background: t.id === id ? 'rgba(59, 130, 246, 0.1)' : 'var(--bg-tertiary)',
-                                        border: `1px solid ${t.id === id ? 'var(--border-active)' : 'var(--border-secondary)'}`,
-                                        textDecoration: 'none',
-                                        transition: 'all 150ms ease',
-                                    }}
-                                    onMouseEnter={e => { if (t.id !== id) e.currentTarget.style.borderColor = 'var(--border-primary)'; }}
-                                    onMouseLeave={e => { if (t.id !== id) e.currentTarget.style.borderColor = 'var(--border-secondary)'; }}
-                                >
-                                    <div style={{ fontSize: '12px', fontWeight: 600, color: t.id === id ? 'var(--text-accent)' : 'var(--text-primary)', marginBottom: '2px' }}>
-                                        {t.email_subject || t.original_name}
-                                    </div>
-                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                        {t.email_from?.split('<')[0].trim()} • {t.email_date ? new Date(t.email_date).toLocaleDateString() : ''}
-                                    </div>
-                                </Link>
-                            ))}
+                {doc.thread && doc.thread.length > 1 && (() => {
+                    // Build tree from in_reply_to -> message_id relationships
+                    const msgIdMap = {};
+                    doc.thread.forEach(t => { if (t.message_id) msgIdMap[t.message_id] = t; });
+
+                    // Assign children — orphans (in_reply_to not in thread) go under earliest root
+                    doc.thread.forEach(t => { t._children = []; });
+                    const roots = [];
+                    const orphans = [];
+                    doc.thread.forEach(t => {
+                        const parent = t.in_reply_to ? msgIdMap[t.in_reply_to] : null;
+                        if (parent) {
+                            parent._children.push(t);
+                        } else if (!t.in_reply_to) {
+                            roots.push(t);
+                        } else {
+                            orphans.push(t); // in_reply_to points outside this thread
+                        }
+                    });
+
+                    // Handle orphans and multiple roots
+                    if (roots.length === 0 && orphans.length > 0) {
+                        // No true root — promote earliest orphan as root
+                        orphans.sort((a, b) => (a.email_date || '').localeCompare(b.email_date || ''));
+                        roots.push(orphans.shift());
+                    }
+                    // Attach remaining orphans: if earlier than first root, promote to root; otherwise nest
+                    if (roots.length > 0 && orphans.length > 0) {
+                        const earliestRootDate = roots[0].email_date || '';
+                        for (const o of orphans) {
+                            if ((o.email_date || '') <= earliestRootDate) {
+                                roots.unshift(o); // promote as an earlier root
+                            } else {
+                                roots[0]._children.push(o);
+                            }
+                        }
+                        // Sort roots chronologically
+                        roots.sort((a, b) => (a.email_date || '').localeCompare(b.email_date || ''));
+                    }
+
+                    // Flatten tree: create subtree blocks per root, then interleave by root date
+                    const subtreeBlocks = [];
+                    roots.sort((a, b) => (a.email_date || '').localeCompare(b.email_date || ''));
+                    roots.forEach(r => {
+                        const block = [];
+                        const walk = (node, depth, isLast) => {
+                            block.push({ ...node, _depth: depth, _isLast: isLast });
+                            const children = node._children.sort((a, b) => (a.email_date || '').localeCompare(b.email_date || ''));
+                            children.forEach((child, ci) => walk(child, depth + 1, ci === children.length - 1));
+                        };
+                        walk(r, 0, true);
+                        subtreeBlocks.push(block);
+                    });
+                    const flatList = subtreeBlocks.flat();
+
+                    const items = flatList.length === doc.thread.length ? flatList : doc.thread.map(t => ({ ...t, _depth: 0, _isLast: true }));
+
+                    return (
+                        <div className="doc-sidebar-section">
+                            <h3>Thread ({doc.thread.length} emails)</h3>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0px' }}>
+                                {items.map((t, i) => {
+                                    // For each depth level, determine if a vertical line should continue
+                                    const gutterCols = [];
+                                    for (let d = 1; d <= t._depth; d++) {
+                                        const isOwnDepth = d === t._depth;
+                                        // Check if there's a later sibling at this depth level
+                                        const hasMoreAtThisDepth = items.slice(i + 1).some(s => {
+                                            if (s._depth < d) return false; // went up past this level
+                                            if (s._depth === d) return true;
+                                            return false;
+                                        }) && !items.slice(i + 1).some((s, si) => {
+                                            // But stop if we hit a shallower item before the sibling
+                                            return s._depth < d && items.slice(i + 1 + si + 1).some(s2 => s2._depth === d);
+                                        });
+                                        // Actually simpler: scan forward, if we hit depth < d first, no more siblings
+                                        let hasSibling = false;
+                                        for (let j = i + 1; j < items.length; j++) {
+                                            if (items[j]._depth < d) break;
+                                            if (items[j]._depth === d) { hasSibling = true; break; }
+                                        }
+
+                                        gutterCols.push(
+                                            <div key={d} style={{
+                                                width: '18px',
+                                                flexShrink: 0,
+                                                position: 'relative',
+                                            }}>
+                                                {isOwnDepth ? (
+                                                    <>
+                                                        {/* Vertical line from top to middle */}
+                                                        <div style={{
+                                                            position: 'absolute',
+                                                            left: '8px',
+                                                            top: 0,
+                                                            height: '50%',
+                                                            width: '1.5px',
+                                                            background: 'var(--text-tertiary)',
+                                                            opacity: 0.4,
+                                                        }} />
+                                                        {/* Horizontal line from middle to right */}
+                                                        <div style={{
+                                                            position: 'absolute',
+                                                            left: '8px',
+                                                            top: '50%',
+                                                            width: '10px',
+                                                            height: '1.5px',
+                                                            background: 'var(--text-tertiary)',
+                                                            opacity: 0.4,
+                                                        }} />
+                                                        {/* Continue vertical line below if more siblings */}
+                                                        {hasSibling && (
+                                                            <div style={{
+                                                                position: 'absolute',
+                                                                left: '8px',
+                                                                top: '50%',
+                                                                bottom: 0,
+                                                                width: '1.5px',
+                                                                background: 'var(--text-tertiary)',
+                                                                opacity: 0.4,
+                                                            }} />
+                                                        )}
+                                                    </>
+                                                ) : (
+                                                    /* Pass-through vertical line for ancestor depth levels */
+                                                    hasSibling && (
+                                                        <div style={{
+                                                            position: 'absolute',
+                                                            left: '8px',
+                                                            top: 0,
+                                                            bottom: 0,
+                                                            width: '1.5px',
+                                                            background: 'var(--text-tertiary)',
+                                                            opacity: 0.4,
+                                                        }} />
+                                                    )
+                                                )}
+                                            </div>
+                                        );
+                                    }
+
+                                    return (
+                                        <div key={t.id} style={{ display: 'flex', alignItems: 'stretch', minHeight: '52px' }}>
+                                            {gutterCols}
+                                            {/* Email card */}
+                                            <Link
+                                                to={`/documents/${t.id}`}
+                                                style={{
+                                                    display: 'flex',
+                                                    flexDirection: 'column',
+                                                    justifyContent: 'center',
+                                                    flex: 1,
+                                                    padding: '8px 10px',
+                                                    borderRadius: 'var(--radius-sm)',
+                                                    background: t.id === id ? 'rgba(59, 130, 246, 0.1)' : 'var(--bg-tertiary)',
+                                                    border: `1px solid ${t.id === id ? 'var(--border-active)' : 'var(--border-secondary)'}`,
+                                                    textDecoration: 'none',
+                                                    transition: 'all 150ms ease',
+                                                    borderLeft: t._depth > 0 ? `3px solid ${t.id === id ? 'var(--primary)' : 'var(--border-primary)'}` : undefined,
+                                                    margin: '1.5px 0',
+                                                }}
+                                                onMouseEnter={e => { if (t.id !== id) e.currentTarget.style.borderColor = 'var(--border-primary)'; }}
+                                                onMouseLeave={e => { if (t.id !== id) e.currentTarget.style.borderColor = 'var(--border-secondary)'; }}
+                                            >
+                                                <div style={{ fontSize: '12px', fontWeight: 600, color: t.id === id ? 'var(--text-accent)' : 'var(--text-primary)', marginBottom: '2px' }}>
+                                                    {t.email_subject || t.original_name}
+                                                </div>
+                                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                                    {t.email_from?.split('<')[0].trim()} • {t.email_date ? new Date(t.email_date).toLocaleString() : ''}
+                                                </div>
+                                            </Link>
+                                        </div>
+                                    );
+                                })}
+                            </div>
                         </div>
-                    </div>
-                )}
+                    );
+                })()}
 
                 {/* Attachments */}
                 {doc.attachments && doc.attachments.length > 0 && (
