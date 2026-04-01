@@ -80,6 +80,50 @@ function extractFile(imgPath, offset, inode, outPath) {
     });
 }
 
+/**
+ * Extract a single file using unzip, piping stdout to a file write stream.
+ */
+function extractZipFile(zipPath, internalPath, outPath) {
+    return new Promise((resolve, reject) => {
+        const args = ['-p', zipPath, internalPath];
+        const child = spawn('unzip', args);
+        const ws = fs.createWriteStream(outPath);
+
+        child.stdout.pipe(ws);
+
+        let stderr = '';
+        child.stderr.on('data', (chunk) => { stderr += chunk.toString(); });
+
+        ws.on('finish', () => {
+            if (child.exitCode !== null && child.exitCode !== 0) {
+                // Ignore code 1 (minor warnings like extra bytes at beginning of zip)
+                // unzip usually works correctly anyway
+                if (child.exitCode === 1) resolve();
+                else reject(new Error(`unzip exited with code ${child.exitCode}: ${stderr}`));
+            } else {
+                resolve();
+            }
+        });
+
+        child.on('error', (err) => {
+            ws.destroy();
+            reject(err);
+        });
+
+        child.on('close', (code) => {
+            if (code !== 0 && !ws.destroyed) {
+                if (code === 1) {
+                    ws.destroy();
+                    resolve();
+                } else {
+                    ws.destroy();
+                    reject(new Error(`unzip exited with code ${code}: ${stderr}`));
+                }
+            }
+        });
+    });
+}
+
 async function main() {
     try {
         console.log(`\u2726 Image Extract: starting — ${selectedFiles.length} files to ${outputDir}`);
@@ -93,7 +137,11 @@ async function main() {
             const outPath = uniquePath(outputDir, basename);
 
             try {
-                await extractFile(imagePath, file.partition_offset, file.inode, outPath);
+                if (file.is_zip) {
+                    await extractZipFile(imagePath, file.path, outPath);
+                } else {
+                    await extractFile(imagePath, file.partition_offset, file.inode, outPath);
+                }
 
                 // Preserve modified time if available
                 if (file.modified) {

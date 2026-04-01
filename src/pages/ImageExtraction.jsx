@@ -4,6 +4,7 @@ import { formatSize } from '../utils/format';
 function ImageExtraction({ addToast }) {
     // Scan state
     const [imagePath, setImagePath] = useState('');
+    const [searchPattern, setSearchPattern] = useState('.*\\.(pst|ost)$');
     const [scanning, setScanning] = useState(false);
     const [scanJobId, setScanJobId] = useState(null);
     const [scanJob, setScanJob] = useState(null);
@@ -70,7 +71,7 @@ function ImageExtraction({ addToast }) {
             const res = await fetch('/api/images/scan', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ imagePath: imagePath.trim() }),
+                body: JSON.stringify({ imagePath: imagePath.trim(), searchPattern: searchPattern.trim() }),
             });
             const data = await res.json();
 
@@ -90,9 +91,9 @@ function ImageExtraction({ addToast }) {
                         const files = job.result_data || [];
                         setFoundFiles(files);
                         if (files.length === 0) {
-                            addToast('No PST/OST files found in image', 'info');
+                            addToast('No matching files found in image', 'info');
                         } else {
-                            addToast(`Found ${files.length} PST/OST file${files.length > 1 ? 's' : ''}`, 'success');
+                            addToast(`Found ${files.length} matching file${files.length > 1 ? 's' : ''}`, 'success');
                         }
                     } else {
                         const errMsg = job.error_log?.[0]?.error || 'Scan failed';
@@ -192,7 +193,7 @@ function ImageExtraction({ addToast }) {
         const labels = {
             queued: 'Queued...',
             partitions: 'Reading partition table...',
-            scanning: 'Scanning for PST/OST files...',
+            scanning: 'Scanning for matching files...',
             metadata: 'Reading file metadata...',
             extracting: 'Extracting files...',
             done: 'Complete',
@@ -205,26 +206,41 @@ function ImageExtraction({ addToast }) {
         <div style={{ maxWidth: '900px' }}>
             {/* Scan Form */}
             <div className="card" style={{ padding: '24px', marginBottom: '24px' }}>
-                <h3 style={{ margin: '0 0 16px', fontSize: '16px', fontWeight: 600 }}>Scan Forensic Disk Image</h3>
+                <h3 style={{ margin: '0 0 16px', fontSize: '16px', fontWeight: 600 }}>Scan Disk Image or Extraction Archive</h3>
                 <p style={{ margin: '0 0 16px', fontSize: '13px', color: 'var(--text-secondary)' }}>
-                    Enter the path to an E01 forensic disk image to scan for PST and OST files.
+                    Enter the path to an E01 image, UFDR, or ZIP archive to scan for files matching a pattern.
                 </p>
-                <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-end' }}>
-                    <div style={{ flex: 1 }}>
+                <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
+                    <div style={{ flex: 2 }}>
                         <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                            E01 Image Path
+                            Image / Archive Path
                         </label>
                         <input
                             type="text"
                             className="input"
                             value={imagePath}
                             onChange={e => setImagePath(e.target.value)}
-                            placeholder="/path/to/image.E01"
+                            placeholder="/path/to/image.E01 or .ufdr"
                             disabled={scanning}
                             onKeyDown={e => e.key === 'Enter' && !scanning && handleScan()}
                         />
                     </div>
-                    <button
+                    <div style={{ flex: 1 }}>
+                        <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                            File Match Regex
+                        </label>
+                        <input
+                            type="text"
+                            className="input"
+                            value={searchPattern}
+                            onChange={e => setSearchPattern(e.target.value)}
+                            placeholder=".*\.(pst|ost)$"
+                            disabled={scanning}
+                            onKeyDown={e => e.key === 'Enter' && !scanning && handleScan()}
+                        />
+                    </div>
+                    <div style={{ paddingTop: '22px' }}>
+                        <button
                         className="btn btn-primary"
                         onClick={handleScan}
                         disabled={scanning || !imagePath.trim()}
@@ -237,6 +253,7 @@ function ImageExtraction({ addToast }) {
                             </>
                         ) : 'Scan Image'}
                     </button>
+                    </div>
                 </div>
 
                 {/* Scan progress */}
@@ -263,7 +280,7 @@ function ImageExtraction({ addToast }) {
                 <div className="card" style={{ padding: '24px', marginBottom: '24px' }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                         <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>
-                            Found {foundFiles.length} PST/OST File{foundFiles.length > 1 ? 's' : ''}
+                            Found {foundFiles.length} Matching File{foundFiles.length > 1 ? 's' : ''}
                         </h3>
                         <div style={{ display: 'flex', gap: '8px' }}>
                             <button className="btn btn-ghost btn-sm" onClick={selectAll}>Select All</button>
@@ -415,8 +432,8 @@ function ImageExtraction({ addToast }) {
                         <rect x="2" y="2" width="20" height="8" rx="2" ry="2" /><rect x="2" y="14" width="20" height="8" rx="2" ry="2" />
                         <line x1="6" y1="6" x2="6.01" y2="6" /><line x1="6" y1="18" x2="6.01" y2="18" />
                     </svg>
-                    <h3 className="empty-state-title">No PST/OST Files Found</h3>
-                    <p className="empty-state-text">The image was scanned successfully but no Outlook data files were found.</p>
+                    <h3 className="empty-state-title">No Matching Files Found</h3>
+                    <p className="empty-state-text">The image was scanned successfully but no files matching the pattern were found.</p>
                 </div>
             )}
         </div>
