@@ -141,9 +141,11 @@ function Search({ activeInvestigationId, addToast }) {
     };
 
     const [shouldRefresh, setShouldRefresh] = useState(0);
+    const [lastNlQuery, setLastNlQuery] = useState('');
 
     const executeNlSearch = async () => {
         if (!query.trim()) return;
+        const currentNlQuery = query.trim();
         setLoading(true);
         try {
             const res = await fetch('/api/search/nl-to-sql', {
@@ -159,6 +161,9 @@ function Search({ activeInvestigationId, addToast }) {
             setDocType(parsed.docType || '');
             setDateFrom(parsed.dateFrom || '');
             setDateTo(parsed.dateTo || '');
+
+            // Store what they asked for in case they want to revert
+            setLastNlQuery(currentNlQuery);
 
             // Force a search refresh with the new parameters
             setShouldRefresh(n => n + 1);
@@ -176,6 +181,7 @@ function Search({ activeInvestigationId, addToast }) {
         setScoreFilter('');
         setDateFrom('');
         setDateTo('');
+        setLastNlQuery('');
         setHideDuplicates(true);
         setSearched(false);
         setResults([]);
@@ -379,6 +385,23 @@ function Search({ activeInvestigationId, addToast }) {
                     {loading ? '✨ Thinking...' : '✨ Ask AI'}
                 </button>
             </div>
+
+            {lastNlQuery && (
+                <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '-16px', marginBottom: '24px', display: 'flex', alignItems: 'center' }}>
+                    ✨ Generated from:&nbsp;<i>"{lastNlQuery}"</i>
+                    <button 
+                        type="button" 
+                        className="btn btn-sm" 
+                        style={{ background: 'transparent', border: 'none', color: 'var(--primary)', padding: '0 8px', marginLeft: '4px', cursor: 'pointer', textDecoration: 'underline' }}
+                        onClick={() => {
+                            setQuery(lastNlQuery);
+                            setLastNlQuery('');
+                        }}
+                    >
+                        Edit prompt
+                    </button>
+                </div>
+            )}
 
             {/* Filters */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '24px' }}>

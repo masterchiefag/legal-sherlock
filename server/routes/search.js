@@ -32,6 +32,9 @@ router.get('/', (req, res) => {
             for (const token of tokens) {
                 if (token.toUpperCase() === 'OR') {
                     processed.push('OR');
+                } else if (token.match(/^[a-z_]+:/i)) {
+                    // It's a column filter with FTS syntax (e.g. email_from:"abc")
+                    processed.push(token);
                 } else if (token.startsWith('"') && token.endsWith('"') && token.length > 2) {
                     processed.push(token);
                 } else if (token.startsWith('-')) {
@@ -245,7 +248,7 @@ router.post('/nl-to-sql', async (req, res) => {
 Do not output markdown. Do not wrap in \`\`\`json. Just output the raw JSON object.
 
 The parameters you can output in the JSON are:
-- "q": The FTS5 string. You can use standard text queries or exact column matches like email_from:"name" AND text_content:"fraud". Available columns: original_name, text_content, email_subject, email_from, email_to.
+- "q": The FTS5 string. For general keyword searches across the document, DO NOT USE ANY column prefix like text_content:. Just output the raw string, e.g. "cost" or "fraud". ONLY use exact column matches (e.g. email_from:"name" or email_to:"Jane") when specifically filtering on metadata like senders/recipients. Available columns: original_name, email_subject, email_from, email_to.
 - "docType": Optional. Can be "email", "chat", "file", or "attachment".
 - "dateFrom": Optional. YYYY-MM-DD format.
 - "dateTo": Optional. YYYY-MM-DD format.
@@ -256,7 +259,7 @@ Output: {"q":"email_from:\\"Atul\\" AND email_to:\\"John\\"","docType":"email","
 
 Example 2:
 Input: Find chats about the secret project
-Output: {"q":"text_content:\\"secret project\\"","docType":"chat"}
+Output: {"q":"\\"secret project\\"","docType":"chat"}
 
 Draft a response for the user's input.
 Input: ${JSON.stringify(query)}`;
