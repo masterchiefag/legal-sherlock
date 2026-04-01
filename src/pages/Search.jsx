@@ -572,7 +572,7 @@ function Search({ activeInvestigationId, addToast }) {
                                                     <span>📎 {r.attachment_count} attachment{r.attachment_count > 1 ? 's' : ''}</span>
                                                 </>
                                             )}
-                                            {r.doc_type === 'email' && r.thread_count > 1 && (
+                                            {(r.doc_type === 'email' || r.doc_type === 'chat') && r.thread_count > 1 && (
                                                 <>
                                                     <span>•</span>
                                                     <span>🔗 #{r.thread_position} of {r.thread_count}</span>

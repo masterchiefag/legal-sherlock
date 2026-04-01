@@ -142,8 +142,8 @@ router.get('/', (req, res) => {
             d._snippet as snippet,
             d._rank as rank,
             (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
-            (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email' AND t.investigation_id = d.investigation_id) as thread_count,
-            (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email' AND t.investigation_id = d.investigation_id AND t.email_date <= d.email_date) as thread_position,
+            (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type IN ('email', 'chat') AND t.investigation_id = d.investigation_id) as thread_count,
+            (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type IN ('email', 'chat') AND t.investigation_id = d.investigation_id AND t.email_date <= d.email_date) as thread_position,
             (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score,
             (SELECT cl.reasoning FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_reasoning,
             (SELECT json_group_array(json_object('id', t.id, 'name', t.name, 'color', t.color))

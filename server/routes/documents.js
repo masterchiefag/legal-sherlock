@@ -470,7 +470,7 @@ router.get('/', (req, res) => {
          WHERE dr.document_id = d.id
          ORDER BY dr.reviewed_at DESC LIMIT 1) as review_status,
         (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
-        (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email' AND t.investigation_id = d.investigation_id) as thread_count,
+        (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type IN ('email', 'chat') AND t.investigation_id = d.investigation_id) as thread_count,
         (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score
       FROM documents d
       ${where}
@@ -520,7 +520,7 @@ router.get('/:id', (req, res) => {
             doc.thread = db.prepare(`
         SELECT id, original_name, email_from, email_to, email_subject, email_date, doc_type, message_id, in_reply_to
         FROM documents
-        WHERE thread_id = ? AND doc_type = 'email' AND investigation_id = ?
+        WHERE thread_id = ? AND doc_type IN ('email', 'chat') AND investigation_id = ?
         ORDER BY email_date ASC
       `).all(doc.thread_id, doc.investigation_id);
         } else {

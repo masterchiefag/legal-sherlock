@@ -669,7 +669,7 @@ function DocumentReview({ addToast }) {
 
                     return (
                         <div className="doc-sidebar-section">
-                            <h3>Thread ({doc.thread.length} emails)</h3>
+                            <h3>Thread ({doc.thread.length} messages)</h3>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '0px' }}>
                                 {items.map((t, i) => {
                                     // For each depth level, determine if a vertical line should continue
