@@ -63,11 +63,11 @@ router.get('/', (req, res) => {
             filterWhere += ' AND d.is_duplicate = 0';
         }
 
-        // Latest-in-thread filter: keep only the most recent email per thread
+        // Latest-in-thread filter: keep only the most recent email/chat per thread
         if (latest_thread_only === '1') {
-            filterWhere += ` AND (d.doc_type != 'email' OR d.thread_id IS NULL OR d.email_date = (
+            filterWhere += ` AND (d.doc_type NOT IN ('email', 'chat') OR d.thread_id IS NULL OR d.email_date = (
                 SELECT MAX(t2.email_date) FROM documents t2
-                WHERE t2.thread_id = d.thread_id AND t2.doc_type = 'email'
+                WHERE t2.thread_id = d.thread_id AND t2.doc_type IN ('email', 'chat')
                 AND t2.investigation_id = d.investigation_id
             ))`;
         }
