@@ -232,4 +232,64 @@ router.get('/', (req, res) => {
     }
 });
 
+// Local Gemma NLP Search Translation Endpoint
+router.post('/nl-to-sql', async (req, res) => {
+    try {
+        const { query } = req.body;
+        if (!query) return res.status(400).json({ error: 'Query required' });
+
+        const ollamaUrl = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
+        const model = process.env.OLLAMA_MODEL || 'gemma3:4b';
+
+        const systemPrompt = `You are a strict JSON-only API that translates natural language into search parameters for an eDiscovery tool.
+Do not output markdown. Do not wrap in \`\`\`json. Just output the raw JSON object.
+
+The parameters you can output in the JSON are:
+- "q": The FTS5 string. You can use standard text queries or exact column matches like email_from:"name" AND text_content:"fraud". Available columns: original_name, text_content, email_subject, email_from, email_to.
+- "docType": Optional. Can be "email", "chat", "file", or "attachment".
+- "dateFrom": Optional. YYYY-MM-DD format.
+- "dateTo": Optional. YYYY-MM-DD format.
+
+Example 1:
+Input: Find emails from Atul to John sent in January 2022
+Output: {"q":"email_from:\\"Atul\\" AND email_to:\\"John\\"","docType":"email","dateFrom":"2022-01-01","dateTo":"2022-01-31"}
+
+Example 2:
+Input: Find chats about the secret project
+Output: {"q":"text_content:\\"secret project\\"","docType":"chat"}
+
+Draft a response for the user's input.
+Input: ${JSON.stringify(query)}`;
+
+        const response = await fetch(`${ollamaUrl}/api/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model: model,
+                prompt: systemPrompt,
+                stream: false,
+                format: 'json'
+            })
+        });
+
+        if (!response.ok) {
+            return res.status(response.status).json({ error: 'Ollama API error' });
+        }
+
+        const data = await response.json();
+        let parsed;
+        try {
+            parsed = JSON.parse(data.response);
+        } catch (e) {
+            const match = data.response.match(/\{[\s\S]*\}/);
+            parsed = match ? JSON.parse(match[0]) : {};
+        }
+
+        res.json(parsed);
+    } catch (err) {
+        console.error("NL Search Error:", err);
+        res.status(500).json({ error: 'Failed to query local LLM' });
+    }
+});
+
 export default router;
