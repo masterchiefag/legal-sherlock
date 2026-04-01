@@ -7,6 +7,7 @@ import DocumentReview from './pages/DocumentReview';
 import ClassificationLogs from './pages/ClassificationLogs';
 import Investigations from './pages/Investigations';
 import Playground from './pages/Playground';
+import ImageExtraction from './pages/ImageExtraction';
 
 function App() {
     const location = useLocation();
@@ -58,6 +59,7 @@ function App() {
         '/search': 'Search & Browse',
         '/ai-logs': 'AI Activity Logs',
         '/playground': 'LLM Playground',
+        '/image-extraction': 'Image Extraction',
     }[location.pathname] || (location.pathname.startsWith('/documents/') ? 'Document Review' : '');
 
     return (
@@ -134,6 +136,13 @@ function App() {
                         </svg>
                         Playground
                     </NavLink>
+                    <NavLink to="/image-extraction" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+                        <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="2" y="2" width="20" height="8" rx="2" ry="2" /><rect x="2" y="14" width="20" height="8" rx="2" ry="2" />
+                            <line x1="6" y1="6" x2="6.01" y2="6" /><line x1="6" y1="18" x2="6.01" y2="18" />
+                        </svg>
+                        Image Extraction
+                    </NavLink>
                 </nav>
                 <div style={{ padding: '16px 12px', borderTop: '1px solid var(--border-secondary)' }}>
                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textAlign: 'center' }}>
@@ -156,6 +165,7 @@ function App() {
                             <Route path="/search" element={<Search activeInvestigationId={activeInvestigationId} addToast={addToast} />} />
                             <Route path="/ai-logs" element={<ClassificationLogs activeInvestigationId={activeInvestigationId} />} />
                             <Route path="/playground" element={<Playground addToast={addToast} />} />
+                            <Route path="/image-extraction" element={<ImageExtraction addToast={addToast} />} />
                             <Route path="/documents/:id" element={<DocumentReview activeInvestigationId={activeInvestigationId} addToast={addToast} />} />
                             <Route path="*" element={
                                 <div className="empty-state">

@@ -341,35 +341,45 @@ function DocumentReview({ addToast }) {
                     }
                     if (isPdf) {
                         return (
-                            <div style={{ display: 'flex', flexDirection: 'column', height: '80vh' }}>
-                                <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 0' }}>
-                                    <a
-                                        href={`/uploads/${doc.filename}`}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        style={{ color: 'var(--text-accent)', fontSize: '13px' }}
-                                    >
-                                        Open in new tab ↗
-                                    </a>
-                                </div>
-                                <object
-                                    data={`/uploads/${doc.filename}`}
-                                    type="application/pdf"
-                                    style={{ width: '100%', flex: 1, border: 'none', borderRadius: '8px' }}
-                                >
-                                    <div className="empty-state" style={{ padding: '48px' }}>
-                                        <p className="empty-state-text">PDF preview not available in this browser.</p>
+                            <div>
+                                <div style={{ display: 'flex', flexDirection: 'column', height: '80vh' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 0' }}>
                                         <a
                                             href={`/uploads/${doc.filename}`}
                                             target="_blank"
                                             rel="noopener noreferrer"
-                                            className="btn btn-outline btn-sm"
-                                            style={{ marginTop: '12px' }}
+                                            style={{ color: 'var(--text-accent)', fontSize: '13px' }}
                                         >
-                                            Open PDF ↗
+                                            Open in new tab ↗
                                         </a>
                                     </div>
-                                </object>
+                                    <object
+                                        data={`/uploads/${doc.filename}`}
+                                        type="application/pdf"
+                                        style={{ width: '100%', flex: 1, border: 'none', borderRadius: '8px' }}
+                                    >
+                                        <div className="empty-state" style={{ padding: '48px' }}>
+                                            <p className="empty-state-text">PDF preview not available in this browser.</p>
+                                            <a
+                                                href={`/uploads/${doc.filename}`}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="btn btn-outline btn-sm"
+                                                style={{ marginTop: '12px' }}
+                                            >
+                                                Open PDF ↗
+                                            </a>
+                                        </div>
+                                    </object>
+                                </div>
+                                {highlightedText?.trim() && (
+                                    <div style={{ marginTop: '24px', borderTop: '1px solid var(--border-secondary)', paddingTop: '20px' }}>
+                                        <h4 style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                            Extracted Text
+                                        </h4>
+                                        <div className="doc-text-content" dangerouslySetInnerHTML={{ __html: highlightedText }} />
+                                    </div>
+                                )}
                             </div>
                         );
                     }

@@ -19,6 +19,7 @@ router.get('/', (req, res) => {
             score_min,
             score_max,
             hide_duplicates,
+            latest_thread_only,
             investigation_id,
         } = req.query;
 
@@ -60,6 +61,15 @@ router.get('/', (req, res) => {
         // Deduplication filter
         if (hide_duplicates === '1') {
             filterWhere += ' AND d.is_duplicate = 0';
+        }
+
+        // Latest-in-thread filter: keep only the most recent email per thread
+        if (latest_thread_only === '1') {
+            filterWhere += ` AND (d.doc_type != 'email' OR d.thread_id IS NULL OR d.email_date = (
+                SELECT MAX(t2.email_date) FROM documents t2
+                WHERE t2.thread_id = d.thread_id AND t2.doc_type = 'email'
+                AND t2.investigation_id = d.investigation_id
+            ))`;
         }
 
         // Investigation scope
@@ -133,6 +143,7 @@ router.get('/', (req, res) => {
             d._rank as rank,
             (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
             (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email' AND t.investigation_id = d.investigation_id) as thread_count,
+            (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email' AND t.investigation_id = d.investigation_id AND t.email_date <= d.email_date) as thread_position,
             (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score,
             (SELECT cl.reasoning FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_reasoning,
             (SELECT json_group_array(json_object('id', t.id, 'name', t.name, 'color', t.color))

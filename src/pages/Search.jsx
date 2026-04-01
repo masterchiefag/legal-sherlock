@@ -17,6 +17,7 @@ function Search({ activeInvestigationId, addToast }) {
     const [dateFrom, setDateFrom] = useState(searchParams.get('from') || '');
     const [dateTo, setDateTo] = useState(searchParams.get('to') || '');
     const [hideDuplicates, setHideDuplicates] = useState(searchParams.get('dedup') !== '0');
+    const [latestThreadOnly, setLatestThreadOnly] = useState(searchParams.get('latest_thread') === '1');
 
     // Batch Classification
     const [showBatchPanel, setShowBatchPanel] = useState(false);
@@ -93,6 +94,7 @@ function Search({ activeInvestigationId, addToast }) {
         if (dateFrom) apiParams.set('date_from', dateFrom);
         if (dateTo) apiParams.set('date_to', dateTo);
         if (hideDuplicates) apiParams.set('hide_duplicates', '1');
+        if (latestThreadOnly) apiParams.set('latest_thread_only', '1');
         if (activeInvestigationId) apiParams.set('investigation_id', activeInvestigationId);
 
         if (scoreFilter) {
@@ -113,6 +115,7 @@ function Search({ activeInvestigationId, addToast }) {
         if (dateFrom) urlParams.from = dateFrom;
         if (dateTo) urlParams.to = dateTo;
         if (!hideDuplicates) urlParams.dedup = '0';
+        if (latestThreadOnly) urlParams.latest_thread = '1';
         if (page > 1) urlParams.page = String(page);
         setSearchParams(urlParams, { replace: true });
 
@@ -127,7 +130,7 @@ function Search({ activeInvestigationId, addToast }) {
         }
 
         setLoading(false);
-    }, [query, reviewStatus, docType, scoreFilter, dateFrom, dateTo, hideDuplicates, hasActiveFilters, setSearchParams]);
+    }, [query, reviewStatus, docType, scoreFilter, dateFrom, dateTo, hideDuplicates, latestThreadOnly, hasActiveFilters, setSearchParams]);
 
     const handleKeyDown = (e) => {
         if (e.key === 'Enter') doSearch();
@@ -321,57 +324,76 @@ function Search({ activeInvestigationId, addToast }) {
             </div>
 
             {/* Filters */}
-            <div className="filters-panel">
-                <select className="filter-select" value={reviewStatus} onChange={e => setReviewStatus(e.target.value)}>
-                    <option value="">All Review Statuses</option>
-                    <option value="pending">Pending</option>
-                    <option value="relevant">Relevant</option>
-                    <option value="not_relevant">Not Relevant</option>
-                    <option value="privileged">Privileged</option>
-                </select>
-                <select className="filter-select" value={docType} onChange={e => setDocType(e.target.value)}>
-                    <option value="">All Types</option>
-                    <option value="email">Emails</option>
-                    <option value="file">Files</option>
-                    <option value="attachment">Attachments</option>
-                </select>
-                <select className="filter-select" value={scoreFilter} onChange={e => setScoreFilter(e.target.value)}>
-                    <option value="">All Scores</option>
-                    <option value="5">🔴 5 — Smoking Gun</option>
-                    <option value="4">🟠 4 — Highly Relevant</option>
-                    <option value="3">🟡 3 — Potentially Relevant</option>
-                    <option value="2">🔵 2 — Unlikely Relevant</option>
-                    <option value="1">⚪ 1 — Not Relevant</option>
-                    <option value="unscored">— Unscored</option>
-                </select>
-                <input type="date" className="input" style={{ width: 'auto', padding: '8px 14px', fontSize: '13px' }} value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
-                <input type="date" className="input" style={{ width: 'auto', padding: '8px 14px', fontSize: '13px' }} value={dateTo} onChange={e => setDateTo(e.target.value)} />
-                <button className="btn btn-primary" onClick={() => doSearch()}>Search</button>
-                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)', userSelect: 'none', whiteSpace: 'nowrap' }}>
-                    <input
-                        type="checkbox"
-                        checked={hideDuplicates}
-                        onChange={(e) => { setHideDuplicates(e.target.checked); setTimeout(() => doSearch(), 0); }}
-                        style={{ width: '16px', height: '16px', cursor: 'pointer', accentColor: 'var(--primary)' }}
-                    />
-                    Hide Duplicates
-                </label>
-                {(query.trim() || hasActiveFilters) && (
-                    <>
-                        <button className="btn btn-ghost" onClick={clearSearch}>Clear</button>
-                        <button className="btn btn-ghost" onClick={saveCurrentSearch} title="Bookmark this search" style={{ padding: '6px 10px', fontSize: '16px' }}>
-                            &#9733;
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '24px' }}>
+                {/* Row 1: Dropdowns + dates + search */}
+                <div style={{ display: 'flex', gap: '10px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <select className="filter-select" value={reviewStatus} onChange={e => setReviewStatus(e.target.value)}>
+                        <option value="">All Statuses</option>
+                        <option value="pending">Pending</option>
+                        <option value="relevant">Relevant</option>
+                        <option value="not_relevant">Not Relevant</option>
+                        <option value="privileged">Privileged</option>
+                    </select>
+                    <select className="filter-select" value={docType} onChange={e => setDocType(e.target.value)}>
+                        <option value="">All Types</option>
+                        <option value="email">Emails</option>
+                        <option value="file">Files</option>
+                        <option value="attachment">Attachments</option>
+                    </select>
+                    <select className="filter-select" value={scoreFilter} onChange={e => setScoreFilter(e.target.value)}>
+                        <option value="">All Scores</option>
+                        <option value="5">5 — Smoking Gun</option>
+                        <option value="4">4 — Highly Relevant</option>
+                        <option value="3">3 — Potentially Relevant</option>
+                        <option value="2">2 — Unlikely Relevant</option>
+                        <option value="1">1 — Not Relevant</option>
+                        <option value="unscored">Unscored</option>
+                    </select>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
+                        <input type="date" className="input" style={{ width: 'auto', padding: '8px 12px', fontSize: '13px' }} value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
+                        <span style={{ color: 'var(--text-tertiary)', fontSize: '12px' }}>–</span>
+                        <input type="date" className="input" style={{ width: 'auto', padding: '8px 12px', fontSize: '13px' }} value={dateTo} onChange={e => setDateTo(e.target.value)} />
+                    </div>
+                    <button className="btn btn-primary" onClick={() => doSearch()}>Search</button>
+                </div>
+
+                {/* Row 2: Toggles + actions */}
+                <div style={{ display: 'flex', gap: '16px', alignItems: 'center', flexWrap: 'wrap' }}>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)', userSelect: 'none', whiteSpace: 'nowrap' }}>
+                        <input
+                            type="checkbox"
+                            checked={hideDuplicates}
+                            onChange={(e) => { setHideDuplicates(e.target.checked); setTimeout(() => doSearch(), 0); }}
+                            style={{ width: '15px', height: '15px', cursor: 'pointer', accentColor: 'var(--primary)' }}
+                        />
+                        Hide Duplicates
+                    </label>
+                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)', userSelect: 'none', whiteSpace: 'nowrap' }}>
+                        <input
+                            type="checkbox"
+                            checked={latestThreadOnly}
+                            onChange={(e) => { setLatestThreadOnly(e.target.checked); setTimeout(() => doSearch(), 0); }}
+                            style={{ width: '15px', height: '15px', cursor: 'pointer', accentColor: 'var(--primary)' }}
+                        />
+                        Latest in Thread
+                    </label>
+                    {(query.trim() || hasActiveFilters) && (
+                        <>
+                            <button className="btn btn-ghost btn-sm" onClick={clearSearch}>Clear</button>
+                            <button className="btn btn-ghost btn-sm" onClick={saveCurrentSearch} title="Bookmark this search" style={{ padding: '4px 8px', fontSize: '15px' }}>
+                                &#9733;
+                            </button>
+                        </>
+                    )}
+                    {results.length > 0 && (
+                        <button className="btn btn-secondary btn-sm" style={{ marginLeft: 'auto' }} onClick={toggleBatchPanel}>
+                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: '14px', height: '14px', marginRight: '5px' }}>
+                                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                            </svg>
+                            Batch AI Classify
                         </button>
-                    </>
-                )}
-                {results.length > 0 && (
-                    <button className="btn btn-secondary" style={{ marginLeft: 'auto' }} onClick={toggleBatchPanel}>
-                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: '16px', height: '16px', marginRight: '6px' }}>
-                            <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
-                        </svg>
-                        Batch AI Classify
-                    </button>
-                )}
+                    )}
+                </div>
             </div>
 
             {/* Saved Searches */}
@@ -538,7 +560,7 @@ function Search({ activeInvestigationId, addToast }) {
                                             {r.doc_type === 'email' && r.thread_count > 1 && (
                                                 <>
                                                     <span>•</span>
-                                                    <span>🔗 {r.thread_count} in thread</span>
+                                                    <span>🔗 #{r.thread_position} of {r.thread_count}</span>
                                                 </>
                                             )}
                                             {r.tags?.length > 0 && (
