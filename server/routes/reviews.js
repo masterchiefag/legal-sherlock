@@ -81,13 +81,55 @@ router.get('/stats', (req, res) => {
       ORDER BY count DESC
     `).all(...invParams);
 
-        const recentUploads = db.prepare(`
-      SELECT id, original_name, size_bytes, uploaded_at, status
-      FROM documents
-      WHERE 1=1${invFilter}
-      ORDER BY uploaded_at DESC
-      LIMIT 5
+        // Document type breakdown
+        const typeCounts = db.prepare(`
+      SELECT doc_type, COUNT(*) as count
+      FROM documents WHERE 1=1${invFilter}
+      GROUP BY doc_type
     `).all(...invParams);
+
+        // Total size
+        const totalSize = db.prepare(`
+      SELECT COALESCE(SUM(size_bytes), 0) as total_size FROM documents WHERE 1=1${invFilter}
+    `).get(...invParams).total_size;
+
+        // Duplicates count
+        const dupeCount = db.prepare(`
+      SELECT COUNT(*) as count FROM documents WHERE is_duplicate = 1${invFilter}
+    `).get(...invParams).count;
+
+        // AI classification coverage
+        const classifiedCount = db.prepare(`
+      SELECT COUNT(DISTINCT c.document_id) as count
+      FROM classifications c JOIN documents d ON d.id = c.document_id
+      WHERE 1=1${investigation_id ? ' AND d.investigation_id = ?' : ''}
+    `).get(...invParams).count;
+
+        // Top senders (top 10)
+        const topSenders = db.prepare(`
+      SELECT email_from, COUNT(*) as count
+      FROM documents WHERE doc_type = 'email' AND email_from IS NOT NULL${invFilter}
+      GROUP BY email_from ORDER BY count DESC LIMIT 10
+    `).all(...invParams);
+
+        // Import jobs for this investigation
+        const importJobs = investigation_id ? db.prepare(`
+      SELECT filename as original_name, status, total_emails, total_attachments, custodian, started_at, completed_at
+      FROM import_jobs WHERE investigation_id = ?
+      ORDER BY rowid DESC
+    `).all(investigation_id) : [];
+
+        // Custodian breakdown
+        const custodians = investigation_id ? db.prepare(`
+      SELECT custodian as name,
+        COUNT(*) as document_count,
+        SUM(CASE WHEN doc_type = 'email' THEN 1 ELSE 0 END) as email_count,
+        SUM(CASE WHEN doc_type = 'attachment' THEN 1 ELSE 0 END) as attachment_count,
+        SUM(CASE WHEN doc_type = 'chat' THEN 1 ELSE 0 END) as chat_count,
+        SUM(CASE WHEN doc_type = 'file' THEN 1 ELSE 0 END) as file_count
+      FROM documents WHERE investigation_id = ? AND custodian IS NOT NULL
+      GROUP BY custodian ORDER BY document_count DESC
+    `).all(investigation_id) : [];
 
         res.json({
             total_documents: totalDocs,
@@ -96,7 +138,13 @@ router.get('/stats', (req, res) => {
             review_percentage: totalDocs > 0 ? Math.round((reviewedDocs / totalDocs) * 100) : 0,
             status_breakdown: statusCounts,
             tag_breakdown: tagCounts,
-            recent_uploads: recentUploads,
+            type_breakdown: typeCounts,
+            total_size: totalSize,
+            duplicate_count: dupeCount,
+            classified_count: classifiedCount,
+            top_senders: topSenders,
+            import_jobs: importJobs,
+            custodians: custodians,
         });
     } catch (err) {
         console.error(err);
