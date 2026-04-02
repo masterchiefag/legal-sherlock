@@ -26,13 +26,43 @@ export async function extractText(filePath, mimeType) {
             return result.value;
         }
 
+        if (ext === '.xls' || ext === '.xlsx') {
+            const XLSX = (await import('xlsx')).default;
+            const workbook = XLSX.readFile(filePath);
+            const texts = [];
+            for (const sheetName of workbook.SheetNames) {
+                const sheet = workbook.Sheets[sheetName];
+                const csv = XLSX.utils.sheet_to_csv(sheet);
+                if (csv.trim()) {
+                    texts.push(`[${sheetName}]\n${csv}`);
+                }
+            }
+            return texts.join('\n\n');
+        }
+
+        if (ext === '.doc') {
+            const { execFile } = await import('child_process');
+            const { promisify } = await import('util');
+            const execFileAsync = promisify(execFile);
+            try {
+                const { stdout } = await execFileAsync('antiword', [filePath]);
+                return stdout;
+            } catch (err) {
+                if (err.code === 'ENOENT') {
+                    console.warn('antiword not installed. Install with: brew install antiword');
+                    return '';
+                }
+                throw err;
+            }
+        }
+
         // Skip binary/media files that have no extractable text
         const skipExts = new Set([
             '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.ico', '.svg', '.tiff', '.tif',
             '.mp3', '.mp4', '.wav', '.avi', '.mov', '.mkv', '.flac', '.ogg', '.wmv', '.webm',
             '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2',
             '.exe', '.dll', '.so', '.dylib', '.bin',
-            '.xls', '.xlsx', '.ppt', '.pptx', '.doc',
+            '.ppt', '.pptx',
         ]);
         if (skipExts.has(ext)) {
             return '';
@@ -71,6 +101,19 @@ export async function extractMetadata(filePath, mimeType) {
 
         if (ext === '.docx') {
             return await extractDocxMetadata(filePath, meta);
+        }
+
+        if (ext === '.xls' || ext === '.xlsx') {
+            const XLSX = (await import('xlsx')).default;
+            const workbook = XLSX.readFile(filePath);
+            const props = workbook.Props || {};
+            meta.author = props.Author || null;
+            meta.title = props.Title || null;
+            meta.createdAt = props.CreatedDate ? new Date(props.CreatedDate).toISOString() : null;
+            meta.modifiedAt = props.ModifiedDate ? new Date(props.ModifiedDate).toISOString() : null;
+            meta.creatorTool = props.Application || null;
+            meta.keywords = props.Keywords || null;
+            return meta;
         }
     } catch (err) {
         console.error(`Metadata extraction failed for ${filePath}:`, err.message);
