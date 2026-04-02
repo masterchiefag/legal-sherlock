@@ -78,7 +78,7 @@ export async function extractText(filePath, mimeType) {
 
 /**
  * Extract document metadata from uploaded files.
- * Supports: .pdf, .docx
+ * Supports: .pdf, .docx, .doc, .xls, .xlsx
  *
  * Returns: { author, title, createdAt, modifiedAt, creatorTool, keywords }
  * All fields are strings or null.
@@ -114,6 +114,10 @@ export async function extractMetadata(filePath, mimeType) {
             meta.creatorTool = props.Application || null;
             meta.keywords = props.Keywords || null;
             return meta;
+        }
+
+        if (ext === '.doc') {
+            return extractDocOle2Metadata(filePath, meta);
         }
     } catch (err) {
         console.error(`Metadata extraction failed for ${filePath}:`, err.message);
@@ -279,4 +283,56 @@ function extractXmlTag(xml, tagName) {
     const regex = new RegExp(`<${tagName}[^>]*>([^<]+)</${tagName}>`, 'i');
     const match = xml.match(regex);
     return match ? match[1].trim() : null;
+}
+
+/**
+ * Extract metadata from a .doc file by parsing OLE2 SummaryInformation stream.
+ * Uses cfb (bundled with xlsx) to read the compound document structure.
+ */
+function extractDocOle2Metadata(filePath, meta) {
+    const cfb = require('cfb');
+    const buf = fs.readFileSync(filePath);
+    const container = cfb.read(buf);
+    const si = cfb.find(container, '/\x05SummaryInformation');
+    if (!si || si.content.length < 48) return meta;
+
+    const data = si.content;
+    const numSets = data.readUInt32LE(24);
+    if (numSets < 1) return meta;
+
+    const setOffset = data.readUInt32LE(44);
+    const numProps = data.readUInt32LE(setOffset + 4);
+
+    // OLE2 SummaryInformation property IDs
+    const PROP_MAP = { 2: 'title', 3: 'subject', 4: 'author', 5: 'keywords', 12: 'createdAt', 13: 'modifiedAt', 18: 'application' };
+
+    for (let i = 0; i < numProps; i++) {
+        const propId = data.readUInt32LE(setOffset + 8 + i * 8);
+        const propOff = data.readUInt32LE(setOffset + 8 + i * 8 + 4);
+        const abs = setOffset + propOff;
+        const name = PROP_MAP[propId];
+        if (!name || abs + 8 > data.length) continue;
+
+        const type = data.readUInt32LE(abs);
+        try {
+            if (type === 0x1e) { // VT_LPSTR
+                const len = data.readUInt32LE(abs + 4);
+                if (abs + 8 + len <= data.length) {
+                    const str = data.toString('utf-8', abs + 8, abs + 8 + len).replace(/\x00+$/, '').trim();
+                    if (str) {
+                        if (name === 'application') meta.creatorTool = str;
+                        else if (name === 'subject') { /* skip subject */ }
+                        else meta[name] = str;
+                    }
+                }
+            } else if (type === 0x40) { // VT_FILETIME
+                const lo = data.readUInt32LE(abs + 4);
+                const hi = data.readUInt32LE(abs + 8);
+                const ms = (hi * 0x100000000 + lo) / 10000 - 11644473600000;
+                if (ms > 0) meta[name] = new Date(ms).toISOString();
+            }
+        } catch (e) { /* skip unparseable property */ }
+    }
+
+    return meta;
 }
