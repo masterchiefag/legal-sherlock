@@ -345,7 +345,8 @@ function Search({ activeInvestigationId, addToast }) {
         }
         if (doc.doc_type === 'chat') {
             const parts = [];
-            if (doc.email_from) parts.push(`Participants: ${doc.email_from}`);
+            if (doc.email_from) parts.push(`From: ${doc.email_from}`);
+            if (doc.email_to) parts.push(`Participants: ${doc.email_to}`);
             if (doc.email_date) parts.push(new Date(doc.email_date).toLocaleDateString());
             return parts.join(' • ');
         }

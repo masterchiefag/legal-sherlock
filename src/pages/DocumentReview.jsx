@@ -294,6 +294,43 @@ function DocumentReview({ addToast }) {
                     </div>
                 )}
 
+                {/* Chat header bar */}
+                {isChat && (
+                    <div style={{
+                        padding: '16px 20px',
+                        background: 'var(--bg-tertiary)',
+                        borderRadius: 'var(--radius-md)',
+                        marginBottom: '16px',
+                        fontSize: '13px',
+                        display: 'flex',
+                        flexDirection: 'column',
+                        gap: '6px',
+                        border: '1px solid var(--border-secondary)'
+                    }}>
+                        <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>
+                            💬 {doc.email_subject || '(untitled chat)'}
+                        </div>
+                        {doc.email_from && (
+                            <div className="flex gap-8">
+                                <span style={{ color: 'var(--text-tertiary)', minWidth: '80px' }}>Senders</span>
+                                <span style={{ color: 'var(--text-secondary)' }}>{doc.email_from}</span>
+                            </div>
+                        )}
+                        {doc.email_to && (
+                            <div className="flex gap-8">
+                                <span style={{ color: 'var(--text-tertiary)', minWidth: '80px' }}>Participants</span>
+                                <span style={{ color: 'var(--text-secondary)' }}>{doc.email_to}</span>
+                            </div>
+                        )}
+                        <div className="flex gap-8">
+                            <span style={{ color: 'var(--text-tertiary)', minWidth: '80px' }}>Date</span>
+                            <span style={{ color: 'var(--text-secondary)' }}>
+                                {doc.email_date ? new Date(doc.email_date).toLocaleString() : '—'}
+                            </span>
+                        </div>
+                    </div>
+                )}
+
                 {doc.status === 'processing' ? (
                     <div className="empty-state">
                         <div className="spinner" style={{ marginBottom: '12px' }}></div>

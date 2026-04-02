@@ -268,6 +268,18 @@ Example 3:
 Input: show emails having text cost
 Output: {"q":"cost","docType":"email"}
 
+Example 4:
+Input: WhatsApp messages from Alice to Bob
+Output: {"q":"email_from:\\"Alice\\" AND email_to:\\"Bob\\"","docType":"chat"}
+
+Example 5:
+Input: group chats involving Sandeep
+Output: {"q":"email_to:\\"Sandeep\\"","docType":"chat"}
+
+Example 6:
+Input: messages sent by 919876543210
+Output: {"q":"email_from:\\"919876543210\\"","docType":"chat"}
+
 Draft a response for the user's input.
 Input: ${JSON.stringify(query)}`;
 
