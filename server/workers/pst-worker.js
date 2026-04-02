@@ -19,7 +19,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
 const EML_PARSE_WORKER = path.join(__dirname, 'eml-parse-worker.js');
 
-const { jobId, filename, filepath, originalname, investigation_id, resume } = workerData;
+const { jobId, filename, filepath, originalname, investigation_id, custodian, resume } = workerData;
 
 // Thread pool size for parallel email parsing
 const PARSE_CONCURRENCY = Math.max(2, Math.min(os.cpus().length - 1, 6));
@@ -44,8 +44,8 @@ const insertEmail = db.prepare(`
         email_from, email_to, email_cc, email_subject, email_date,
         email_bcc, email_headers_raw, email_received_chain,
         email_originating_ip, email_auth_results, email_server_info, email_delivery_date,
-        investigation_id
-    ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        investigation_id, custodian
+    ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const insertAttachment = db.prepare(`
@@ -53,10 +53,10 @@ const insertAttachment = db.prepare(`
         id, filename, original_name, mime_type, size_bytes, text_content, status,
         doc_type, parent_id, thread_id,
         doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
-        content_hash, is_duplicate, investigation_id
+        content_hash, is_duplicate, investigation_id, custodian
     ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
         ?, ?, ?, ?, ?, ?,
-        ?, ?, ?)
+        ?, ?, ?, ?)
 `);
 
 const updateProgress = db.prepare(
@@ -522,7 +522,7 @@ async function processEmail(eml) {
             eml.bcc || null, eml.headersRaw || null, eml.receivedChain || null,
             eml.originatingIp || null, eml.authResults || null,
             eml.serverInfo || null, eml.deliveryDate || null,
-            investigation_id
+            investigation_id, custodian || null
         );
     });
 
@@ -581,7 +581,7 @@ async function processEmail(eml) {
                 att.contentType, att.size,
                 emailId, threadId,
                 oversizeNote, null, null, null, null, null,
-                attHash, isDuplicate, investigation_id
+                attHash, isDuplicate, investigation_id, custodian || null
             );
         });
 

@@ -134,6 +134,8 @@ const emailMigrations = [
   // Deduplication
   { col: 'content_hash', type: 'TEXT' },
   { col: 'is_duplicate', type: 'INTEGER DEFAULT 0' },
+  // Custodian
+  { col: 'custodian', type: 'TEXT' },
 ];
 
 for (const { col, type } of emailMigrations) {
@@ -158,6 +160,7 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_thread_doctype ON documents(th
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_thread_inv_date ON documents(thread_id, investigation_id, doc_type, email_date)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_is_duplicate ON documents(is_duplicate)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_custodian ON documents(custodian)`);
 
 // ═══════════════════════════════════════════════════
 // Migration: Add investigation_id to documents and import_jobs
@@ -226,6 +229,11 @@ if (!columnExists('import_jobs', 'phase1_completed_at')) {
 if (!columnExists('import_jobs', 'elapsed_seconds')) {
   db.exec(`ALTER TABLE import_jobs ADD COLUMN elapsed_seconds INTEGER DEFAULT 0`);
   console.log(`✦ Migration: added column import_jobs.elapsed_seconds`);
+}
+
+if (!columnExists('import_jobs', 'custodian')) {
+  db.exec(`ALTER TABLE import_jobs ADD COLUMN custodian TEXT`);
+  console.log(`✦ Migration: added column import_jobs.custodian`);
 }
 
 // ═══════════════════════════════════════════════════
