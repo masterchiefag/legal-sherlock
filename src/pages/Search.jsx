@@ -141,6 +141,38 @@ function Search({ activeInvestigationId, addToast }) {
     };
 
     const [shouldRefresh, setShouldRefresh] = useState(0);
+    const [lastNlQuery, setLastNlQuery] = useState('');
+
+    const executeNlSearch = async () => {
+        if (!query.trim()) return;
+        const currentNlQuery = query.trim();
+        setLoading(true);
+        try {
+            const res = await fetch('/api/search/nl-to-sql', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ query })
+            });
+            if (!res.ok) throw new Error("NLP translation failed");
+            const parsed = await res.json();
+            
+            // Set the translated FTS parameters into the UI state
+            setQuery(parsed.q || '');
+            setDocType(parsed.docType || '');
+            setDateFrom(parsed.dateFrom || '');
+            setDateTo(parsed.dateTo || '');
+
+            // Store what they asked for in case they want to revert
+            setLastNlQuery(currentNlQuery);
+
+            // Force a search refresh with the new parameters
+            setShouldRefresh(n => n + 1);
+        } catch (err) {
+            console.error(err);
+            addToast('Failed to translate natural language search', 'error');
+            setLoading(false);
+        }
+    };
 
     const clearSearch = () => {
         setQuery('');
@@ -149,6 +181,7 @@ function Search({ activeInvestigationId, addToast }) {
         setScoreFilter('');
         setDateFrom('');
         setDateTo('');
+        setLastNlQuery('');
         setHideDuplicates(true);
         setSearched(false);
         setResults([]);
@@ -322,7 +355,7 @@ function Search({ activeInvestigationId, addToast }) {
     return (
         <div className="fade-in">
             {/* Search Bar */}
-            <div className="input-group mb-24">
+            <div className="input-group mb-24" style={{ position: 'relative' }}>
                 <svg className="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
                     <circle cx="11" cy="11" r="8" />
                     <line x1="21" y1="21" x2="16.65" y2="16.65" />
@@ -334,9 +367,41 @@ function Search({ activeInvestigationId, addToast }) {
                     value={query}
                     onChange={(e) => setQuery(e.target.value)}
                     onKeyDown={handleKeyDown}
-                    style={{ fontSize: '16px', padding: '14px 16px 14px 44px' }}
+                    style={{ fontSize: '16px', padding: '14px 100px 14px 44px' }}
                 />
+                <button
+                    onClick={executeNlSearch}
+                    disabled={loading || !query.trim()}
+                    style={{
+                        position: 'absolute', right: '8px', top: '8px',
+                        background: 'var(--primary)', color: '#fff',
+                        border: 'none', borderRadius: '4px',
+                        padding: '6px 12px', fontSize: '13px',
+                        cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+                        opacity: (loading || !query.trim()) ? 0.6 : 1
+                    }}
+                    title="Translate natural language to search filters"
+                >
+                    {loading ? '✨ Thinking...' : '✨ Ask AI'}
+                </button>
             </div>
+
+            {lastNlQuery && (
+                <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginTop: '-16px', marginBottom: '24px', display: 'flex', alignItems: 'center' }}>
+                    ✨ Generated from:&nbsp;<i>"{lastNlQuery}"</i>
+                    <button 
+                        type="button" 
+                        className="btn btn-sm" 
+                        style={{ background: 'transparent', border: 'none', color: 'var(--primary)', padding: '0 8px', marginLeft: '4px', cursor: 'pointer', textDecoration: 'underline' }}
+                        onClick={() => {
+                            setQuery(lastNlQuery);
+                            setLastNlQuery('');
+                        }}
+                    >
+                        Edit prompt
+                    </button>
+                </div>
+            )}
 
             {/* Filters */}
             <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '24px' }}>

@@ -32,6 +32,9 @@ router.get('/', (req, res) => {
             for (const token of tokens) {
                 if (token.toUpperCase() === 'OR') {
                     processed.push('OR');
+                } else if (token.match(/^[a-z_]+:/i)) {
+                    // It's a column filter with FTS syntax (e.g. email_from:"abc")
+                    processed.push(token);
                 } else if (token.startsWith('"') && token.endsWith('"') && token.length > 2) {
                     processed.push(token);
                 } else if (token.startsWith('-')) {
@@ -229,6 +232,73 @@ router.get('/', (req, res) => {
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Local Gemma NLP Search Translation Endpoint
+router.post('/nl-to-sql', async (req, res) => {
+    try {
+        const { query } = req.body;
+        if (!query) return res.status(400).json({ error: 'Query required' });
+
+        const ollamaUrl = process.env.OLLAMA_URL || 'http://127.0.0.1:11434';
+        const model = process.env.OLLAMA_MODEL || 'gemma3:4b';
+
+        const systemPrompt = `You are a strict JSON-only API that translates natural language into search parameters for an eDiscovery tool.
+Do not output markdown. Do not wrap in \`\`\`json. Just output the raw JSON object.
+
+The parameters you can output in the JSON are:
+- "q": The FTS5 string.
+  - For single keyword searches, DO NOT USE any column prefix AND do not use quotes! Output raw words, e.g. "q": "cost". 
+  - ONLY use exact column matches (e.g. email_from:"name" or email_to:"Jane") when specifically filtering on metadata like senders/recipients. Available columns: original_name, email_subject, email_from, email_to.
+  - SQLite FTS5 uses 'NOT' instead of '!'. If the user asks for 1-to-1 emails or no one in CC, approximate this by excluding the word cc using NOT: e.g. email_from:"Sandeep" AND email_to:"Manoj" NOT "cc"
+- "docType": Optional. Can be "email", "chat", "file", or "attachment".
+- "dateFrom": Optional. YYYY-MM-DD format.
+- "dateTo": Optional. YYYY-MM-DD format.
+
+Example 1:
+Input: Find emails from Atul to John sent in January 2022
+Output: {"q":"email_from:\\"Atul\\" AND email_to:\\"John\\"","docType":"email","dateFrom":"2022-01-01","dateTo":"2022-01-31"}
+
+Example 2:
+Input: Find chats about the secret project
+Output: {"q":"\\"secret project\\"","docType":"chat"}
+
+Example 3:
+Input: show emails having text cost
+Output: {"q":"cost","docType":"email"}
+
+Draft a response for the user's input.
+Input: ${JSON.stringify(query)}`;
+
+        const response = await fetch(`${ollamaUrl}/api/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model: model,
+                prompt: systemPrompt,
+                stream: false,
+                format: 'json'
+            })
+        });
+
+        if (!response.ok) {
+            return res.status(response.status).json({ error: 'Ollama API error' });
+        }
+
+        const data = await response.json();
+        let parsed;
+        try {
+            parsed = JSON.parse(data.response);
+        } catch (e) {
+            const match = data.response.match(/\{[\s\S]*\}/);
+            parsed = match ? JSON.parse(match[0]) : {};
+        }
+
+        res.json(parsed);
+    } catch (err) {
+        console.error("NL Search Error:", err);
+        res.status(500).json({ error: 'Failed to query local LLM' });
     }
 });
 
