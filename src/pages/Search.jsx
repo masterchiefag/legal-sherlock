@@ -142,6 +142,7 @@ function Search({ activeInvestigationId, addToast }) {
 
     const [shouldRefresh, setShouldRefresh] = useState(0);
     const [lastNlQuery, setLastNlQuery] = useState('');
+    const [showExamples, setShowExamples] = useState(false);
 
     const executeNlSearch = async () => {
         if (!query.trim()) return;
@@ -156,9 +157,10 @@ function Search({ activeInvestigationId, addToast }) {
             if (!res.ok) throw new Error("NLP translation failed");
             const parsed = await res.json();
             
-            // Set the translated FTS parameters into the UI state
+            // Set the translated FTS parameters into the UI state, validating enum values
+            const validDocTypes = ['email', 'chat', 'file', 'attachment'];
             setQuery(parsed.q || '');
-            setDocType(parsed.docType || '');
+            setDocType(validDocTypes.includes(parsed.docType) ? parsed.docType : '');
             setDateFrom(parsed.dateFrom || '');
             setDateTo(parsed.dateTo || '');
 
@@ -369,21 +371,36 @@ function Search({ activeInvestigationId, addToast }) {
                     onKeyDown={handleKeyDown}
                     style={{ fontSize: '16px', padding: '14px 100px 14px 44px' }}
                 />
-                <button
-                    onClick={executeNlSearch}
-                    disabled={loading || !query.trim()}
-                    style={{
-                        position: 'absolute', right: '8px', top: '8px',
-                        background: 'var(--primary)', color: '#fff',
-                        border: 'none', borderRadius: '4px',
-                        padding: '6px 12px', fontSize: '13px',
-                        cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
-                        opacity: (loading || !query.trim()) ? 0.6 : 1
-                    }}
-                    title="Translate natural language to search filters"
-                >
-                    {loading ? '✨ Thinking...' : '✨ Ask AI'}
-                </button>
+                <div style={{ position: 'absolute', right: '8px', top: '8px', display: 'flex', gap: '4px' }}>
+                    <button
+                        onClick={() => setShowExamples(true)}
+                        style={{
+                            background: 'transparent', color: 'var(--text-secondary)',
+                            border: '1px solid var(--border)', borderRadius: '4px',
+                            padding: '6px 8px', fontSize: '13px', cursor: 'pointer',
+                            display: 'flex', alignItems: 'center'
+                        }}
+                        title="Search examples"
+                    >
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16">
+                            <circle cx="12" cy="12" r="10" /><line x1="12" y1="16" x2="12" y2="12" /><line x1="12" y1="8" x2="12.01" y2="8" />
+                        </svg>
+                    </button>
+                    <button
+                        onClick={executeNlSearch}
+                        disabled={loading || !query.trim()}
+                        style={{
+                            background: 'var(--primary)', color: '#fff',
+                            border: 'none', borderRadius: '4px',
+                            padding: '6px 12px', fontSize: '13px',
+                            cursor: 'pointer', display: 'flex', alignItems: 'center', gap: '6px',
+                            opacity: (loading || !query.trim()) ? 0.6 : 1
+                        }}
+                        title="Translate natural language to search filters"
+                    >
+                        {loading ? '✨ Thinking...' : '✨ Ask AI'}
+                    </button>
+                </div>
             </div>
 
             {lastNlQuery && (
@@ -685,6 +702,68 @@ function Search({ activeInvestigationId, addToast }) {
                         </div>
                     )}
                 </>
+            )}
+            {/* Examples Modal */}
+            {showExamples && (
+                <div style={{
+                    position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.5)', zIndex: 1000,
+                    display: 'flex', alignItems: 'center', justifyContent: 'center'
+                }} onClick={() => setShowExamples(false)}>
+                    <div style={{
+                        background: 'var(--bg-primary)', borderRadius: 'var(--radius-lg)',
+                        padding: '24px', maxWidth: '560px', width: '90%', maxHeight: '80vh',
+                        overflow: 'auto', border: '1px solid var(--border)'
+                    }} onClick={e => e.stopPropagation()}>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
+                            <h3 style={{ margin: 0, fontSize: '16px' }}>Search Examples</h3>
+                            <button onClick={() => setShowExamples(false)} style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: '18px', color: 'var(--text-secondary)' }}>&times;</button>
+                        </div>
+
+                        <p style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '16px' }}>
+                            Type a query and press Enter for direct FTS search, or click <strong>Ask AI</strong> to translate natural language into search filters.
+                        </p>
+
+                        <div style={{ fontSize: '13px', display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                            <div>
+                                <div style={{ fontWeight: 600, marginBottom: '4px', color: 'var(--text-secondary)' }}>Direct Search (Enter)</div>
+                                {[
+                                    { q: 'cost', desc: 'Documents containing "cost"' },
+                                    { q: '"project budget"', desc: 'Exact phrase match' },
+                                    { q: 'email_from:"Atul"', desc: 'Emails from a specific sender' },
+                                    { q: 'contract NOT renewal', desc: 'Exclude a term' },
+                                    { q: 'merger OR acquisition', desc: 'Either term' },
+                                ].map((ex, i) => (
+                                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 0', borderBottom: '1px solid var(--border-secondary)' }}>
+                                        <code style={{ background: 'var(--bg-tertiary)', padding: '2px 8px', borderRadius: '4px', fontSize: '12px', flexShrink: 0, cursor: 'pointer' }}
+                                            onClick={() => { setQuery(ex.q); setShowExamples(false); }}
+                                            title="Click to use"
+                                        >{ex.q}</code>
+                                        <span style={{ color: 'var(--text-secondary)' }}>{ex.desc}</span>
+                                    </div>
+                                ))}
+                            </div>
+
+                            <div>
+                                <div style={{ fontWeight: 600, marginBottom: '4px', color: 'var(--text-secondary)' }}>Ask AI (natural language)</div>
+                                {[
+                                    { q: 'all whatsapp chats', desc: 'Filters to chat type, no text search' },
+                                    { q: 'emails from Atul to John in January 2022', desc: 'Sender, recipient, and date range' },
+                                    { q: 'documents about cost', desc: 'Keyword search across all types' },
+                                    { q: 'attachments from last month', desc: 'Type filter with date range' },
+                                    { q: 'emails between Sandeep and Manoj without CC', desc: 'Targeted 1-to-1 email search' },
+                                ].map((ex, i) => (
+                                    <div key={i} style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 0', borderBottom: '1px solid var(--border-secondary)' }}>
+                                        <code style={{ background: 'var(--bg-tertiary)', padding: '2px 8px', borderRadius: '4px', fontSize: '12px', flexShrink: 0, cursor: 'pointer' }}
+                                            onClick={() => { setQuery(ex.q); setShowExamples(false); }}
+                                            title="Click to use"
+                                        >{ex.q}</code>
+                                        <span style={{ color: 'var(--text-secondary)' }}>{ex.desc}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                </div>
             )}
         </div>
     );
