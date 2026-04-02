@@ -248,7 +248,10 @@ router.post('/nl-to-sql', async (req, res) => {
 Do not output markdown. Do not wrap in \`\`\`json. Just output the raw JSON object.
 
 The parameters you can output in the JSON are:
-- "q": The FTS5 string. For general keyword searches across the document, DO NOT USE ANY column prefix like text_content:. Just output the raw string, e.g. "cost" or "fraud". ONLY use exact column matches (e.g. email_from:"name" or email_to:"Jane") when specifically filtering on metadata like senders/recipients. Available columns: original_name, email_subject, email_from, email_to.
+- "q": The FTS5 string.
+  - For single keyword searches, DO NOT USE any column prefix AND do not use quotes! Output raw words, e.g. "q": "cost". 
+  - ONLY use exact column matches (e.g. email_from:"name" or email_to:"Jane") when specifically filtering on metadata like senders/recipients. Available columns: original_name, email_subject, email_from, email_to.
+  - SQLite FTS5 uses 'NOT' instead of '!'. If the user asks for 1-to-1 emails or no one in CC, approximate this by excluding the word cc using NOT: e.g. email_from:"Sandeep" AND email_to:"Manoj" NOT "cc"
 - "docType": Optional. Can be "email", "chat", "file", or "attachment".
 - "dateFrom": Optional. YYYY-MM-DD format.
 - "dateTo": Optional. YYYY-MM-DD format.
@@ -260,6 +263,10 @@ Output: {"q":"email_from:\\"Atul\\" AND email_to:\\"John\\"","docType":"email","
 Example 2:
 Input: Find chats about the secret project
 Output: {"q":"\\"secret project\\"","docType":"chat"}
+
+Example 3:
+Input: show emails having text cost
+Output: {"q":"cost","docType":"email"}
 
 Draft a response for the user's input.
 Input: ${JSON.stringify(query)}`;
