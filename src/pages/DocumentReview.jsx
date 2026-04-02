@@ -547,6 +547,26 @@ function DocumentReview({ addToast }) {
                     </div>
                 </div>
 
+                {/* Chat Participants Section */}
+                {isChat && doc.email_to && (
+                    <div className="doc-sidebar-section">
+                        <h3>👥 Participants</h3>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '12px' }}>
+                            {doc.email_to.split(',').map((p, i) => (
+                                <div key={i} style={{
+                                    padding: '4px 8px',
+                                    background: 'var(--bg-tertiary)',
+                                    borderRadius: 'var(--radius-sm)',
+                                    color: 'var(--text-secondary)',
+                                    wordBreak: 'break-word'
+                                }}>
+                                    {p.trim()}
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                )}
+
                 {/* Metadata Section */}
                 {(isEmail || doc.doc_author || doc.doc_title || doc.doc_created_at || doc.doc_modified_at) && (
                     <div className="doc-sidebar-section">
