@@ -20,6 +20,7 @@ No test framework or linter is configured.
 - **Backend**: Express.js (Node.js, ES modules)
 - **Database**: SQLite via better-sqlite3 (WAL mode, foreign keys enabled)
 - **Document processing**: pdf-parse, mammoth (DOCX), mailparser, readpst (native CLI for PST)
+- **Forensic extraction**: The Sleuth Kit (mmls, fls, icat for E01 images), unzip (UFDR/ZIP archives)
 - **File uploads**: Multer (5GB limit)
 - **AI classification**: Pluggable LLM providers (Ollama, OpenAI, Anthropic)
 - **Package manager**: npm
@@ -36,6 +37,7 @@ src/                    # React frontend
     ClassificationLogs.jsx  # AI classification logs + model comparison
     Investigations.jsx  # Case/investigation CRUD and management
     Playground.jsx      # Interactive LLM testing interface
+    ImageExtraction.jsx # E01/UFDR scanning and file extraction
   utils/                # Shared utilities
     format.js           # formatSize, getScoreColor, getScoreLabel
     sanitize.js         # escapeHtml, highlightText (XSS-safe)
@@ -48,7 +50,8 @@ server/                 # Express backend
   db.js                 # SQLite schema, migrations, indexes, and connection
   routes/               # API route handlers
     documents.js        # Upload, list, delete, PST import jobs
-    search.js           # FTS5 full-text search with filters
+    search.js           # FTS5 full-text search with filters + NL2SQL translation
+    images.js           # E01/UFDR scan + extract jobs
     tags.js             # Tag CRUD
     reviews.js          # Document review status + dashboard stats
     classify.js         # AI classification + batch ops + logs + model comparison
@@ -62,6 +65,9 @@ server/                 # Express backend
     threading.js        # Email thread resolution and backfill
   workers/
     pst-worker.js       # Background PST extraction via native readpst CLI
+    image-scan-worker.js    # Scan E01/UFDR for PST/OST files
+    image-extract-worker.js # Extract selected files from E01/UFDR
+    chat-worker.js          # WhatsApp SQLite chat ingestion
 
 uploads/                # Uploaded files (git-ignored)
 data/                   # SQLite database (git-ignored)
@@ -95,9 +101,10 @@ Key tables:
 - `tags`, `document_tags` — Tagging system
 - `document_reviews` — Review status tracking (pending/relevant/not_relevant/privileged)
 - `import_jobs` — PST import job tracking with phase and investigation_id
+- `image_jobs` — E01/UFDR scan and extraction job tracking (type, status, progress, result_data as JSON)
 - `documents_fts` — FTS5 virtual table (original_name, text_content, email_subject, email_from, email_to) with auto-sync triggers
 
-Notable document columns: `doc_type` (file/email/attachment), `parent_id` (attachment→email), `thread_id`, `message_id`, `in_reply_to`, `email_references`, `content_hash`, `is_duplicate`, `investigation_id`, full email headers (from/to/cc/bcc/subject/date), document metadata (author/title/created_at/keywords).
+Notable document columns: `doc_type` (file/email/attachment/chat), `parent_id` (attachment→email), `thread_id`, `message_id`, `in_reply_to`, `email_references`, `content_hash`, `is_duplicate`, `investigation_id`, full email headers (from/to/cc/bcc/subject/date), document metadata (author/title/created_at/keywords).
 
 ## Environment Variables
 
@@ -117,10 +124,14 @@ Notable document columns: `doc_type` (file/email/attachment), `parent_id` (attac
 - **Investigations**: Multi-case support; all documents, imports, and searches scoped to active investigation via `investigation_id`; default "General Investigation" for backward compatibility; investigation selector in sidebar
 - **PST import**: Two-phase ingestion via native `readpst -e -D` CLI — Phase 1 parses emails + writes attachments, Phase 2 extracts text; job tracking in `import_jobs` table, polled from frontend every 3s
 - **Email threading**: Resolves `thread_id` via `In-Reply-To`/`References` headers with exact message-ID matching; backfill unifies orphan threads on late-arriving emails
-- **Email hierarchy**: `doc_type` (file/email/attachment) with `parent_id` linking attachments to parent emails
+- **Email hierarchy**: `doc_type` (file/email/attachment/chat) with `parent_id` linking attachments to parent emails
 - **Deduplication**: SHA256 `content_hash` on upload; `is_duplicate` flag for duplicate detection
-- **Search**: FTS5 with support for AND (implicit), OR, exact phrases, and exclusion operators; filterable by status, tags, date range, doc_type, AI score, and investigation; search state persisted in URL params for back-button support
+- **Search**: FTS5 with support for AND (implicit), OR, exact phrases, and exclusion operators; filterable by status, tags, date range, doc_type, AI score (scored/unscored/3+/4+/5), and investigation; latest-in-thread filter; thread position display (#N of M); text preview for filter-only queries; NL2SQL via "Ask AI" button; search state persisted in URL params for back-button support
 - **AI classification**: Scores documents 1-5 with reasoning via pluggable LLM providers; supports batch classification from search results; model comparison via AI Logs page
 - **LLM Playground**: Freeform model testing with configurable temperature, max tokens, context window, and system prompts
 - **Text extraction**: `server/lib/extract.js` dispatches by file extension with graceful fallback on parse failure
 - **Document viewer**: Inline rendering for PDFs (`<object>` tag) and images; fallback to extracted text; "Open in new tab" link for PDFs
+- **Thread tree view**: DocumentReview page shows email thread as hierarchical tree using `message_id`/`in_reply_to` relationships; CSS-drawn connector lines; handles branching and orphaned messages
+- **E01/UFDR extraction**: Scan forensic disk images (E01 via Sleuth Kit) or UFDR/ZIP archives (via unzip) for PST/OST files; select and extract to disk; job tracking in `image_jobs` table, investigation-independent
+- **WhatsApp ingestion**: Parses iOS `ChatStorage.sqlite` via `chat-worker.js`; groups messages by session + calendar day into `doc_type='chat'` documents; thread ID `wa-chat-{session_id}` groups all days of same chat
+- **NL2SQL search**: "Ask AI" button translates natural language queries to FTS5 search params via Ollama/Gemma; `POST /api/search/nl-to-sql` endpoint; editable generated queries
