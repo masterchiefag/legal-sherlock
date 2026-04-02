@@ -18,6 +18,8 @@ function Search({ activeInvestigationId, addToast }) {
     const [dateTo, setDateTo] = useState(searchParams.get('to') || '');
     const [hideDuplicates, setHideDuplicates] = useState(searchParams.get('dedup') !== '0');
     const [latestThreadOnly, setLatestThreadOnly] = useState(searchParams.get('latest_thread') === '1');
+    const [custodianFilter, setCustodianFilter] = useState(searchParams.get('custodian') || '');
+    const [custodianList, setCustodianList] = useState([]);
 
     // Batch Classification
     const [showBatchPanel, setShowBatchPanel] = useState(false);
@@ -80,7 +82,16 @@ function Search({ activeInvestigationId, addToast }) {
         doSearch(initialPage);
     }, []);
 
-    const hasActiveFilters = reviewStatus || docType || scoreFilter || dateFrom || dateTo;
+    // Fetch custodian list for filter dropdown
+    useEffect(() => {
+        if (!activeInvestigationId) return;
+        fetch(`/api/investigations/${activeInvestigationId}/custodians`)
+            .then(r => r.json())
+            .then(data => setCustodianList(Array.isArray(data) ? data : []))
+            .catch(() => {});
+    }, [activeInvestigationId]);
+
+    const hasActiveFilters = reviewStatus || docType || scoreFilter || dateFrom || dateTo || custodianFilter;
 
     const doSearch = useCallback(async (page = 1) => {
         setLoading(true);
@@ -95,6 +106,7 @@ function Search({ activeInvestigationId, addToast }) {
         if (dateTo) apiParams.set('date_to', dateTo);
         if (hideDuplicates) apiParams.set('hide_duplicates', '1');
         if (latestThreadOnly) apiParams.set('latest_thread_only', '1');
+        if (custodianFilter) apiParams.set('custodian', custodianFilter);
         if (activeInvestigationId) apiParams.set('investigation_id', activeInvestigationId);
 
         if (scoreFilter) {
@@ -120,6 +132,7 @@ function Search({ activeInvestigationId, addToast }) {
         if (dateTo) urlParams.to = dateTo;
         if (!hideDuplicates) urlParams.dedup = '0';
         if (latestThreadOnly) urlParams.latest_thread = '1';
+        if (custodianFilter) urlParams.custodian = custodianFilter;
         if (page > 1) urlParams.page = String(page);
         setSearchParams(urlParams, { replace: true });
 
@@ -134,7 +147,7 @@ function Search({ activeInvestigationId, addToast }) {
         }
 
         setLoading(false);
-    }, [query, reviewStatus, docType, scoreFilter, dateFrom, dateTo, hideDuplicates, latestThreadOnly, hasActiveFilters, setSearchParams]);
+    }, [query, reviewStatus, docType, scoreFilter, dateFrom, dateTo, hideDuplicates, latestThreadOnly, custodianFilter, hasActiveFilters, setSearchParams]);
 
     const handleKeyDown = (e) => {
         if (e.key === 'Enter') doSearch();
@@ -182,6 +195,7 @@ function Search({ activeInvestigationId, addToast }) {
         setDateFrom('');
         setDateTo('');
         setLastNlQuery('');
+        setCustodianFilter('');
         setHideDuplicates(true);
         setSearched(false);
         setResults([]);
@@ -430,6 +444,14 @@ function Search({ activeInvestigationId, addToast }) {
                         <option value="4+">4+ Highly Relevant</option>
                         <option value="5">5 — Smoking Gun</option>
                     </select>
+                    {custodianList.length > 0 && (
+                        <select className="filter-select" value={custodianFilter} onChange={e => setCustodianFilter(e.target.value)}>
+                            <option value="">All Custodians</option>
+                            {custodianList.map(c => (
+                                <option key={c.name} value={c.name}>{c.name} ({c.document_count})</option>
+                            ))}
+                        </select>
+                    )}
                     <div style={{ display: 'flex', alignItems: 'center', gap: '4px' }}>
                         <input type="date" className="input" style={{ width: 'auto', padding: '8px 12px', fontSize: '13px' }} value={dateFrom} onChange={e => setDateFrom(e.target.value)} />
                         <span style={{ color: 'var(--text-tertiary)', fontSize: '12px' }}>–</span>
@@ -652,6 +674,12 @@ function Search({ activeInvestigationId, addToast }) {
                                                             background: `${t.color}20`, color: t.color, borderColor: `${t.color}40`, fontSize: '11px', padding: '2px 8px'
                                                         }}>{t.name}</span>
                                                     ))}
+                                                </>
+                                            )}
+                                            {r.custodian && (
+                                                <>
+                                                    <span>•</span>
+                                                    <span style={{ fontSize: '11px', color: 'var(--text-accent)' }}>👤 {r.custodian}</span>
                                                 </>
                                             )}
                                             <span>•</span>

@@ -8,7 +8,7 @@ import db from '../db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-const { jobId, filename, filepath, originalname, investigation_id } = workerData;
+const { jobId, filename, filepath, originalname, investigation_id, custodian } = workerData;
 
 // TODO (Feature Request): Add support for WhatsApp media attachments.
 // This requires a mechanism to upload a ZIP containing both ChatStorage.sqlite 
@@ -30,8 +30,8 @@ const updateProgress = db.prepare(
 const insertChat = db.prepare(`
     INSERT INTO documents (
         id, filename, original_name, mime_type, size_bytes, text_content, status,
-        doc_type, thread_id, email_from, email_subject, email_date, investigation_id
-    ) VALUES (?, ?, ?, 'text/plain', ?, ?, 'ready', 'chat', ?, ?, ?, ?, ?)
+        doc_type, thread_id, email_from, email_subject, email_date, investigation_id, custodian
+    ) VALUES (?, ?, ?, 'text/plain', ?, ?, 'ready', 'chat', ?, ?, ?, ?, ?, ?)
 `);
 
 async function main() {
@@ -87,7 +87,7 @@ async function main() {
 
                 insertChat.run(
                     docId, chatDocName, chatDocName, Buffer.byteLength(content, 'utf8'), content,
-                    sessionThreadId, currentSessionName, subject, currentDayDate.toISOString(), investigation_id
+                    sessionThreadId, currentSessionName, subject, currentDayDate.toISOString(), investigation_id, custodian || null
                 );
                 
                 totalChatDocs++;

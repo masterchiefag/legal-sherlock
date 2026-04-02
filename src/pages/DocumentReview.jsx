@@ -249,6 +249,18 @@ function DocumentReview({ addToast }) {
                     />
                 </div>
 
+                {/* Custodian badge */}
+                {doc.custodian && (
+                    <div style={{
+                        display: 'inline-flex', alignItems: 'center', gap: '6px',
+                        padding: '4px 12px', borderRadius: '20px', fontSize: '12px', fontWeight: 500,
+                        background: 'var(--bg-tertiary)', border: '1px solid var(--border-secondary)',
+                        color: 'var(--text-secondary)', marginBottom: '12px'
+                    }}>
+                        👤 Custodian: <strong style={{ color: 'var(--text-primary)' }}>{doc.custodian}</strong>
+                    </div>
+                )}
+
                 {/* Email header bar */}
                 {isEmail && (
                     <div style={{
