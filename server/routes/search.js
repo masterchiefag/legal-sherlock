@@ -247,26 +247,56 @@ router.post('/nl-to-sql', async (req, res) => {
         const systemPrompt = `You are a strict JSON-only API that translates natural language into search parameters for an eDiscovery tool.
 Do not output markdown. Do not wrap in \`\`\`json. Just output the raw JSON object.
 
-The parameters you can output in the JSON are:
-- "q": The FTS5 string.
-  - For single keyword searches, DO NOT USE any column prefix AND do not use quotes! Output raw words, e.g. "q": "cost". 
-  - ONLY use exact column matches (e.g. email_from:"name" or email_to:"Jane") when specifically filtering on metadata like senders/recipients. Available columns: original_name, email_subject, email_from, email_to.
-  - SQLite FTS5 uses 'NOT' instead of '!'. If the user asks for 1-to-1 emails or no one in CC, approximate this by excluding the word cc using NOT: e.g. email_from:"Sandeep" AND email_to:"Manoj" NOT "cc"
-- "docType": Optional. Can be "email", "chat", "file", or "attachment".
+IMPORTANT RULES:
+- "q" is for full-text content search ONLY. If the user is NOT searching for specific text/keywords, omit "q" entirely or set it to "".
+- "documents" means ALL types — do NOT set docType for generic document queries.
+- Only set "docType" when the user explicitly asks for a specific type (emails, chats, files, attachments).
+- For single keyword searches, do NOT quote the word: "q": "cost" not "q": "\\"cost\\"".
+- Only use quotes for exact multi-word phrases: "q": "\\"secret project\\"".
+- Use column prefixes when filtering on specific fields. Available FTS columns: original_name, email_subject, email_from, email_to.
+  - email_from/email_to for sender/recipient filtering.
+  - original_name for file type/extension filtering, e.g. original_name:pdf, original_name:docx.
+- SQLite FTS5 uses NOT instead of !. For 1-to-1 emails, approximate by excluding cc: e.g. email_from:"Sandeep" AND email_to:"Manoj" NOT "cc"
+- Use parentheses to group OR clauses when combining with AND: e.g. (original_name:xlsx OR original_name:xls) AND revenue
+
+The parameters you can output:
+- "q": FTS5 search string. Omit or "" if no text search needed.
+- "docType": Optional. ONLY these exact values: "email", "chat", "file", "attachment". Omit entirely for all types. NEVER use "documents" or any other value.
 - "dateFrom": Optional. YYYY-MM-DD format.
 - "dateTo": Optional. YYYY-MM-DD format.
 
-Example 1:
-Input: Find emails from Atul to John sent in January 2022
-Output: {"q":"email_from:\\"Atul\\" AND email_to:\\"John\\"","docType":"email","dateFrom":"2022-01-01","dateTo":"2022-01-31"}
+Example 1: "Find emails from Atul to John sent in January 2022"
+{"q":"email_from:\\"Atul\\" AND email_to:\\"John\\"","docType":"email","dateFrom":"2022-01-01","dateTo":"2022-01-31"}
 
-Example 2:
-Input: Find chats about the secret project
-Output: {"q":"\\"secret project\\"","docType":"chat"}
+Example 2: "Find chats about the secret project"
+{"q":"\\"secret project\\"","docType":"chat"}
 
-Example 3:
-Input: show emails having text cost
-Output: {"q":"cost","docType":"email"}
+Example 3: "show emails having text cost"
+{"q":"cost","docType":"email"}
+
+Example 4: "all documents having text cost"
+{"q":"cost"}
+
+Example 5: "all whatsapp chats"
+{"docType":"chat"}
+
+Example 6: "emails from last week"
+{"docType":"email","dateFrom":"2024-03-25","dateTo":"2024-03-31"}
+
+Example 7: "files about budget"
+{"q":"budget","docType":"file"}
+
+Example 8: "show pdf attachments"
+{"q":"original_name:pdf","docType":"attachment"}
+
+Example 9: "excel files"
+{"q":"original_name:xlsx OR original_name:xls"}
+
+Example 10: "excel attachments about revenue"
+{"q":"(original_name:xlsx OR original_name:xls) AND revenue","docType":"attachment"}
+
+Example 11: "pdf files mentioning contract"
+{"q":"original_name:pdf AND contract"}
 
 Draft a response for the user's input.
 Input: ${JSON.stringify(query)}`;
