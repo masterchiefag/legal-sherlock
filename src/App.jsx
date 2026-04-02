@@ -159,7 +159,7 @@ function App() {
                 <div className="page-content">
                     <div className="page-enter" key={location.pathname}>
                         <Routes>
-                            <Route path="/" element={<Dashboard activeInvestigationId={activeInvestigationId} addToast={addToast} />} />
+                            <Route path="/" element={<Dashboard activeInvestigationId={activeInvestigationId} activeInvestigation={activeInvestigation} addToast={addToast} />} />
                             <Route path="/investigations" element={<Investigations activeInvestigationId={activeInvestigationId} onInvestigationChange={handleInvestigationChange} addToast={addToast} />} />
                             <Route path="/upload" element={<Upload activeInvestigationId={activeInvestigationId} activeInvestigation={activeInvestigation} addToast={addToast} />} />
                             <Route path="/search" element={<Search activeInvestigationId={activeInvestigationId} addToast={addToast} />} />
