@@ -384,6 +384,42 @@ function DocumentReview({ addToast }) {
                             </div>
                         );
                     }
+                    const officeExts = ['xls', 'xlsx', 'doc', 'docx', 'ppt', 'pptx'];
+                    const isOffice = officeExts.includes(ext);
+                    if (isOffice) {
+                        return (
+                            <div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '16px 20px', background: 'var(--bg-tertiary)', borderRadius: '8px', border: '1px solid var(--border-secondary)', marginBottom: '20px' }}>
+                                    <span style={{ fontSize: '28px' }}>
+                                        {['xls', 'xlsx'].includes(ext) ? '📊' : ['ppt', 'pptx'].includes(ext) ? '📽️' : '📄'}
+                                    </span>
+                                    <div style={{ flex: 1 }}>
+                                        <div style={{ fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>{doc.original_name}</div>
+                                        <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>{ext.toUpperCase()} document · {formatSize(doc.size_bytes)}</div>
+                                    </div>
+                                    <a
+                                        href={`/uploads/${doc.filename}`}
+                                        download={doc.original_name}
+                                        className="btn btn-sm btn-outline"
+                                        style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                                    >
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+                                        </svg>
+                                        Download
+                                    </a>
+                                </div>
+                                {highlightedText?.trim() && (
+                                    <div>
+                                        <h4 style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                            Extracted Text
+                                        </h4>
+                                        <div className="doc-text-content" dangerouslySetInnerHTML={{ __html: highlightedText }} />
+                                    </div>
+                                )}
+                            </div>
+                        );
+                    }
                     if (highlightedText?.trim()) {
                         return (
                             <div className="doc-text-content" dangerouslySetInnerHTML={{ __html: highlightedText }} />
