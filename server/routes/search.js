@@ -304,6 +304,15 @@ Example 10: "excel attachments about revenue"
 Example 11: "pdf files mentioning contract"
 {"q":"original_name:pdf AND contract"}
 
+Example 12: "WhatsApp messages from Alice to Bob"
+{"q":"email_from:\\"Alice\\" AND email_to:\\"Bob\\"","docType":"chat"}
+
+Example 13: "group chats involving Sandeep"
+{"q":"email_to:\\"Sandeep\\"","docType":"chat"}
+
+Example 14: "messages sent by 919876543210"
+{"q":"email_from:\\"919876543210\\"","docType":"chat"}
+
 Draft a response for the user's input.
 Input: ${JSON.stringify(query)}`;
 
