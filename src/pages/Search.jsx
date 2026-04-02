@@ -289,6 +289,7 @@ function Search({ activeInvestigationId, addToast }) {
 
     const getDocIcon = (doc) => {
         if (doc.doc_type === 'email') return '✉';
+        if (doc.doc_type === 'chat') return '💬';
         const ext = doc.original_name?.split('.').pop().toLowerCase();
         if (ext === 'pdf') return '📄';
         if (ext === 'docx') return '📝';
@@ -296,7 +297,7 @@ function Search({ activeInvestigationId, addToast }) {
     };
 
     const getDisplayName = (doc) => {
-        if (doc.doc_type === 'email' && doc.email_subject) {
+        if ((doc.doc_type === 'email' || doc.doc_type === 'chat') && doc.email_subject) {
             return doc.email_subject;
         }
         return doc.original_name;
@@ -306,6 +307,12 @@ function Search({ activeInvestigationId, addToast }) {
         if (doc.doc_type === 'email') {
             const parts = [];
             if (doc.email_from) parts.push(`From: ${doc.email_from.split('<')[0].trim()}`);
+            if (doc.email_date) parts.push(new Date(doc.email_date).toLocaleDateString());
+            return parts.join(' • ');
+        }
+        if (doc.doc_type === 'chat') {
+            const parts = [];
+            if (doc.email_from) parts.push(`Participants: ${doc.email_from}`);
             if (doc.email_date) parts.push(new Date(doc.email_date).toLocaleDateString());
             return parts.join(' • ');
         }
@@ -345,6 +352,7 @@ function Search({ activeInvestigationId, addToast }) {
                     <select className="filter-select" value={docType} onChange={e => setDocType(e.target.value)}>
                         <option value="">All Types</option>
                         <option value="email">Emails</option>
+                        <option value="chat">Chats / WhatsApp</option>
                         <option value="file">Files</option>
                         <option value="attachment">Attachments</option>
                     </select>
@@ -565,7 +573,7 @@ function Search({ activeInvestigationId, addToast }) {
                                                     <span>📎 {r.attachment_count} attachment{r.attachment_count > 1 ? 's' : ''}</span>
                                                 </>
                                             )}
-                                            {r.doc_type === 'email' && r.thread_count > 1 && (
+                                            {(r.doc_type === 'email' || r.doc_type === 'chat') && r.thread_count > 1 && (
                                                 <>
                                                     <span>•</span>
                                                     <span>🔗 #{r.thread_position} of {r.thread_count}</span>

@@ -57,7 +57,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
     const handleFiles = useCallback((fileList) => {
         const newFiles = Array.from(fileList).filter(f => {
             const ext = f.name.split('.').pop().toLowerCase();
-            return ['pdf', 'docx', 'txt', 'csv', 'md', 'eml', 'pst', 'ost'].includes(ext);
+            return ['pdf', 'docx', 'txt', 'csv', 'md', 'eml', 'pst', 'ost', 'sqlite', 'db'].includes(ext);
         });
         setFiles(prev => [...prev, ...newFiles]);
         setResults([]);
@@ -266,7 +266,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                     ref={inputRef}
                     type="file"
                     multiple
-                    accept=".pdf,.docx,.txt,.csv,.md,.eml,.pst,.ost"
+                    accept=".pdf,.docx,.txt,.csv,.md,.eml,.pst,.ost,.sqlite,.db"
                     onChange={(e) => handleFiles(e.target.files)}
                     style={{ display: 'none' }}
                 />
@@ -279,7 +279,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                     <strong>Drop files here</strong> or click to browse
                 </p>
                 <p className="dropzone-sub">
-                    Supports PDF, DOCX, TXT, CSV, MD, EML, PST
+                    Supports PDF, DOCX, TXT, CSV, MD, EML, PST, SQLite
                 </p>
                 <p className="dropzone-sub" style={{ fontSize: '11px', marginTop: '4px', color: 'var(--text-muted)' }}>
                     💡 For large PST files, keep your laptop awake during import (run <code>caffeinate -i</code> in Terminal)

@@ -13,14 +13,14 @@ const execFileAsync = promisify(execFile);
 
 const router = express.Router();
 
-const VALID_EXTENSIONS = ['.e01', '.e01x', '.ex01'];
+const VALID_EXTENSIONS = ['.e01', '.e01x', '.ex01', '.zip', '.ufdr'];
 
 // ═══════════════════════════════════════════════════
 // POST /api/images/scan — Scan E01 image for PST/OST files
 // ═══════════════════════════════════════════════════
 router.post('/scan', async (req, res) => {
     try {
-        const { imagePath } = req.body;
+        const { imagePath, searchPattern } = req.body;
 
         if (!imagePath) {
             return res.status(400).json({ error: 'imagePath is required' });
@@ -58,7 +58,7 @@ router.post('/scan', async (req, res) => {
         // Spawn worker
         const workerPath = path.join(__dirname, '..', 'workers', 'image-scan-worker.js');
         const worker = new Worker(workerPath, {
-            workerData: { jobId, imagePath },
+            workerData: { jobId, imagePath, searchPattern: searchPattern || '.*\\.(pst|ost)$' },
         });
 
         worker.on('error', (err) => {

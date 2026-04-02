@@ -26,7 +26,7 @@ const upload = multer({
     storage,
     // limits: { fileSize: 5000 * 1024 * 1024 }, // Removed to allow massive PST files
     fileFilter: (req, file, cb) => {
-        const allowed = ['.pdf', '.docx', '.txt', '.csv', '.md', '.eml', '.pst', '.ost'];
+        const allowed = ['.pdf', '.docx', '.txt', '.csv', '.md', '.eml', '.pst', '.ost', '.sqlite', '.db'];
         const ext = path.extname(file.originalname).toLowerCase();
         if (allowed.includes(ext)) {
             cb(null, true);
@@ -189,6 +189,31 @@ function spawnPstWorker(jobId, filename, filepath, originalname, investigation_i
 }
 
 // ═══════════════════════════════════════════════════
+// Chat/SQLite processing pipeline (Delegated to Worker)
+// ═══════════════════════════════════════════════════
+function spawnChatWorker(jobId, filename, filepath, originalname, investigation_id) {
+    const workerPath = path.join(__dirname, '..', 'workers', 'chat-worker.js');
+    const worker = new Worker(workerPath, {
+        workerData: { jobId, filename, filepath, originalname, investigation_id }
+    });
+
+    worker.on('error', (err) => {
+        console.error(`⚠ Chat Worker error for job ${jobId}:`, err);
+        db.prepare(`UPDATE import_jobs SET status = 'failed', error_log = ?, completed_at = datetime('now') WHERE id = ?`).run(
+            JSON.stringify([{ error: `Worker crashed: ${err.message}` }]), jobId
+        );
+    });
+
+    worker.on('exit', (code) => {
+        if (code !== 0) {
+            console.error(`⚠ Chat Worker for job ${jobId} stopped with exit code ${code}`);
+        }
+    });
+
+    return worker;
+}
+
+// ═══════════════════════════════════════════════════
 // Regular file processing (PDF, DOCX, TXT, etc.)
 // ═══════════════════════════════════════════════════
 async function processRegularFile(file, investigation_id) {
@@ -271,6 +296,21 @@ router.post('/upload', (req, res, next) => {
                 // Return 202 Accepted instead of waiting for results
                 return res.status(202).json({
                     message: "PST file uploaded. Processing in background.",
+                    jobId: jobId
+                });
+            } else if (ext === '.sqlite' || ext === '.db') {
+                // Background job for Chat DBs
+                const jobId = uuidv4();
+
+                db.prepare(`
+                    INSERT INTO import_jobs (id, filename, filepath, status, investigation_id)
+                    VALUES (?, ?, ?, 'pending', ?)
+                `).run(jobId, file.originalname, file.path, investigation_id);
+
+                spawnChatWorker(jobId, file.filename, file.path, file.originalname, investigation_id);
+
+                return res.status(202).json({
+                    message: "Chat DB uploaded. Processing in background.",
                     jobId: jobId
                 });
             } else {
@@ -430,7 +470,7 @@ router.get('/', (req, res) => {
          WHERE dr.document_id = d.id
          ORDER BY dr.reviewed_at DESC LIMIT 1) as review_status,
         (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
-        (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type = 'email' AND t.investigation_id = d.investigation_id) as thread_count,
+        (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type IN ('email', 'chat') AND t.investigation_id = d.investigation_id) as thread_count,
         (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score
       FROM documents d
       ${where}
@@ -480,7 +520,7 @@ router.get('/:id', (req, res) => {
             doc.thread = db.prepare(`
         SELECT id, original_name, email_from, email_to, email_subject, email_date, doc_type, message_id, in_reply_to
         FROM documents
-        WHERE thread_id = ? AND doc_type = 'email' AND investigation_id = ?
+        WHERE thread_id = ? AND doc_type IN ('email', 'chat') AND investigation_id = ?
         ORDER BY email_date ASC
       `).all(doc.thread_id, doc.investigation_id);
         } else {

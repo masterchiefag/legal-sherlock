@@ -227,6 +227,7 @@ function DocumentReview({ addToast }) {
     }
 
     const isEmail = doc.doc_type === 'email';
+    const isChat = doc.doc_type === 'chat';
 
     return (
         <div className="doc-viewer fade-in">
@@ -426,18 +427,24 @@ function DocumentReview({ addToast }) {
             <div className="doc-sidebar-panel">
                 {/* Document / Email Info */}
                 <div className="doc-sidebar-section">
-                    <h3>{isEmail ? 'Email Info' : 'Document Info'}</h3>
+                    <h3>{isEmail ? 'Email Info' : isChat ? 'Chat Info' : 'Document Info'}</h3>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '13px' }}>
                         <div className="flex justify-between">
                             <span className="text-muted">Name</span>
                             <span style={{ color: 'var(--text-primary)', fontWeight: 500, textAlign: 'right', maxWidth: '200px', wordBreak: 'break-word' }}>
-                                {isEmail ? (doc.email_subject || doc.original_name) : doc.original_name}
+                                {isEmail || isChat ? (doc.email_subject || doc.original_name) : doc.original_name}
                             </span>
                         </div>
                         {isEmail && (
                             <div className="flex justify-between">
                                 <span className="text-muted">Type</span>
                                 <span style={{ color: 'var(--text-accent)' }}>✉ Email</span>
+                            </div>
+                        )}
+                        {isChat && (
+                            <div className="flex justify-between">
+                                <span className="text-muted">Type</span>
+                                <span style={{ color: 'var(--text-accent)' }}>💬 Chat Transcript</span>
                             </div>
                         )}
                         <div className="flex justify-between">
@@ -662,7 +669,7 @@ function DocumentReview({ addToast }) {
 
                     return (
                         <div className="doc-sidebar-section">
-                            <h3>Thread ({doc.thread.length} emails)</h3>
+                            <h3>Thread ({doc.thread.length} messages)</h3>
                             <div style={{ display: 'flex', flexDirection: 'column', gap: '0px' }}>
                                 {items.map((t, i) => {
                                     // For each depth level, determine if a vertical line should continue
