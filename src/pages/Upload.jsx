@@ -10,6 +10,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
     const [activeJob, setActiveJob] = useState(null);
     const [failedJobs, setFailedJobs] = useState([]);
     const [dragActive, setDragActive] = useState(false);
+    const [custodian, setCustodian] = useState('');
     const inputRef = useRef(null);
     const navigate = useNavigate();
 
@@ -95,6 +96,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
 
         const formData = new FormData();
         formData.append('investigation_id', activeInvestigationId);
+        if (custodian.trim()) formData.append('custodian', custodian.trim());
         files.forEach(f => formData.append('files', f));
 
         try {
@@ -252,6 +254,24 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                     ))}
                 </div>
             )}
+
+            {/* Custodian */}
+            <div className="input-group mb-24" style={{ maxWidth: '400px' }}>
+                <label style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px', display: 'block' }}>
+                    Custodian <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(optional)</span>
+                </label>
+                <input
+                    type="text"
+                    className="input"
+                    placeholder="e.g. Ritesh Singhi"
+                    value={custodian}
+                    onChange={(e) => setCustodian(e.target.value)}
+                    style={{ fontSize: '14px' }}
+                />
+                <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
+                    Person whose data is being uploaded. Applied to all documents in this upload.
+                </p>
+            </div>
 
             {/* Dropzone */}
             <div

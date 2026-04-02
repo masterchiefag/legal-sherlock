@@ -67,6 +67,28 @@ router.get('/:id', (req, res) => {
     }
 });
 
+// List custodians for an investigation with document counts
+router.get('/:id/custodians', (req, res) => {
+    try {
+        const custodians = db.prepare(`
+            SELECT custodian as name,
+                COUNT(*) as document_count,
+                SUM(CASE WHEN doc_type = 'email' THEN 1 ELSE 0 END) as email_count,
+                SUM(CASE WHEN doc_type = 'attachment' THEN 1 ELSE 0 END) as attachment_count,
+                SUM(CASE WHEN doc_type = 'chat' THEN 1 ELSE 0 END) as chat_count,
+                SUM(CASE WHEN doc_type = 'file' THEN 1 ELSE 0 END) as file_count
+            FROM documents
+            WHERE investigation_id = ? AND custodian IS NOT NULL
+            GROUP BY custodian
+            ORDER BY document_count DESC
+        `).all(req.params.id);
+        res.json(custodians);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // Create new investigation
 router.post('/', (req, res) => {
     try {
