@@ -535,12 +535,18 @@ router.get('/:id', (req, res) => {
       WHERE parent_id = ?
     `).all(req.params.id);
 
-        // If this IS an attachment, fetch parent info
+        // If this IS an attachment, fetch parent info + sibling attachments
         if (doc.parent_id) {
             doc.parent = db.prepare(`
         SELECT id, original_name, email_subject, email_from
         FROM documents WHERE id = ?
       `).get(doc.parent_id);
+
+            doc.siblings = db.prepare(`
+        SELECT id, original_name, mime_type, size_bytes, filename
+        FROM documents
+        WHERE parent_id = ? AND id != ?
+      `).all(doc.parent_id, req.params.id);
         }
 
         res.json(doc);
