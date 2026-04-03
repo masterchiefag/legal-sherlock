@@ -17,7 +17,7 @@ function Search({ activeInvestigationId, addToast }) {
     const [dateFrom, setDateFrom] = useState(searchParams.get('from') || '');
     const [dateTo, setDateTo] = useState(searchParams.get('to') || '');
     const [hideDuplicates, setHideDuplicates] = useState(searchParams.get('dedup') !== '0');
-    const [latestThreadOnly, setLatestThreadOnly] = useState(searchParams.get('latest_thread') === '1');
+    const [latestThreadOnly, setLatestThreadOnly] = useState(searchParams.get('latest_thread') !== '0');
     const [custodianFilter, setCustodianFilter] = useState(searchParams.get('custodian') || '');
     const [custodianList, setCustodianList] = useState([]);
 
