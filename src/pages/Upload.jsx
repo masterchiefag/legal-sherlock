@@ -43,8 +43,8 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                 setActiveJob(job);
                 
                 if (job.status === 'completed' || job.status === 'failed') {
-                    if (job.status === 'completed') addToast('PST Import Complete', 'success');
-                    if (job.status === 'failed') addToast('PST Import Failed', 'error');
+                    if (job.status === 'completed') addToast(`${getJobLabel(job)} Complete`, 'success');
+                    if (job.status === 'failed') addToast(`${getJobLabel(job)} Failed`, 'error');
                     return; // Stop polling
                 }
             }
@@ -124,7 +124,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                     // Background job started (PST)
                     setFiles([]);
                     addToast(data.message, 'info');
-                    setActiveJob({ id: data.jobId, status: 'pending', filename: data.filename || 'PST File' });
+                    setActiveJob({ id: data.jobId, status: 'pending', filename: data.filename || 'File' });
                     pollJobStatus(data.jobId);
                 } else if (xhr.status >= 200 && xhr.status < 300) {
                     setResults(data.documents || []);
@@ -208,6 +208,16 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
 
     const getFileExt = (name) => name.split('.').pop().toLowerCase();
 
+    const getJobType = (job) => {
+        const ext = job?.filename?.split('.').pop().toLowerCase() || '';
+        if (ext === 'sqlite' || ext === 'db') return 'chat';
+        return 'pst'; // PST/OST
+    };
+
+    const getJobLabel = (job) => {
+        return getJobType(job) === 'chat' ? 'Chat Import' : 'PST Import';
+    };
+
     if (!activeInvestigationId) {
         return (
             <div className="empty-state">
@@ -219,7 +229,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
 
     return (
         <div className="fade-in" style={{ maxWidth: '800px' }}>
-            <div className="flex items-center gap-8 mb-24 p-12" style={{ background: 'var(--bg-tertiary)', borderRadius: '8px', border: '1px solid var(--border-secondary)' }}>
+            <div className="flex items-center gap-8 mb-16 p-12" style={{ background: 'var(--bg-tertiary)', borderRadius: '8px', border: '1px solid var(--border-secondary)' }}>
                 <span className="text-secondary" style={{ fontSize: '13px' }}>Uploading to:</span>
                 <span className="fw-bold" style={{ fontSize: '14px', color: 'var(--primary)' }}>{activeInvestigation?.name || 'Active Case'}</span>
             </div>
@@ -256,14 +266,14 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
             )}
 
             {/* Custodian */}
-            <div className="input-group mb-24" style={{ maxWidth: '400px' }}>
+            <div className="input-group mb-16" style={{ maxWidth: '400px' }}>
                 <label style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px', display: 'block' }}>
                     Custodian <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(optional)</span>
                 </label>
                 <input
                     type="text"
                     className="input"
-                    placeholder="e.g. Ritesh Singhi"
+                    placeholder="e.g. John Doe"
                     value={custodian}
                     onChange={(e) => setCustodian(e.target.value)}
                     style={{ fontSize: '14px' }}
@@ -358,7 +368,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
 
             {/* Background Job Progress */}
             {activeJob && (
-                <div className="mt-24 p-16" style={{ background: 'var(--bg-secondary)', borderRadius: '12px', border: '1px solid var(--border-secondary)' }}>
+                <div className="mt-24" style={{ background: 'var(--bg-secondary)', borderRadius: '12px', border: '1px solid var(--border-secondary)', padding: '20px 24px' }}>
                     <div className="flex items-center justify-between mb-16">
                         <div className="flex items-center gap-12">
                             {activeJob.status === 'processing' || activeJob.status === 'pending' ? (
@@ -369,14 +379,18 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                                 <div style={{ color: 'var(--danger)', fontSize: '20px' }}>⚠</div>
                             )}
                             <div>
-                                <h3 className="text-md fw-bold m-0 text-primary">PST Import: {activeJob.filename || 'Archive'}</h3>
+                                <h3 className="text-md fw-bold m-0 text-primary">{getJobLabel(activeJob)}: {activeJob.filename || 'Archive'}</h3>
                                 <p className="text-sm text-muted m-0 capitalize">
                                     {activeJob.phase === 'reading'
-                                        ? 'Reading PST file (this takes a few minutes)...'
+                                        ? getJobType(activeJob) === 'chat'
+                                            ? 'Reading chat database...'
+                                            : 'Reading PST file (this takes a few minutes)...'
                                         : activeJob.phase === 'extracting'
                                         ? 'Extracting text from attachments...'
                                         : activeJob.phase === 'importing' || activeJob.status === 'processing'
-                                        ? 'Importing emails & attachments...'
+                                        ? getJobType(activeJob) === 'chat'
+                                            ? 'Importing chat messages...'
+                                            : 'Importing emails & attachments...'
                                         : `Status: ${activeJob.status}`}
                                 </p>
                             </div>
@@ -388,7 +402,28 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                     
                     {(activeJob.status === 'processing' || activeJob.status === 'completed' || activeJob.status === 'failed') && (
                         <>
-                            {activeJob.phase === 'importing' && activeJob.total_eml_files > 0 && (() => {
+                            {/* Chat import progress (uses progress_percent directly) */}
+                            {activeJob.phase === 'importing' && getJobType(activeJob) === 'chat' && activeJob.progress_percent > 0 && (
+                                <div style={{ marginBottom: '12px' }}>
+                                    <div className="flex items-center justify-between mb-4">
+                                        <span className="text-xs text-muted">
+                                            Importing: {activeJob.total_emails?.toLocaleString() || 0} chats
+                                        </span>
+                                        <span className="text-xs fw-bold">{activeJob.progress_percent}%</span>
+                                    </div>
+                                    <div style={{ height: '6px', background: 'var(--bg-tertiary)', borderRadius: '3px', overflow: 'hidden' }}>
+                                        <div style={{
+                                            height: '100%',
+                                            width: `${activeJob.progress_percent}%`,
+                                            background: 'var(--accent)',
+                                            borderRadius: '3px',
+                                            transition: 'width 0.3s ease'
+                                        }} />
+                                    </div>
+                                </div>
+                            )}
+                            {/* PST import progress (uses total_emails / total_eml_files) */}
+                            {activeJob.phase === 'importing' && getJobType(activeJob) !== 'chat' && activeJob.total_eml_files > 0 && (() => {
                                 const pct = Math.min(100, Math.round((activeJob.total_emails / activeJob.total_eml_files) * 100));
                                 const elapsedMs = activeJob.started_at ? Date.now() - new Date(activeJob.started_at + 'Z').getTime() : 0;
                                 const rate = elapsedMs > 0 && activeJob.total_emails > 0 ? activeJob.total_emails / (elapsedMs / 60000) : 0;
@@ -398,7 +433,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                                     <div className="mt-12" style={{ marginBottom: '12px' }}>
                                         <div className="flex items-center justify-between mb-4">
                                             <span className="text-xs text-muted">
-                                                Importing: {activeJob.total_emails?.toLocaleString()} / {activeJob.total_eml_files?.toLocaleString()} emails
+                                                Importing: {activeJob.total_emails?.toLocaleString()} / {activeJob.total_eml_files?.toLocaleString()} {getJobType(activeJob) === 'chat' ? 'chats' : 'emails'}
                                             </span>
                                             <span className="text-xs fw-bold">
                                                 {pct}%{etaText ? ` · ETA ${etaText}` : ''}
@@ -414,7 +449,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                                             }} />
                                         </div>
                                         {rate > 0 && (
-                                            <p className="text-xs text-muted m-0 mt-4">{Math.round(rate)} emails/min</p>
+                                            <p className="text-xs text-muted m-0 mt-4">{Math.round(rate)} {getJobType(activeJob) === 'chat' ? 'chats' : 'emails'}/min</p>
                                         )}
                                     </div>
                                 );
@@ -438,13 +473,17 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                             )}
                             <div className="flex gap-24 mt-16" style={{ borderTop: '1px solid var(--border-secondary)', paddingTop: '16px' }}>
                                 <div>
-                                    <p className="text-xs text-muted m-0 uppercase tracking-wide">Emails Imported</p>
+                                    <p className="text-xs text-muted m-0 uppercase tracking-wide">
+                                        {getJobType(activeJob) === 'chat' ? 'Chats Imported' : 'Emails Imported'}
+                                    </p>
                                     <p className="text-lg fw-bold m-0">{activeJob.total_emails?.toLocaleString() || 0}</p>
                                 </div>
+                                {getJobType(activeJob) !== 'chat' && (
                                 <div>
                                     <p className="text-xs text-muted m-0 uppercase tracking-wide">Attachments</p>
                                     <p className="text-lg fw-bold m-0">{activeJob.total_attachments?.toLocaleString() || 0}</p>
                                 </div>
+                                )}
                                 {elapsed && (
                                     <div>
                                         <p className="text-xs text-muted m-0 uppercase tracking-wide">Total Time</p>
