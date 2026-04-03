@@ -230,7 +230,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
     return (
         <div className="fade-in" style={{ maxWidth: '800px' }}>
             {/* Failed Jobs — Resume */}
-            {failedJobs.length > 0 && !activeJob && (
+            {failedJobs.length > 0 && (!activeJob || activeJob.status === 'completed') && (
                 <div className="mb-24">
                     {failedJobs.map(job => (
                         <div key={job.id} className="p-16 mb-12" style={{ background: 'var(--bg-secondary)', borderRadius: '12px', border: '1px solid var(--warning)', borderLeftWidth: '4px' }}>
