@@ -379,16 +379,23 @@ async function main() {
                 return;
             }
             const filePath = path.join(UPLOADS_DIR, doc.filename);
+            // Timeout guard: skip documents that take too long (e.g., huge/corrupt PDFs)
+            const EXTRACT_TIMEOUT = 30000; // 30 seconds per document
+            const withTimeout = (promise, ms) => Promise.race([
+                promise,
+                new Promise((_, reject) => setTimeout(() => reject(new Error('Extraction timed out')), ms))
+            ]);
+
             let text = '';
             try {
-                text = await extractText(filePath, doc.mime_type);
+                text = await withTimeout(extractText(filePath, doc.mime_type), EXTRACT_TIMEOUT);
             } catch (e) {
                 text = `[Could not extract text: ${e.message}]`;
             }
 
             let meta = { author: null, title: null, createdAt: null, modifiedAt: null, creatorTool: null, keywords: null };
             try {
-                meta = await extractMetadata(filePath, doc.mime_type);
+                meta = await withTimeout(extractMetadata(filePath, doc.mime_type), EXTRACT_TIMEOUT);
             } catch (_) { /* best effort */ }
 
             const docId = doc.id;
