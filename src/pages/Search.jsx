@@ -65,7 +65,7 @@ function Search({ activeInvestigationId, addToast }) {
         setDateFrom(s.from || '');
         setDateTo(s.to || '');
         setHideDuplicates(s.dedup !== '0');
-        setTimeout(() => doSearch(), 0);
+        setShouldRefresh(prev => prev + 1);
     };
 
     const removeSavedSearch = (id) => {
@@ -483,7 +483,7 @@ function Search({ activeInvestigationId, addToast }) {
                         <input
                             type="checkbox"
                             checked={hideDuplicates}
-                            onChange={(e) => { setHideDuplicates(e.target.checked); setTimeout(() => doSearch(), 0); }}
+                            onChange={(e) => { setHideDuplicates(e.target.checked); setShouldRefresh(prev => prev + 1); }}
                             style={{ width: '15px', height: '15px', cursor: 'pointer', accentColor: 'var(--primary)' }}
                         />
                         Hide Duplicates
@@ -492,7 +492,7 @@ function Search({ activeInvestigationId, addToast }) {
                         <input
                             type="checkbox"
                             checked={latestThreadOnly}
-                            onChange={(e) => { setLatestThreadOnly(e.target.checked); setTimeout(() => doSearch(), 0); }}
+                            onChange={(e) => { setLatestThreadOnly(e.target.checked); setShouldRefresh(prev => prev + 1); }}
                             style={{ width: '15px', height: '15px', cursor: 'pointer', accentColor: 'var(--primary)' }}
                         />
                         Latest in Thread
