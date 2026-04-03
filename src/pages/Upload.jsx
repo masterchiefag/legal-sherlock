@@ -229,11 +229,6 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
 
     return (
         <div className="fade-in" style={{ maxWidth: '800px' }}>
-            <div className="flex items-center gap-8 mb-16 p-12" style={{ background: 'var(--bg-tertiary)', borderRadius: '8px', border: '1px solid var(--border-secondary)' }}>
-                <span className="text-secondary" style={{ fontSize: '13px' }}>Uploading to:</span>
-                <span className="fw-bold" style={{ fontSize: '14px', color: 'var(--primary)' }}>{activeInvestigation?.name || 'Active Case'}</span>
-            </div>
-
             {/* Failed Jobs — Resume */}
             {failedJobs.length > 0 && !activeJob && (
                 <div className="mb-24">
