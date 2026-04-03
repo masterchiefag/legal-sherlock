@@ -71,23 +71,6 @@ function App() {
                     <div className="brand-sub">eDiscovery Platform</div>
                 </div>
 
-                {/* Case Switcher */}
-                <div style={{ padding: '0 12px 16px', borderBottom: '1px solid var(--border-secondary)', marginBottom: '16px' }}>
-                    <div style={{ fontSize: '11px', textTransform: 'uppercase', letterSpacing: '0.05em', color: 'var(--text-tertiary)', marginBottom: '8px', paddingLeft: '4px' }}>
-                        Active Case
-                    </div>
-                    {activeInvestigation ? (
-                        <div style={{ padding: '10px', background: 'var(--bg-tertiary)', borderRadius: '6px', fontSize: '13px', fontWeight: 600, color: 'var(--text-primary)', border: '1px solid var(--border-secondary)', display: 'flex', alignItems: 'center', gap: '8px', cursor: 'pointer' }} onClick={() => document.querySelector('a[href="/investigations"]').click()}>
-                            <span style={{ width: '8px', height: '8px', borderRadius: '50%', background: 'var(--success)' }}></span>
-                            <span style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{activeInvestigation.name}</span>
-                        </div>
-                    ) : (
-                        <div style={{ padding: '10px', background: 'var(--bg-tertiary)', borderRadius: '6px', fontSize: '12px', color: 'var(--danger)', border: '1px dashed var(--danger)' }}>
-                            No active case selected
-                        </div>
-                    )}
-                </div>
-
                 <nav className="sidebar-nav">
                     <NavLink to="/" end className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
                         <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -98,13 +81,7 @@ function App() {
                         </svg>
                         Dashboard
                     </NavLink>
-                    <NavLink to="/investigations" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-                        <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <rect x="2" y="7" width="20" height="14" rx="2" ry="2"></rect><path d="M16 21V5a2 2 0 0 0-2-2h-4a2 2 0 0 0-2 2v16"></path>
-                        </svg>
-                        Investigations
-                    </NavLink>
-                    <NavLink to="/upload" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+<NavLink to="/upload" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
                         <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                             <polyline points="17 8 12 3 7 8" />
@@ -155,6 +132,23 @@ function App() {
             <main className="main-area">
                 <header className="header">
                     <h2 className="header-title">{pageTitle}</h2>
+                    <div className="header-actions">
+                        {activeInvestigation ? (
+                            <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '8px', padding: '6px 12px', background: 'var(--bg-tertiary)', borderRadius: '6px', border: '1px solid var(--border-secondary)', fontSize: '13px' }}>
+                                    <span style={{ width: '7px', height: '7px', borderRadius: '50%', background: 'var(--success)', flexShrink: 0 }}></span>
+                                    <span style={{ fontWeight: 600, color: 'var(--text-primary)', maxWidth: '200px', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{activeInvestigation.name}</span>
+                                </div>
+                                <NavLink to="/investigations" style={{ fontSize: '12px', color: 'var(--text-accent)', textDecoration: 'none' }}>
+                                    Switch Case
+                                </NavLink>
+                            </div>
+                        ) : (
+                            <NavLink to="/investigations" style={{ display: 'flex', alignItems: 'center', gap: '6px', padding: '6px 12px', background: 'var(--bg-tertiary)', borderRadius: '6px', border: '1px dashed var(--danger)', fontSize: '12px', color: 'var(--danger)', textDecoration: 'none' }}>
+                                No case selected — Select Case
+                            </NavLink>
+                        )}
+                    </div>
                 </header>
                 <div className="page-content">
                     <div className="page-enter" key={location.pathname}>
