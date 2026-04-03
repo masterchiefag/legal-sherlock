@@ -33,6 +33,10 @@ router.get('/', (req, res) => {
             for (const token of tokens) {
                 if (token.toUpperCase() === 'OR') {
                     processed.push('OR');
+                } else if (token.toUpperCase() === 'AND') {
+                    processed.push('AND');
+                } else if (token.toUpperCase() === 'NOT') {
+                    processed.push('NOT');
                 } else if (token.match(/^[a-z_]+:/i)) {
                     // It's a column filter with FTS syntax (e.g. email_from:"abc")
                     processed.push(token);
