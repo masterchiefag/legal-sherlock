@@ -514,6 +514,16 @@ function DocumentReview({ addToast }) {
                 <div className="doc-sidebar-section">
                     <h3>{isEmail ? 'Email Info' : isChat ? 'Chat Info' : 'Document Info'}</h3>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '13px' }}>
+                        {doc.doc_identifier && (
+                            <div className="flex justify-between">
+                                <span className="text-muted">Doc ID</span>
+                                <span style={{
+                                    fontFamily: 'var(--font-mono)', fontSize: '12px', color: 'var(--primary)',
+                                    background: 'var(--bg-tertiary)', padding: '2px 8px', borderRadius: '4px',
+                                    fontWeight: 600, letterSpacing: '0.5px'
+                                }}>{doc.doc_identifier}</span>
+                            </div>
+                        )}
                         <div className="flex justify-between">
                             <span className="text-muted">Name</span>
                             <span style={{ color: 'var(--text-primary)', fontWeight: 500, textAlign: 'right', maxWidth: '200px', wordBreak: 'break-word' }}>
@@ -563,6 +573,39 @@ function DocumentReview({ addToast }) {
                                     {p.trim()}
                                 </div>
                             ))}
+                        </div>
+                    </div>
+                )}
+
+                {/* File Details Section */}
+                {(doc.size_bytes || doc.text_content_size || doc.folder_path) && (
+                    <div className="doc-sidebar-section">
+                        <h3>📁 File Details</h3>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12px' }}>
+                            {doc.folder_path && (
+                                <div className="flex justify-between">
+                                    <span className="text-muted">Folder</span>
+                                    <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontSize: '11px', maxWidth: '180px', textAlign: 'right', wordBreak: 'break-all' }}>{doc.folder_path}</span>
+                                </div>
+                            )}
+                            {doc.size_bytes > 0 && (
+                                <div className="flex justify-between">
+                                    <span className="text-muted">File Size</span>
+                                    <span style={{ color: 'var(--text-primary)' }}>{formatSize(doc.size_bytes)}</span>
+                                </div>
+                            )}
+                            {doc.text_content_size > 0 && (
+                                <div className="flex justify-between">
+                                    <span className="text-muted">Extracted Text</span>
+                                    <span style={{ color: 'var(--text-primary)' }}>{formatSize(doc.text_content_size)}</span>
+                                </div>
+                            )}
+                            {doc.mime_type && (
+                                <div className="flex justify-between">
+                                    <span className="text-muted">Type</span>
+                                    <span style={{ color: 'var(--text-secondary)', fontSize: '11px' }}>{doc.mime_type}</span>
+                                </div>
+                            )}
                         </div>
                     </div>
                 )}

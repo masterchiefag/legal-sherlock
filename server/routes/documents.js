@@ -268,9 +268,15 @@ router.post('/upload', (req, res, next) => {
     });
 }, async (req, res) => {
     try {
-        const { investigation_id, custodian } = req.body;
+        const { investigation_id } = req.body;
         if (!investigation_id) {
             return res.status(400).json({ error: 'investigation_id is required' });
+        }
+
+        // Use provided custodian, or fall back to filename (minus extension) of the first file
+        let custodian = req.body.custodian;
+        if (!custodian && req.files?.length > 0) {
+            custodian = path.parse(req.files[0].originalname).name;
         }
 
         const allResults = [];
@@ -430,6 +436,7 @@ router.post('/jobs/:id/resume', (req, res) => {
 
         // Spawn worker with resume flag
         const workerPath = path.join(__dirname, '..', 'workers', 'pst-worker.js');
+        console.log(`✦ DEBUG Resume: spawning worker with extractionOnly=${extractionOnly}, investigation_id=${job.investigation_id}, filepath=${job.filepath}`);
         const worker = new Worker(workerPath, {
             workerData: {
                 jobId: job.id,

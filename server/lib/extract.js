@@ -92,7 +92,16 @@ export async function extractMetadata(filePath, mimeType) {
         modifiedAt: null,
         creatorTool: null,
         keywords: null,
+        lastModifiedBy: null,
+        printedAt: null,
+        lastAccessedAt: null,
     };
+
+    // Capture filesystem last accessed time (best effort)
+    try {
+        const stat = fs.statSync(filePath);
+        if (stat.atime) meta.lastAccessedAt = stat.atime.toISOString();
+    } catch (_) {}
 
     try {
         if (ext === '.pdf') {
@@ -108,6 +117,7 @@ export async function extractMetadata(filePath, mimeType) {
             const workbook = XLSX.readFile(filePath);
             const props = workbook.Props || {};
             meta.author = props.Author || null;
+            meta.lastModifiedBy = props.LastAuthor || null;
             meta.title = props.Title || null;
             meta.createdAt = props.CreatedDate ? new Date(props.CreatedDate).toISOString() : null;
             meta.modifiedAt = props.ModifiedDate ? new Date(props.ModifiedDate).toISOString() : null;
@@ -202,7 +212,9 @@ async function extractDocxMetadata(filePath, meta) {
     const xml = coreXml.toString('utf-8');
 
     // Parse XML fields with regex (avoiding need for XML parser dependency)
-    meta.author = extractXmlTag(xml, 'dc:creator') || extractXmlTag(xml, 'cp:lastModifiedBy');
+    meta.author = extractXmlTag(xml, 'dc:creator');
+    meta.lastModifiedBy = extractXmlTag(xml, 'cp:lastModifiedBy');
+    if (!meta.author) meta.author = meta.lastModifiedBy; // fallback
     meta.title = extractXmlTag(xml, 'dc:title');
     meta.keywords = extractXmlTag(xml, 'cp:keywords');
 
@@ -216,6 +228,12 @@ async function extractDocxMetadata(filePath, meta) {
     if (modified) {
         const d = new Date(modified);
         meta.modifiedAt = isNaN(d.getTime()) ? modified : d.toISOString();
+    }
+
+    const printed = extractXmlTag(xml, 'cp:lastPrinted');
+    if (printed) {
+        const d = new Date(printed);
+        meta.printedAt = isNaN(d.getTime()) ? printed : d.toISOString();
     }
 
     // Try to get the creator tool from app.xml
@@ -304,7 +322,7 @@ function extractDocOle2Metadata(filePath, meta) {
     const numProps = data.readUInt32LE(setOffset + 4);
 
     // OLE2 SummaryInformation property IDs
-    const PROP_MAP = { 2: 'title', 3: 'subject', 4: 'author', 5: 'keywords', 12: 'createdAt', 13: 'modifiedAt', 18: 'application' };
+    const PROP_MAP = { 2: 'title', 3: 'subject', 4: 'author', 5: 'keywords', 8: 'lastModifiedBy', 11: 'printedAt', 12: 'createdAt', 13: 'modifiedAt', 18: 'application' };
 
     for (let i = 0; i < numProps; i++) {
         const propId = data.readUInt32LE(setOffset + 8 + i * 8);

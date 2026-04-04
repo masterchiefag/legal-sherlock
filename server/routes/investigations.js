@@ -92,14 +92,17 @@ router.get('/:id/custodians', (req, res) => {
 // Create new investigation
 router.post('/', (req, res) => {
     try {
-        const { name, description, allegation, key_parties, remarks, date_range_start, date_range_end } = req.body;
+        const { name, description, allegation, key_parties, remarks, date_range_start, date_range_end, short_code } = req.body;
         if (!name?.trim()) return res.status(400).json({ error: 'Investigation name is required' });
+
+        // Auto-generate short_code from name if not provided (uppercase, no spaces, max 10 chars)
+        const code = (short_code?.trim() || name.trim().replace(/[^a-zA-Z0-9]/g, '').substring(0, 10)).toUpperCase();
 
         const id = crypto.randomUUID();
         db.prepare(`
-            INSERT INTO investigations (id, name, description, allegation, key_parties, remarks, date_range_start, date_range_end)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        `).run(id, name.trim(), description || null, allegation || null, key_parties || null, remarks || null, date_range_start || null, date_range_end || null);
+            INSERT INTO investigations (id, name, description, allegation, key_parties, remarks, date_range_start, date_range_end, short_code)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `).run(id, name.trim(), description || null, allegation || null, key_parties || null, remarks || null, date_range_start || null, date_range_end || null, code);
 
         const inv = db.prepare(`SELECT * FROM investigations WHERE id = ?`).get(id);
         res.status(201).json(inv);
@@ -115,7 +118,7 @@ router.put('/:id', (req, res) => {
         const inv = db.prepare(`SELECT * FROM investigations WHERE id = ?`).get(req.params.id);
         if (!inv) return res.status(404).json({ error: 'Investigation not found' });
 
-        const { name, description, status, allegation, key_parties, remarks, date_range_start, date_range_end } = req.body;
+        const { name, description, status, allegation, key_parties, remarks, date_range_start, date_range_end, short_code } = req.body;
 
         db.prepare(`
             UPDATE investigations SET
@@ -127,6 +130,7 @@ router.put('/:id', (req, res) => {
                 remarks = ?,
                 date_range_start = ?,
                 date_range_end = ?,
+                short_code = COALESCE(?, short_code),
                 updated_at = datetime('now')
             WHERE id = ?
         `).run(
@@ -134,6 +138,7 @@ router.put('/:id', (req, res) => {
             status || null, allegation ?? inv.allegation,
             key_parties ?? inv.key_parties, remarks ?? inv.remarks,
             date_range_start ?? inv.date_range_start, date_range_end ?? inv.date_range_end,
+            short_code ? short_code.toUpperCase().trim() : null,
             req.params.id
         );
 

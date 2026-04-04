@@ -19,7 +19,39 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
 const EML_PARSE_WORKER = path.join(__dirname, 'eml-parse-worker.js');
 
+console.log('✦ DEBUG: workerData destructured');
 const { jobId, filename, filepath, originalname, investigation_id, custodian, resume, extractionOnly } = workerData;
+console.log('✦ DEBUG: constants initializing');
+
+// ═══════════════════════════════════════════════════
+// Doc identifier generation: CASE_CUST_00001 for emails, CASE_CUST_00001_001 for attachments
+// ═══════════════════════════════════════════════════
+function getCustodianInitials(name) {
+    if (!name) return 'XX';
+    const parts = name.trim().split(/\s+/);
+    if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    return name.substring(0, 2).toUpperCase();
+}
+
+const investigation = db.prepare('SELECT short_code FROM investigations WHERE id = ?').get(investigation_id);
+const caseCode = investigation?.short_code || 'CASE';
+const custCode = getCustodianInitials(custodian);
+const docIdPrefix = `${caseCode}_${custCode}`;
+
+// Get next sequence number (resume-safe: continues from max existing)
+const maxExisting = db.prepare(
+    "SELECT MAX(CAST(SUBSTR(doc_identifier, ?, 5) AS INTEGER)) as max_seq FROM documents WHERE doc_identifier LIKE ? AND doc_type IN ('email', 'chat')"
+).get(docIdPrefix.length + 2, `${docIdPrefix}_%`);
+let docSeq = (maxExisting?.max_seq || 0);
+
+function nextDocIdentifier() {
+    docSeq++;
+    return `${docIdPrefix}_${String(docSeq).padStart(5, '0')}`;
+}
+
+function attIdentifier(parentIdentifier, attIndex) {
+    return `${parentIdentifier}_${String(attIndex).padStart(3, '0')}`;
+}
 
 // Thread pool size for parallel email parsing
 const PARSE_CONCURRENCY = Math.max(2, Math.min(os.cpus().length - 1, 6));
@@ -44,8 +76,8 @@ const insertEmail = db.prepare(`
         email_from, email_to, email_cc, email_subject, email_date,
         email_bcc, email_headers_raw, email_received_chain,
         email_originating_ip, email_auth_results, email_server_info, email_delivery_date,
-        investigation_id, custodian
-    ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        investigation_id, custodian, folder_path, text_content_size, doc_identifier, recipient_count
+    ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const insertAttachment = db.prepare(`
@@ -53,10 +85,10 @@ const insertAttachment = db.prepare(`
         id, filename, original_name, mime_type, size_bytes, text_content, status,
         doc_type, parent_id, thread_id,
         doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
-        content_hash, is_duplicate, investigation_id, custodian
+        content_hash, is_duplicate, investigation_id, custodian, doc_identifier
     ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
         ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?)
+        ?, ?, ?, ?, ?)
 `);
 
 const updateProgress = db.prepare(
@@ -68,14 +100,16 @@ const updateExtractionProgress = db.prepare(
 );
 
 const updateDocText = db.prepare(
-    "UPDATE documents SET text_content = ?, status = 'ready' WHERE id = ?"
+    "UPDATE documents SET text_content = ?, text_content_size = ?, status = 'ready' WHERE id = ?"
 );
 
 const updateDocMeta = db.prepare(
     `UPDATE documents SET doc_author = ?, doc_title = ?, doc_created_at = ?,
-     doc_modified_at = ?, doc_creator_tool = ?, doc_keywords = ? WHERE id = ?`
+     doc_modified_at = ?, doc_creator_tool = ?, doc_keywords = ?,
+     doc_last_modified_by = ?, doc_printed_at = ?, doc_last_accessed_at = ? WHERE id = ?`
 );
 
+console.log('✦ DEBUG: prepared statements done');
 // Batched transaction wrapper
 const flushBatch = db.transaction((ops) => {
     for (const op of ops) op();
@@ -143,12 +177,16 @@ async function runConcurrent(items, concurrency, fn) {
 }
 
 async function main() {
+    console.log(`✦ DEBUG Worker started: jobId=${jobId}, resume=${resume}, extractionOnly=${extractionOnly}, investigation_id=${investigation_id}`);
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'pst-import-'));
 
     try {
+        console.log('✦ DEBUG: updating job status to processing...');
         db.prepare("UPDATE import_jobs SET status = 'processing', phase = 'reading' WHERE id = ?").run(jobId);
+        console.log('✦ DEBUG: job status updated');
 
         // Disable FTS triggers for bulk import
+        console.log('✦ DEBUG: dropping FTS triggers...');
         db.exec('DROP TRIGGER IF EXISTS documents_ai');
         db.exec('DROP TRIGGER IF EXISTS documents_au');
         console.log('✦ PST Import: disabled FTS triggers for bulk import');
@@ -172,6 +210,7 @@ async function main() {
         }
 
         // Checkpoint WAL to reduce write overhead
+        console.log('✦ DEBUG: checkpointing WAL...');
         try {
             db.pragma('wal_checkpoint(TRUNCATE)');
             console.log('✦ PST Import: WAL checkpointed');
@@ -180,7 +219,9 @@ async function main() {
         }
 
         // Increase page cache for bulk operations
+        console.log('✦ DEBUG: setting cache size...');
         db.pragma('cache_size = -64000'); // 64MB cache
+        console.log('✦ DEBUG: cache size set, checking extractionOnly...');
 
         // ═══════════════════════════════════════════
         // Phase 0 & 1: Skip if extractionOnly (source file deleted, just do Phase 2)
@@ -303,6 +344,11 @@ async function main() {
                 }
                 if (eml.messageId) seenMessageIds.add(eml.messageId);
 
+                // Derive folder path from PST directory structure
+                const relPath = path.relative(tmpDir, emlPath);
+                const folderPath = path.dirname(relPath).replace(/\\/g, '/');
+                eml._folderPath = folderPath === '.' ? '/' : '/' + folderPath;
+
                 await processEmail(eml);
                 totalEmails++;
                 perfStats.emailCount = totalEmails;
@@ -378,6 +424,8 @@ async function main() {
         // DB writes are collected and flushed in batches to avoid lock contention.
         // ═══════════════════════════════════════════
         console.log(`✦ PST Import Phase 2: Extracting text (concurrency=${PHASE2_CONCURRENCY})...`);
+        console.log(`✦ DEBUG: investigation_id=${investigation_id}, jobId=${jobId}, extractionOnly=${extractionOnly}`);
+        console.log(`✦ DEBUG: totalEmails=${totalEmails}, totalAttachments=${totalAttachments}`);
         updateProgress.run(totalEmails, totalAttachments, 'extracting', jobId);
 
         const pendingDocs = db.prepare(
@@ -385,11 +433,17 @@ async function main() {
         ).all(investigation_id);
 
         const totalPending = pendingDocs.length;
+        console.log(`✦ DEBUG: Found ${totalPending} pending docs to extract`);
+        if (totalPending > 0) {
+            console.log(`✦ DEBUG: First pending doc: ${JSON.stringify(pendingDocs[0])}`);
+        }
         let extracted = 0;
         let extractionOps = [];
         const failedExtractions = []; // Track docs that failed or timed out
 
+        console.log(`✦ DEBUG: Starting runConcurrent with ${pendingDocs.length} docs...`);
         await runConcurrent(pendingDocs, PHASE2_CONCURRENCY, async (doc) => {
+            if (extracted === 0) console.log(`✦ DEBUG: Processing first doc: ${doc.id} ${doc.mime_type} ${doc.filename}`);
             // Skip text extraction for oversized files (no file on disk)
             if (!doc.filename) {
                 extracted++;
@@ -429,8 +483,8 @@ async function main() {
 
             const docId = doc.id;
             extractionOps.push(
-                () => updateDocText.run(text, docId),
-                () => updateDocMeta.run(meta.author, meta.title, meta.createdAt, meta.modifiedAt, meta.creatorTool, meta.keywords, docId)
+                () => updateDocText.run(text, text ? text.length : 0, docId),
+                () => updateDocMeta.run(meta.author, meta.title, meta.createdAt, meta.modifiedAt, meta.creatorTool, meta.keywords, meta.lastModifiedBy, meta.printedAt, meta.lastAccessedAt, docId)
             );
             extracted++;
 
@@ -579,6 +633,12 @@ async function processEmail(eml) {
     const threadId = resolveThreadId(eml.messageId, eml.inReplyTo, eml.references);
     perfStats.threadTime += Date.now() - tThread;
 
+    const emailDocId = nextDocIdentifier();
+
+    // Count recipients across To, Cc, Bcc
+    const countAddrs = (s) => s ? s.split(',').filter(a => a.trim()).length : 0;
+    const recipientCount = countAddrs(eml.to) + countAddrs(eml.cc) + countAddrs(eml.bcc);
+
     batchBuffer.push(() => {
         insertEmail.run(
             emailId, emailFilename, `${originalname} — ${subject}`, 'message/rfc822', sizeBytes, textBody,
@@ -587,7 +647,9 @@ async function processEmail(eml) {
             eml.bcc || null, eml.headersRaw || null, eml.receivedChain || null,
             eml.originatingIp || null, eml.authResults || null,
             eml.serverInfo || null, eml.deliveryDate || null,
-            investigation_id, custodian || null
+            investigation_id, custodian || null,
+            eml._folderPath || null, textBody.length || 0,
+            emailDocId, recipientCount
         );
     });
 
@@ -598,8 +660,10 @@ async function processEmail(eml) {
 
     // Write attachments async, hash in-memory for dedup
     const writePromises = [];
+    let attIdx = 0;
 
     for (const att of eml.attachments) {
+        attIdx++;
         const attId = uuidv4();
         const attExt = path.extname(att.filename) || '.bin';
         const attFilename = `${attId}${attExt}`;
@@ -640,13 +704,15 @@ async function processEmail(eml) {
         const oversizeNote = isOversized
             ? `[File too large: ${(att.size / 1e6).toFixed(0)}MB — raw file not saved to conserve disk space]`
             : null;
+        const attDocIdentifier = attIdentifier(emailDocId, attIdx);
         batchBuffer.push(() => {
             insertAttachment.run(
                 attId, dbFilename, att.filename,
                 att.contentType, att.size,
                 emailId, threadId,
                 oversizeNote, null, null, null, null, null,
-                attHash, isDuplicate, investigation_id, custodian || null
+                attHash, isDuplicate, investigation_id, custodian || null,
+                attDocIdentifier
             );
         });
 
@@ -658,4 +724,5 @@ async function processEmail(eml) {
 }
 
 // Start worker
-main();
+console.log('✦ DEBUG: calling main()...');
+main().then(() => console.log('✦ DEBUG: main() resolved')).catch(e => console.error('✦ DEBUG: main() rejected:', e));

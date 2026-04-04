@@ -4,7 +4,7 @@ import { createPortal } from 'react-dom';
 const thStyle = { padding: '10px 14px', textAlign: 'left', fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' };
 const tdStyle = { padding: '12px 14px', color: 'var(--text-secondary)' };
 
-const emptyForm = { name: '', description: '', allegation: '', key_parties: '', remarks: '', date_range_start: '', date_range_end: '' };
+const emptyForm = { name: '', description: '', allegation: '', key_parties: '', remarks: '', date_range_start: '', date_range_end: '', short_code: '' };
 
 function Investigations({ activeInvestigationId, onInvestigationChange, addToast }) {
     const [investigations, setInvestigations] = useState([]);
@@ -52,7 +52,8 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
             key_parties: inv.key_parties || '',
             remarks: inv.remarks || '',
             date_range_start: inv.date_range_start || '',
-            date_range_end: inv.date_range_end || ''
+            date_range_end: inv.date_range_end || '',
+            short_code: inv.short_code || ''
         });
         setShowModal(true);
     };
@@ -150,6 +151,7 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
                                 }}>
                                     <td style={tdStyle}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                                            {inv.short_code && <span style={{ fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--primary)', background: 'var(--bg-tertiary)', padding: '2px 6px', borderRadius: '3px', fontWeight: 600 }}>{inv.short_code}</span>}
                                             <span className="fw-bold" style={{ color: 'var(--text-primary)' }}>{inv.name}</span>
                                             {isActive && <span className="status-badge ready" style={{ fontSize: '10px', padding: '2px 6px' }}>Active</span>}
                                         </div>
@@ -223,9 +225,15 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
                         </div>
 
                         <form onSubmit={handleSubmit} style={{ display: 'flex', flexDirection: 'column', gap: '16px' }}>
-                            <div>
-                                <label className="form-label" style={{ display: 'block', marginBottom: '8px', fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)' }}>Investigation Name *</label>
-                                <input required type="text" className="input" style={{ width: '100%' }} value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="e.g. Project Apollo Internal Review" />
+                            <div style={{ display: 'grid', gridTemplateColumns: '1fr auto', gap: '16px', alignItems: 'end' }}>
+                                <div>
+                                    <label className="form-label" style={{ display: 'block', marginBottom: '8px', fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)' }}>Investigation Name *</label>
+                                    <input required type="text" className="input" style={{ width: '100%' }} value={formData.name} onChange={e => setFormData({...formData, name: e.target.value})} placeholder="e.g. Project Apollo Internal Review" />
+                                </div>
+                                <div>
+                                    <label className="form-label" style={{ display: 'block', marginBottom: '8px', fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)' }}>Short Code</label>
+                                    <input type="text" className="input" style={{ width: '120px', fontFamily: 'var(--font-mono)', textTransform: 'uppercase', letterSpacing: '1px' }} value={formData.short_code} onChange={e => setFormData({...formData, short_code: e.target.value.replace(/[^a-zA-Z0-9]/g, '').substring(0, 10)})} placeholder="APOLLO" />
+                                </div>
                             </div>
 
                             <div>

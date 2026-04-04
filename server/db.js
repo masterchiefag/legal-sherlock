@@ -157,7 +157,6 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_classifications_document_id ON classific
 db.exec(`CREATE INDEX IF NOT EXISTS idx_classifications_classified_at ON classifications(classified_at DESC)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_status_doctype ON documents(status, doc_type)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_thread_doctype ON documents(thread_id, doc_type)`);
-db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_thread_inv_date ON documents(thread_id, investigation_id, doc_type, email_date)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_is_duplicate ON documents(is_duplicate)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_custodian ON documents(custodian)`);
@@ -176,6 +175,7 @@ if (!columnExists('import_jobs', 'investigation_id')) {
 
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_investigation_id ON documents(investigation_id)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_import_jobs_investigation_id ON import_jobs(investigation_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_thread_inv_date ON documents(thread_id, investigation_id, doc_type, email_date)`);
 
 // Backfill: create default investigation and assign orphan documents
 {
@@ -234,6 +234,50 @@ if (!columnExists('import_jobs', 'elapsed_seconds')) {
 if (!columnExists('import_jobs', 'custodian')) {
   db.exec(`ALTER TABLE import_jobs ADD COLUMN custodian TEXT`);
   console.log(`✦ Migration: added column import_jobs.custodian`);
+}
+
+// ═══════════════════════════════════════════════════
+// Migration: folder_path and text_content_size on documents
+// ═══════════════════════════════════════════════════
+if (!columnExists('documents', 'folder_path')) {
+  db.exec(`ALTER TABLE documents ADD COLUMN folder_path TEXT`);
+  console.log(`✦ Migration: added column documents.folder_path`);
+}
+if (!columnExists('documents', 'text_content_size')) {
+  db.exec(`ALTER TABLE documents ADD COLUMN text_content_size INTEGER`);
+  console.log(`✦ Migration: added column documents.text_content_size`);
+  // Backfill from existing text_content
+  const updated = db.prepare(`UPDATE documents SET text_content_size = LENGTH(text_content) WHERE text_content IS NOT NULL AND text_content_size IS NULL`).run();
+  console.log(`✦ Migration: backfilled text_content_size for ${updated.changes} documents`);
+}
+
+// ═══════════════════════════════════════════════════
+// Migration: doc_identifier on documents, short_code on investigations
+// ═══════════════════════════════════════════════════
+if (!columnExists('documents', 'doc_identifier')) {
+  db.exec(`ALTER TABLE documents ADD COLUMN doc_identifier TEXT`);
+  db.exec(`CREATE UNIQUE INDEX IF NOT EXISTS idx_documents_doc_identifier ON documents(doc_identifier)`);
+  console.log(`✦ Migration: added column documents.doc_identifier`);
+}
+if (!columnExists('documents', 'doc_last_modified_by')) {
+  db.exec(`ALTER TABLE documents ADD COLUMN doc_last_modified_by TEXT`);
+  console.log(`✦ Migration: added column documents.doc_last_modified_by`);
+}
+if (!columnExists('documents', 'doc_printed_at')) {
+  db.exec(`ALTER TABLE documents ADD COLUMN doc_printed_at TEXT`);
+  console.log(`✦ Migration: added column documents.doc_printed_at`);
+}
+if (!columnExists('documents', 'doc_last_accessed_at')) {
+  db.exec(`ALTER TABLE documents ADD COLUMN doc_last_accessed_at TEXT`);
+  console.log(`✦ Migration: added column documents.doc_last_accessed_at`);
+}
+if (!columnExists('documents', 'recipient_count')) {
+  db.exec(`ALTER TABLE documents ADD COLUMN recipient_count INTEGER`);
+  console.log(`✦ Migration: added column documents.recipient_count`);
+}
+if (!columnExists('investigations', 'short_code')) {
+  db.exec(`ALTER TABLE investigations ADD COLUMN short_code TEXT`);
+  console.log(`✦ Migration: added column investigations.short_code`);
 }
 
 // ═══════════════════════════════════════════════════
@@ -308,6 +352,9 @@ db.exec(`
     VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
   END;
 `);
+
+// Checkpoint WAL before opening read-only connection so it sees latest schema
+try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch (_) {}
 
 // Read-only connection for queries — doesn't block on write locks during imports
 const readDb = new Database(DB_PATH, { readonly: true });
