@@ -374,19 +374,59 @@ router.post('/jobs/:id/resume', (req, res) => {
         if (!job) return res.status(404).json({ error: 'Job not found' });
         if (job.status !== 'failed') return res.status(400).json({ error: 'Only failed jobs can be resumed' });
 
-        // Check if PST file still exists
-        if (!fs.existsSync(job.filepath)) {
-            return res.status(400).json({ error: 'PST file no longer exists on disk. Please re-upload.' });
+        // Check if PST file still exists — if not, we can still run Phase 2 (extraction only)
+        const sourceFileExists = job.filepath && fs.existsSync(job.filepath);
+        const extractionOnly = !sourceFileExists;
+        if (extractionOnly) {
+            // Verify there are actually documents to extract
+            const pending = db.prepare(
+                "SELECT COUNT(*) as c FROM documents WHERE status = 'processing' AND investigation_id = ?"
+            ).get(job.investigation_id);
+            if (!pending || pending.c === 0) {
+                return res.status(400).json({ error: 'Source file deleted and no pending documents to extract. Please re-upload.' });
+            }
+            console.log(`✦ Resume: source file gone, running extraction-only for ${pending.c} pending documents`);
+        }
+
+        // Cleanup orphaned files in uploads/ that aren't referenced by any document or import job
+        try {
+            const referencedFiles = new Set();
+            const docFiles = db.prepare('SELECT filename FROM documents WHERE filename IS NOT NULL').all();
+            for (const r of docFiles) referencedFiles.add(r.filename);
+            const jobFiles = db.prepare('SELECT filepath FROM import_jobs WHERE filepath IS NOT NULL').all();
+            for (const r of jobFiles) referencedFiles.add(path.basename(r.filepath));
+
+            const uploadsDir = path.join(__dirname, '..', '..', 'uploads');
+            const diskFiles = fs.readdirSync(uploadsDir);
+            let cleaned = 0;
+            let freedBytes = 0;
+            for (const f of diskFiles) {
+                if (!referencedFiles.has(f)) {
+                    const fp = path.join(uploadsDir, f);
+                    try {
+                        const stat = fs.statSync(fp);
+                        freedBytes += stat.size;
+                        fs.unlinkSync(fp);
+                        cleaned++;
+                    } catch (_) {}
+                }
+            }
+            if (cleaned > 0) {
+                const freedMB = (freedBytes / 1e6).toFixed(1);
+                console.log(`✦ Resume cleanup: deleted ${cleaned} orphaned files (${freedMB} MB freed)`);
+            }
+        } catch (e) {
+            console.warn('Resume cleanup failed (non-fatal):', e.message);
         }
 
         // Accumulate time spent before failure, then reset started_at for this attempt
         db.prepare(`
-            UPDATE import_jobs SET status = 'processing', phase = 'importing',
+            UPDATE import_jobs SET status = 'processing', phase = ?,
             error_log = NULL, completed_at = NULL,
             elapsed_seconds = COALESCE(elapsed_seconds, 0) + CAST((julianday(COALESCE(completed_at, datetime('now'))) - julianday(started_at)) * 86400 AS INTEGER),
             started_at = datetime('now')
             WHERE id = ?
-        `).run(job.id);
+        `).run(extractionOnly ? 'extracting' : 'importing', job.id);
 
         // Spawn worker with resume flag
         const workerPath = path.join(__dirname, '..', 'workers', 'pst-worker.js');
@@ -399,6 +439,7 @@ router.post('/jobs/:id/resume', (req, res) => {
                 investigation_id: job.investigation_id,
                 custodian: job.custodian,
                 resume: true,
+                extractionOnly,
             }
         });
 
@@ -535,12 +576,18 @@ router.get('/:id', (req, res) => {
       WHERE parent_id = ?
     `).all(req.params.id);
 
-        // If this IS an attachment, fetch parent info
+        // If this IS an attachment, fetch parent info + sibling attachments
         if (doc.parent_id) {
             doc.parent = db.prepare(`
         SELECT id, original_name, email_subject, email_from
         FROM documents WHERE id = ?
       `).get(doc.parent_id);
+
+            doc.siblings = db.prepare(`
+        SELECT id, original_name, mime_type, size_bytes, filename
+        FROM documents
+        WHERE parent_id = ? AND id != ?
+      `).all(doc.parent_id, req.params.id);
         }
 
         res.json(doc);

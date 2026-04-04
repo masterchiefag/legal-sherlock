@@ -17,7 +17,7 @@ function Search({ activeInvestigationId, addToast }) {
     const [dateFrom, setDateFrom] = useState(searchParams.get('from') || '');
     const [dateTo, setDateTo] = useState(searchParams.get('to') || '');
     const [hideDuplicates, setHideDuplicates] = useState(searchParams.get('dedup') !== '0');
-    const [latestThreadOnly, setLatestThreadOnly] = useState(searchParams.get('latest_thread') === '1');
+    const [latestThreadOnly, setLatestThreadOnly] = useState(searchParams.get('latest_thread') !== '0');
     const [custodianFilter, setCustodianFilter] = useState(searchParams.get('custodian') || '');
     const [custodianList, setCustodianList] = useState([]);
 
@@ -65,7 +65,7 @@ function Search({ activeInvestigationId, addToast }) {
         setDateFrom(s.from || '');
         setDateTo(s.to || '');
         setHideDuplicates(s.dedup !== '0');
-        setTimeout(() => doSearch(), 0);
+        setShouldRefresh(prev => prev + 1);
     };
 
     const removeSavedSearch = (id) => {
@@ -362,7 +362,6 @@ function Search({ activeInvestigationId, addToast }) {
         if (doc.doc_type === 'chat') {
             const parts = [];
             if (doc.email_from) parts.push(`From: ${doc.email_from}`);
-            if (doc.email_to) parts.push(`Participants: ${doc.email_to}`);
             if (doc.email_date) parts.push(new Date(doc.email_date).toLocaleDateString());
             return parts.join(' • ');
         }
@@ -484,7 +483,7 @@ function Search({ activeInvestigationId, addToast }) {
                         <input
                             type="checkbox"
                             checked={hideDuplicates}
-                            onChange={(e) => { setHideDuplicates(e.target.checked); setTimeout(() => doSearch(), 0); }}
+                            onChange={(e) => { setHideDuplicates(e.target.checked); setShouldRefresh(prev => prev + 1); }}
                             style={{ width: '15px', height: '15px', cursor: 'pointer', accentColor: 'var(--primary)' }}
                         />
                         Hide Duplicates
@@ -493,7 +492,7 @@ function Search({ activeInvestigationId, addToast }) {
                         <input
                             type="checkbox"
                             checked={latestThreadOnly}
-                            onChange={(e) => { setLatestThreadOnly(e.target.checked); setTimeout(() => doSearch(), 0); }}
+                            onChange={(e) => { setLatestThreadOnly(e.target.checked); setShouldRefresh(prev => prev + 1); }}
                             style={{ width: '15px', height: '15px', cursor: 'pointer', accentColor: 'var(--primary)' }}
                         />
                         Latest in Thread

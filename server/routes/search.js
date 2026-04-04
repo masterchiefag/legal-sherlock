@@ -28,11 +28,15 @@ router.get('/', (req, res) => {
 
         // Parse FTS5 query: support "exact phrase", OR, and -exclude
         const parseQuery = (raw) => {
-            const tokens = raw.match(/("[^"]+"|-[^\s]+|\bOR\b|[^\s]+)/gi) || [];
+            const tokens = raw.match(/([a-z_]+:"[^"]+"|\("[^"]+"\)|"[^"]+"|-[^\s]+|\bOR\b|[^\s]+)/gi) || [];
             const processed = [];
             for (const token of tokens) {
                 if (token.toUpperCase() === 'OR') {
                     processed.push('OR');
+                } else if (token.toUpperCase() === 'AND') {
+                    processed.push('AND');
+                } else if (token.toUpperCase() === 'NOT') {
+                    processed.push('NOT');
                 } else if (token.match(/^[a-z_]+:/i)) {
                     // It's a column filter with FTS syntax (e.g. email_from:"abc")
                     processed.push(token);
@@ -264,6 +268,7 @@ IMPORTANT RULES:
   - original_name for file type/extension filtering, e.g. original_name:pdf, original_name:docx.
 - SQLite FTS5 uses NOT instead of !. For 1-to-1 emails, approximate by excluding cc: e.g. email_from:"Sandeep" AND email_to:"Manoj" NOT "cc"
 - Use parentheses to group OR clauses when combining with AND: e.g. (original_name:xlsx OR original_name:xls) AND revenue
+- "emails with attachments", "show attachments", "email attachments" → just set docType to "attachment" (no q needed). Attachments are a doc_type, not a file extension.
 
 The parameters you can output:
 - "q": FTS5 search string. Omit or "" if no text search needed.
@@ -304,13 +309,19 @@ Example 10: "excel attachments about revenue"
 Example 11: "pdf files mentioning contract"
 {"q":"original_name:pdf AND contract"}
 
-Example 12: "WhatsApp messages from Alice to Bob"
+Example 12: "show emails having attachments"
+{"docType":"attachment"}
+
+Example 13: "show all attachments"
+{"docType":"attachment"}
+
+Example 14: "WhatsApp messages from Alice to Bob"
 {"q":"email_from:\\"Alice\\" AND email_to:\\"Bob\\"","docType":"chat"}
 
-Example 13: "group chats involving Sandeep"
+Example 15: "group chats involving Sandeep"
 {"q":"email_to:\\"Sandeep\\"","docType":"chat"}
 
-Example 14: "messages sent by 919876543210"
+Example 16: "messages sent by 919876543210"
 {"q":"email_from:\\"919876543210\\"","docType":"chat"}
 
 Draft a response for the user's input.
