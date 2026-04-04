@@ -19,7 +19,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
 const EML_PARSE_WORKER = path.join(__dirname, 'eml-parse-worker.js');
 
-const { jobId, filename, filepath, originalname, investigation_id, custodian, resume } = workerData;
+const { jobId, filename, filepath, originalname, investigation_id, custodian, resume, extractionOnly } = workerData;
 
 // Thread pool size for parallel email parsing
 const PARSE_CONCURRENCY = Math.max(2, Math.min(os.cpus().length - 1, 6));
@@ -154,6 +154,8 @@ async function main() {
         console.log('✦ PST Import: disabled FTS triggers for bulk import');
 
         // Drop non-essential indexes for faster bulk INSERTs (rebuilt after import)
+        // Skip for extractionOnly — Phase 2 only does UPDATEs, indexes aren't a bottleneck
+        if (!extractionOnly) {
         const BULK_DROP_INDEXES = [
             'idx_documents_status',
             'idx_documents_doc_type',
@@ -167,6 +169,7 @@ async function main() {
             db.exec(`DROP INDEX IF EXISTS ${idx}`);
         }
         console.log(`✦ PST Import: dropped ${BULK_DROP_INDEXES.length} non-essential indexes for bulk import`);
+        }
 
         // Checkpoint WAL to reduce write overhead
         try {
@@ -178,6 +181,17 @@ async function main() {
 
         // Increase page cache for bulk operations
         db.pragma('cache_size = -64000'); // 64MB cache
+
+        // ═══════════════════════════════════════════
+        // Phase 0 & 1: Skip if extractionOnly (source file deleted, just do Phase 2)
+        // ═══════════════════════════════════════════
+        if (extractionOnly) {
+            console.log(`✦ PST Import (EXTRACTION ONLY): source file deleted, skipping Phase 0 & 1, jumping to Phase 2`);
+            const existingCounts = db.prepare("SELECT COUNT(*) as emails FROM documents WHERE investigation_id = ? AND doc_type = 'email'").get(investigation_id);
+            const existingAttCounts = db.prepare("SELECT COUNT(*) as atts FROM documents WHERE investigation_id = ? AND doc_type = 'attachment'").get(investigation_id);
+            totalEmails = existingCounts.emails;
+            totalAttachments = existingAttCounts.atts;
+        } else {
 
         // ═══════════════════════════════════════════
         // Phase 0: Run readpst to extract .eml files
@@ -355,6 +369,8 @@ async function main() {
             db.pragma('wal_checkpoint(TRUNCATE)');
             console.log('✦ PST Import: WAL checkpointed after Phase 1');
         } catch (_) {}
+
+        } // end if (!extractionOnly)
 
         // ═══════════════════════════════════════════
         // Phase 2: Extract text from attachments (concurrent I/O, batched DB writes)
