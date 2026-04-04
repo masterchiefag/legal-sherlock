@@ -371,6 +371,7 @@ async function main() {
         const totalPending = pendingDocs.length;
         let extracted = 0;
         let extractionOps = [];
+        const failedExtractions = []; // Track docs that failed or timed out
 
         await runConcurrent(pendingDocs, PHASE2_CONCURRENCY, async (doc) => {
             // Skip text extraction for oversized files (no file on disk)
@@ -387,16 +388,28 @@ async function main() {
             ]);
 
             let text = '';
+            let extractionFailed = false;
             try {
                 text = await withTimeout(extractText(filePath, doc.mime_type), EXTRACT_TIMEOUT);
             } catch (e) {
                 text = `[Could not extract text: ${e.message}]`;
+                extractionFailed = true;
+                failedExtractions.push({
+                    id: doc.id,
+                    filename: doc.filename,
+                    original_name: doc.original_name,
+                    mime_type: doc.mime_type,
+                    error: e.message
+                });
+                console.warn(`✦ Phase 2 FAILED: ${doc.original_name || doc.filename} — ${e.message}`);
             }
 
             let meta = { author: null, title: null, createdAt: null, modifiedAt: null, creatorTool: null, keywords: null };
-            try {
-                meta = await withTimeout(extractMetadata(filePath, doc.mime_type), EXTRACT_TIMEOUT);
-            } catch (_) { /* best effort */ }
+            if (!extractionFailed) {
+                try {
+                    meta = await withTimeout(extractMetadata(filePath, doc.mime_type), EXTRACT_TIMEOUT);
+                } catch (_) { /* best effort */ }
+            }
 
             const docId = doc.id;
             extractionOps.push(
@@ -422,6 +435,35 @@ async function main() {
         if (extractionOps.length > 0) flushBatch(extractionOps);
 
         console.log(`✦ PST Import Phase 2 complete: extracted text from ${extracted} attachments`);
+
+        // ── Extraction failure summary ──
+        if (failedExtractions.length > 0) {
+            console.log(`\n✦ ═══ EXTRACTION FAILURE SUMMARY ═══`);
+            console.log(`✦ ${failedExtractions.length} document(s) failed text extraction:\n`);
+
+            // Group by error type
+            const byError = {};
+            for (const f of failedExtractions) {
+                const key = f.error.includes('timed out') ? 'Timed out (>30s)' : f.error;
+                if (!byError[key]) byError[key] = [];
+                byError[key].push(f);
+            }
+            for (const [error, docs] of Object.entries(byError)) {
+                console.log(`  ${error} (${docs.length} docs):`);
+                for (const d of docs.slice(0, 10)) {
+                    console.log(`    - ${d.id}  ${d.original_name}  (${d.mime_type})`);
+                }
+                if (docs.length > 10) console.log(`    ... and ${docs.length - 10} more`);
+            }
+            console.log(`✦ ═══════════════════════════════════\n`);
+
+            // Add to job error log
+            for (const f of failedExtractions) {
+                errorLog.push({ phase: 'extraction', docId: f.id, filename: f.original_name, error: f.error });
+            }
+        } else {
+            console.log(`✦ All ${extracted} documents extracted successfully — no failures.`);
+        }
 
         // ═══════════════════════════════════════════
         // Recreate FTS triggers + rebuild index
