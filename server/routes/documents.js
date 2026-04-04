@@ -379,6 +379,37 @@ router.post('/jobs/:id/resume', (req, res) => {
             return res.status(400).json({ error: 'PST file no longer exists on disk. Please re-upload.' });
         }
 
+        // Cleanup orphaned files in uploads/ that aren't referenced by any document or import job
+        try {
+            const referencedFiles = new Set();
+            const docFiles = db.prepare('SELECT filename FROM documents WHERE filename IS NOT NULL').all();
+            for (const r of docFiles) referencedFiles.add(r.filename);
+            const jobFiles = db.prepare('SELECT filepath FROM import_jobs WHERE filepath IS NOT NULL').all();
+            for (const r of jobFiles) referencedFiles.add(path.basename(r.filepath));
+
+            const uploadsDir = path.join(__dirname, '..', '..', 'uploads');
+            const diskFiles = fs.readdirSync(uploadsDir);
+            let cleaned = 0;
+            let freedBytes = 0;
+            for (const f of diskFiles) {
+                if (!referencedFiles.has(f)) {
+                    const fp = path.join(uploadsDir, f);
+                    try {
+                        const stat = fs.statSync(fp);
+                        freedBytes += stat.size;
+                        fs.unlinkSync(fp);
+                        cleaned++;
+                    } catch (_) {}
+                }
+            }
+            if (cleaned > 0) {
+                const freedMB = (freedBytes / 1e6).toFixed(1);
+                console.log(`✦ Resume cleanup: deleted ${cleaned} orphaned files (${freedMB} MB freed)`);
+            }
+        } catch (e) {
+            console.warn('Resume cleanup failed (non-fatal):', e.message);
+        }
+
         // Accumulate time spent before failure, then reset started_at for this attempt
         db.prepare(`
             UPDATE import_jobs SET status = 'processing', phase = 'importing',
