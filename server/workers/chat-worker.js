@@ -10,6 +10,31 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const { jobId, filename, filepath, originalname, investigation_id, custodian } = workerData;
 
+// ═══════════════════════════════════════════════════
+// Doc identifier generation: CASE_CUST_00001 for chats
+// ═══════════════════════════════════════════════════
+function getCustodianInitials(name) {
+    if (!name) return 'XX';
+    const parts = name.trim().split(/\s+/);
+    if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
+    return name.substring(0, 2).toUpperCase();
+}
+
+const investigation = db.prepare('SELECT short_code FROM investigations WHERE id = ?').get(investigation_id);
+const caseCode = investigation?.short_code || 'CASE';
+const custCode = getCustodianInitials(custodian);
+const docIdPrefix = `${caseCode}_${custCode}`;
+
+const maxExisting = db.prepare(
+    "SELECT MAX(CAST(SUBSTR(doc_identifier, ?, 5) AS INTEGER)) as max_seq FROM documents WHERE doc_identifier LIKE ? AND doc_type IN ('email', 'chat')"
+).get(docIdPrefix.length + 2, `${docIdPrefix}_%`);
+let docSeq = (maxExisting?.max_seq || 0);
+
+function nextDocIdentifier() {
+    docSeq++;
+    return `${docIdPrefix}_${String(docSeq).padStart(5, '0')}`;
+}
+
 // TODO (Feature Request): Add support for WhatsApp media attachments.
 // This requires a mechanism to upload a ZIP containing both ChatStorage.sqlite
 // and the Message/Media folder. The worker would then extract images to the
@@ -53,8 +78,9 @@ const updateProgress = db.prepare(
 const insertChat = db.prepare(`
     INSERT INTO documents (
         id, filename, original_name, mime_type, size_bytes, text_content, status,
-        doc_type, thread_id, email_from, email_to, email_subject, email_date, investigation_id, custodian
-    ) VALUES (?, ?, ?, 'text/plain', ?, ?, 'ready', 'chat', ?, ?, ?, ?, ?, ?, ?)
+        doc_type, thread_id, email_from, email_to, email_subject, email_date, investigation_id, custodian,
+        text_content_size, doc_identifier, recipient_count
+    ) VALUES (?, ?, ?, 'text/plain', ?, ?, 'ready', 'chat', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 async function main() {
@@ -221,10 +247,13 @@ async function main() {
                 const subject = `WhatsApp${isGroup ? ' Group' : ''}: ${currentSessionName} (${currentDayString})`;
                 const chatDocName = `Chat_${currentSessionName.replace(/[^a-zA-Z0-9]/g, '_')}_${currentDayString}.txt`;
 
+                const chatDocIdentifier = nextDocIdentifier();
+                const recipientCount = toList ? toList.split(',').filter(a => a.trim()).length : 0;
                 insertChat.run(
                     docId, chatDocName, chatDocName, Buffer.byteLength(content, 'utf8'), content,
                     sessionThreadId, fromList, toList, subject, currentDayDate.toISOString(),
-                    investigation_id, custodian || null
+                    investigation_id, custodian || null,
+                    content.length, chatDocIdentifier, recipientCount
                 );
 
                 totalChatDocs++;

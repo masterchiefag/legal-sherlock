@@ -660,7 +660,16 @@ function Search({ activeInvestigationId, addToast }) {
                                             />
                                             <span style={{ fontSize: '18px' }}>{getDocIcon(r)}</span>
                                             <div style={{ flex: 1 }}>
-                                                <div className="search-result-title">{getDisplayName(r)}</div>
+                                                <div className="search-result-title">
+                                                    {r.doc_identifier && (
+                                                        <span style={{
+                                                            fontFamily: 'var(--font-mono)', fontSize: '11px', color: 'var(--primary)',
+                                                            background: 'var(--bg-tertiary)', padding: '1px 6px', borderRadius: '3px',
+                                                            marginRight: '8px', fontWeight: 500
+                                                        }}>{r.doc_identifier}</span>
+                                                    )}
+                                                    {getDisplayName(r)}
+                                                </div>
                                                 {getSubline(r) && (
                                                     <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', marginTop: '2px' }}>{getSubline(r)}</div>
                                                 )}
@@ -669,8 +678,20 @@ function Search({ activeInvestigationId, addToast }) {
                                         <div className="search-result-snippet" dangerouslySetInnerHTML={{ __html: r.snippet ? r.snippet.replace(/<(?!\/?mark\b)[^>]*>/gi, '') : 'No preview available' }} />
                                         <div className="search-result-meta">
                                             <span>{formatSize(r.size_bytes)}</span>
+                                            {r.text_content_size > 0 && (
+                                                <>
+                                                    <span>•</span>
+                                                    <span title="Extracted text size">{formatSize(r.text_content_size)} text</span>
+                                                </>
+                                            )}
                                             <span>•</span>
                                             <span>{r.email_date ? new Date(r.email_date).toLocaleDateString() : 'No date'}</span>
+                                            {r.folder_path && r.folder_path !== '/' && (
+                                                <>
+                                                    <span>•</span>
+                                                    <span title="PST folder path" style={{ fontFamily: 'var(--font-mono)', fontSize: '11px' }}>📁 {r.folder_path}</span>
+                                                </>
+                                            )}
                                             {r.doc_type === 'email' && r.attachment_count > 0 && (
                                                 <>
                                                     <span>•</span>
