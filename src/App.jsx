@@ -8,6 +8,7 @@ import ClassificationLogs from './pages/ClassificationLogs';
 import Investigations from './pages/Investigations';
 import Playground from './pages/Playground';
 import ImageExtraction from './pages/ImageExtraction';
+import SummarizationJobs from './pages/SummarizationJobs';
 
 function App() {
     const location = useLocation();
@@ -58,6 +59,7 @@ function App() {
         '/upload': 'Upload Documents',
         '/search': 'Analyze',
         '/ai-logs': 'AI Activity Logs',
+        '/summaries': 'Summarization Jobs',
         '/playground': 'LLM Playground',
         '/image-extraction': 'Image Extraction',
     }[location.pathname] || (location.pathname.startsWith('/documents/') ? 'Document Review' : '');
@@ -105,6 +107,13 @@ function App() {
                             <polyline points="10 9 9 9 8 9"></polyline>
                         </svg>
                         AI Logs
+                    </NavLink>
+                    <NavLink to="/summaries" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+                        <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <line x1="17" y1="10" x2="3" y2="10" /><line x1="21" y1="6" x2="3" y2="6" />
+                            <line x1="21" y1="14" x2="3" y2="14" /><line x1="17" y1="18" x2="3" y2="18" />
+                        </svg>
+                        Summaries
                     </NavLink>
                     <NavLink to="/playground" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
                         <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
@@ -158,6 +167,7 @@ function App() {
                             <Route path="/upload" element={<Upload activeInvestigationId={activeInvestigationId} activeInvestigation={activeInvestigation} addToast={addToast} />} />
                             <Route path="/search" element={<Search activeInvestigationId={activeInvestigationId} addToast={addToast} />} />
                             <Route path="/ai-logs" element={<ClassificationLogs activeInvestigationId={activeInvestigationId} />} />
+                            <Route path="/summaries" element={<SummarizationJobs activeInvestigationId={activeInvestigationId} addToast={addToast} />} />
                             <Route path="/playground" element={<Playground addToast={addToast} />} />
                             <Route path="/image-extraction" element={<ImageExtraction addToast={addToast} />} />
                             <Route path="/documents/:id" element={<DocumentReview activeInvestigationId={activeInvestigationId} addToast={addToast} />} />

@@ -49,6 +49,36 @@ class OllamaProvider {
         return this.parseResponse(data.response);
     }
 
+    async summarize(systemPrompt, documentContent, overrideModel = null) {
+        const activeModel = overrideModel || this.model;
+        const fullPrompt = `${systemPrompt}\n\n--- DOCUMENT START ---\n${documentContent}\n--- DOCUMENT END ---\n\nRespond with ONLY the summary text. No JSON, no preamble.`;
+
+        const response = await fetch(`${this.baseUrl}/api/generate`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                model: activeModel,
+                prompt: fullPrompt,
+                stream: false,
+                keep_alive: 10,
+                options: {
+                    temperature: 0.3,
+                    num_predict: 200,
+                    num_ctx: 2048,
+                    num_thread: 8,
+                },
+            }),
+        });
+
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`Ollama error (${response.status}): ${errText}`);
+        }
+
+        const data = await response.json();
+        return { summary: (data.response || '').trim() };
+    }
+
     parseResponse(rawText) {
         // Try to extract JSON from the response
         const jsonMatch = rawText.match(/\{[\s\S]*?"score"[\s\S]*?"reasoning"[\s\S]*?\}/);
@@ -113,6 +143,35 @@ class OpenAIProvider {
         const raw = data.choices[0]?.message?.content || '';
         return new OllamaProvider().parseResponse(raw); // reuse the robust parser
     }
+
+    async summarize(systemPrompt, documentContent, overrideModel = null) {
+        if (!this.apiKey) throw new Error('OPENAI_API_KEY not set');
+        const activeModel = overrideModel || this.model;
+
+        const response = await fetch('https://api.openai.com/v1/chat/completions', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'Authorization': `Bearer ${this.apiKey}`,
+            },
+            body: JSON.stringify({
+                model: activeModel,
+                temperature: 0.3,
+                messages: [
+                    { role: 'system', content: systemPrompt },
+                    { role: 'user', content: documentContent },
+                ],
+            }),
+        });
+
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`OpenAI error (${response.status}): ${errText}`);
+        }
+
+        const data = await response.json();
+        return { summary: (data.choices[0]?.message?.content || '').trim() };
+    }
 }
 
 // ═══════════════════════════════════════════════════
@@ -157,6 +216,37 @@ class AnthropicProvider {
         const data = await response.json();
         const raw = data.content[0]?.text || '';
         return new OllamaProvider().parseResponse(raw);
+    }
+
+    async summarize(systemPrompt, documentContent, overrideModel = null) {
+        if (!this.apiKey) throw new Error('ANTHROPIC_API_KEY not set');
+        const activeModel = overrideModel || this.model;
+
+        const response = await fetch('https://api.anthropic.com/v1/messages', {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'x-api-key': this.apiKey,
+                'anthropic-version': '2023-06-01',
+            },
+            body: JSON.stringify({
+                model: activeModel,
+                max_tokens: 300,
+                temperature: 0.3,
+                system: systemPrompt,
+                messages: [
+                    { role: 'user', content: documentContent },
+                ],
+            }),
+        });
+
+        if (!response.ok) {
+            const errText = await response.text();
+            throw new Error(`Anthropic error (${response.status}): ${errText}`);
+        }
+
+        const data = await response.json();
+        return { summary: (data.content[0]?.text || '').trim() };
     }
 }
 

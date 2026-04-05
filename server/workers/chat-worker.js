@@ -4,9 +4,18 @@ import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
-import db from '../db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
+
+// Worker uses its own lightweight DB connection (NOT db.js which runs migrations + WAL checkpoint and deadlocks worker threads)
+const DB_PATH = path.join(__dirname, '..', '..', 'data', 'ediscovery.db');
+console.log('✦ Chat Worker: opening DB at', DB_PATH);
+const db = new Database(DB_PATH, { timeout: 15000 });
+// Don't set journal_mode here — it's already WAL from the main process,
+// and setting it again requires exclusive lock which deadlocks in worker threads.
+db.pragma('foreign_keys = ON');
+db.pragma('busy_timeout = 10000');
+console.log('✦ Chat Worker: DB connection ready');
 
 const { jobId, filename, filepath, originalname, investigation_id, custodian } = workerData;
 

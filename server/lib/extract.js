@@ -63,12 +63,34 @@ export async function extractText(filePath, mimeType) {
             '.zip', '.rar', '.7z', '.tar', '.gz', '.bz2',
             '.exe', '.dll', '.so', '.dylib', '.bin',
             '.ppt', '.pptx',
+            '.emz', '.wmf', '.xlsb',
         ]);
         if (skipExts.has(ext)) {
             return '';
         }
 
+        // Skip files with image MIME types even if extension is missing/wrong
+        const skipMimes = ['image/', 'audio/', 'video/', 'application/zip', 'application/x-rar',
+            'application/octet-stream'];
+        const normalizedMime = (mimeType || '').toLowerCase();
+        if (skipMimes.some(prefix => normalizedMime.startsWith(prefix))) {
+            // For application/octet-stream, only skip if no extension (likely binary blob)
+            if (normalizedMime !== 'application/octet-stream' || !ext || ext === '.') {
+                return '';
+            }
+        }
+
+        // No extension at all — likely an inline image or binary blob, skip
+        if (!ext || ext === '.') {
+            return '';
+        }
+
         // Fallback: try reading as text for unknown but potentially text-based formats
+        // Cap at 10MB to prevent memory issues with large binary files
+        const stat = fs.statSync(filePath);
+        if (stat.size > 10 * 1024 * 1024) {
+            return '';
+        }
         return fs.readFileSync(filePath, 'utf-8');
     } catch (err) {
         console.error(`Text extraction failed for ${filePath}:`, err.message);
