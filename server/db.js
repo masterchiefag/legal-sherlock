@@ -353,8 +353,8 @@ db.exec(`
   END;
 `);
 
-// Checkpoint WAL before opening read-only connection so it sees latest schema
-try { db.pragma('wal_checkpoint(TRUNCATE)'); } catch (_) {}
+// Note: don't checkpoint WAL here — TRUNCATE requires exclusive lock and
+// blocks worker threads from opening DB connections, causing deadlocks.
 
 // Read-only connection for queries — doesn't block on write locks during imports
 const readDb = new Database(DB_PATH, { readonly: true });

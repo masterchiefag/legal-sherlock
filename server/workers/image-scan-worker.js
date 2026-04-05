@@ -13,9 +13,10 @@ import { fileURLToPath } from 'url';
 const execFileAsync = promisify(execFile);
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = path.join(__dirname, '..', '..', 'data', 'ediscovery.db');
-const db = new Database(DB_PATH);
-db.pragma('journal_mode = WAL');
+const db = new Database(DB_PATH, { timeout: 15000 });
+// Don't set journal_mode — already WAL from main process; setting it deadlocks worker threads
 db.pragma('foreign_keys = ON');
+db.pragma('busy_timeout = 10000');
 
 // Pull new searchPattern from workerData, default to pst/ost
 const { jobId, imagePath, searchPattern = '.*\\.(pst|ost)$' } = workerData;

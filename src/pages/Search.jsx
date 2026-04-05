@@ -34,8 +34,16 @@ function Search({ activeInvestigationId, addToast }) {
     const [batchTotal, setBatchTotal] = useState(0);
     const [batchTime, setBatchTime] = useState(0);
 
-    // Selection for batch classification
+    // Selection for batch operations
     const [selectedIds, setSelectedIds] = useState(new Set());
+
+    // Batch Summarization
+    const [showSummarizePanel, setShowSummarizePanel] = useState(false);
+    const [summarizePrompt, setSummarizePrompt] = useState('Summarize in 200 chars');
+    const [summarizeStatus, setSummarizeStatus] = useState('idle');
+    const [summarizeProgress, setSummarizeProgress] = useState(0);
+    const [summarizeTotal, setSummarizeTotal] = useState(0);
+    const [summarizeTime, setSummarizeTime] = useState(0);
 
     // Saved searches (bookmarks)
     const [savedSearches, setSavedSearches] = useState(() => {
@@ -229,8 +237,8 @@ function Search({ activeInvestigationId, addToast }) {
         }
     };
 
-    const toggleBatchPanel = async () => {
-        if (!showBatchPanel && models.length === 0) {
+    const ensureModelsLoaded = async () => {
+        if (models.length === 0) {
             setModelsError('');
             try {
                 const res = await fetch('/api/classify/models');
@@ -246,7 +254,18 @@ function Search({ activeInvestigationId, addToast }) {
                 setModelsError('Failed to connect to server');
             }
         }
+    };
+
+    const toggleBatchPanel = async () => {
+        if (!showBatchPanel) await ensureModelsLoaded();
         setShowBatchPanel(!showBatchPanel);
+        if (!showBatchPanel) setShowSummarizePanel(false);
+    };
+
+    const toggleSummarizePanel = async () => {
+        if (!showSummarizePanel) await ensureModelsLoaded();
+        setShowSummarizePanel(!showSummarizePanel);
+        if (!showSummarizePanel) setShowBatchPanel(false);
     };
 
     const startBatchClassify = async () => {
@@ -257,28 +276,8 @@ function Search({ activeInvestigationId, addToast }) {
         setBatchProgress(0);
         setBatchTime(0);
 
-        // Fetch ALL matching IDs by re-running search without pagination
-        const params = new URLSearchParams({ page: 1, limit: 10000 });
-        if (query.trim()) params.set('q', query);
-        if (reviewStatus) params.set('review_status', reviewStatus);
-        if (docType) params.set('doc_type', docType);
-        if (dateFrom) params.set('date_from', dateFrom);
-        if (dateTo) params.set('date_to', dateTo);
-        if (scoreFilter) {
-            if (scoreFilter === 'unscored') {
-                params.set('score_min', 'unscored');
-            } else if (scoreFilter === 'scored') {
-                params.set('score_min', '1');
-            } else if (scoreFilter.endsWith('+')) {
-                params.set('score_min', scoreFilter.replace('+', ''));
-            } else {
-                params.set('score_min', scoreFilter);
-                params.set('score_max', scoreFilter);
-            }
-        }
-
         try {
-            const searchRes = await fetch(`/api/search?${params}`);
+            const searchRes = await fetch(`/api/search?${buildSearchParams()}`);
             const searchData = await searchRes.json();
             const allDocs = searchData.results || [];
 
@@ -333,6 +332,106 @@ function Search({ activeInvestigationId, addToast }) {
             console.error('Failed to run batch classify', err);
             addToast('Batch classification failed', 'error');
             setBatchStatus('idle');
+        }
+    };
+
+    const buildSearchParams = () => {
+        const params = new URLSearchParams({ page: 1, limit: 10000 });
+        if (query.trim()) params.set('q', query);
+        if (reviewStatus) params.set('review_status', reviewStatus);
+        if (docType) params.set('doc_type', docType);
+        if (dateFrom) params.set('date_from', dateFrom);
+        if (dateTo) params.set('date_to', dateTo);
+        if (scoreFilter) {
+            if (scoreFilter === 'unscored') params.set('score_min', 'unscored');
+            else if (scoreFilter === 'scored') params.set('score_min', '1');
+            else if (scoreFilter.endsWith('+')) params.set('score_min', scoreFilter.replace('+', ''));
+            else { params.set('score_min', scoreFilter); params.set('score_max', scoreFilter); }
+        }
+        return params;
+    };
+
+    const startBatchSummarize = async () => {
+        if (!summarizePrompt.trim() || !selectedModel || results.length === 0) return;
+
+        setSummarizeStatus('running');
+        setSummarizeProgress(0);
+        setSummarizeTime(0);
+
+        try {
+            const searchRes = await fetch(`/api/search?${buildSearchParams()}`);
+            const searchData = await searchRes.json();
+            const allDocs = searchData.results || [];
+
+            const docsToSummarize = selectedIds.size > 0
+                ? allDocs.filter(d => selectedIds.has(d.id))
+                : allDocs;
+
+            if (docsToSummarize.length === 0) {
+                setSummarizeStatus('done');
+                return;
+            }
+
+            setSummarizeTotal(docsToSummarize.length);
+
+            // Create job record
+            const jobRes = await fetch('/api/summarize/jobs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    investigationId: activeInvestigationId,
+                    prompt: summarizePrompt.trim(),
+                    model: selectedModel,
+                    totalDocs: docsToSummarize.length,
+                }),
+            });
+            const job = await jobRes.json();
+
+            const startTime = Date.now();
+            const timer = setInterval(() => {
+                setSummarizeTime(Math.floor((Date.now() - startTime) / 1000));
+            }, 1000);
+
+            for (let i = 0; i < docsToSummarize.length; i++) {
+                const doc = docsToSummarize[i];
+                try {
+                    await fetch(`/api/summarize/${doc.id}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            prompt: summarizePrompt.trim(),
+                            model: selectedModel,
+                            jobId: job.id,
+                        }),
+                    });
+                } catch (e) {
+                    console.error('Failed to summarize doc', doc.id, e);
+                }
+                setSummarizeProgress(i + 1);
+            }
+
+            clearInterval(timer);
+            const totalElapsed = Math.floor((Date.now() - startTime) / 1000);
+
+            // Mark job complete
+            await fetch(`/api/summarize/jobs/${job.id}`, {
+                method: 'PATCH',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    status: 'completed',
+                    processedDocs: docsToSummarize.length,
+                    elapsedSeconds: totalElapsed,
+                }),
+            });
+
+            setSummarizeStatus('done');
+            setSelectedIds(new Set());
+            addToast(`Summarized ${docsToSummarize.length} documents! View results in Summaries page.`, 'success');
+
+        } catch (err) {
+            console.error('Failed to run batch summarize', err);
+            addToast('Batch summarization failed', 'error');
+            setSummarizeStatus('idle');
         }
     };
 
@@ -506,12 +605,21 @@ function Search({ activeInvestigationId, addToast }) {
                         </>
                     )}
                     {results.length > 0 && (
-                        <button className="btn btn-secondary btn-sm" style={{ marginLeft: 'auto' }} onClick={toggleBatchPanel}>
-                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: '14px', height: '14px', marginRight: '5px' }}>
-                                <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
-                            </svg>
-                            Batch AI Classify
-                        </button>
+                        <>
+                            <button className="btn btn-secondary btn-sm" style={{ marginLeft: 'auto' }} onClick={toggleSummarizePanel}>
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: '14px', height: '14px', marginRight: '5px' }}>
+                                    <line x1="17" y1="10" x2="3" y2="10" /><line x1="21" y1="6" x2="3" y2="6" />
+                                    <line x1="21" y1="14" x2="3" y2="14" /><line x1="17" y1="18" x2="3" y2="18" />
+                                </svg>
+                                Batch Summarize
+                            </button>
+                            <button className="btn btn-secondary btn-sm" onClick={toggleBatchPanel}>
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: '14px', height: '14px', marginRight: '5px' }}>
+                                    <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
+                                </svg>
+                                Batch AI Classify
+                            </button>
+                        </>
                     )}
                 </div>
             </div>
@@ -614,6 +722,86 @@ function Search({ activeInvestigationId, addToast }) {
                     </div>
                     <div className="text-xs text-muted" style={{ marginTop: '10px', fontStyle: 'italic' }}>
                         Tip: Re-run with a different model and the same prompt to compare results in AI Logs → Model Comparison
+                    </div>
+                </div>
+            )}
+
+            {/* Batch Summarization Panel */}
+            {showSummarizePanel && (
+                <div className="card fade-in" style={{ marginBottom: '24px', border: '1px solid var(--success)', background: 'var(--bg-tertiary)' }}>
+                    <h3 style={{ marginTop: 0, marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: '18px', height: '18px', color: 'var(--success)' }}>
+                            <line x1="17" y1="10" x2="3" y2="10" /><line x1="21" y1="6" x2="3" y2="6" />
+                            <line x1="21" y1="14" x2="3" y2="14" /><line x1="17" y1="18" x2="3" y2="18" />
+                        </svg>
+                        Batch Summarization
+                    </h3>
+
+                    <div className="flex gap-16" style={{ alignItems: 'flex-start' }}>
+                        <div style={{ flex: 1 }}>
+                            <label className="text-sm text-secondary block mb-8">Summarization Prompt</label>
+                            <textarea
+                                className="textarea"
+                                placeholder="Summarize in 200 chars"
+                                value={summarizePrompt}
+                                onChange={(e) => setSummarizePrompt(e.target.value)}
+                                rows="3"
+                                disabled={summarizeStatus === 'running'}
+                            />
+                        </div>
+                        <div style={{ width: '250px' }}>
+                            <label className="text-sm text-secondary block mb-8">AI Model</label>
+                            {modelsError ? (
+                                <div style={{ padding: '12px', background: 'var(--bg-primary)', border: '1px solid var(--border-secondary)', borderRadius: 'var(--radius-md)', marginBottom: '16px' }}>
+                                    <p style={{ color: 'var(--warning)', fontSize: '13px', margin: '0 0 8px 0' }}>Warning: {modelsError}</p>
+                                    <button className="btn btn-secondary" style={{ width: '100%', fontSize: '12px' }} onClick={() => { setModels([]); setModelsError(''); setShowSummarizePanel(false); setTimeout(() => toggleSummarizePanel(), 100); }}>
+                                        Retry
+                                    </button>
+                                </div>
+                            ) : (
+                                <select
+                                    className="select"
+                                    value={selectedModel}
+                                    onChange={(e) => setSelectedModel(e.target.value)}
+                                    disabled={summarizeStatus === 'running'}
+                                    style={{ width: '100%', marginBottom: '16px' }}
+                                >
+                                    {models.map(m => <option key={m} value={m}>{m}</option>)}
+                                </select>
+                            )}
+
+                            {summarizeStatus === 'idle' && (
+                                <button
+                                    className="btn btn-primary"
+                                    style={{ width: '100%', background: 'var(--success)' }}
+                                    onClick={startBatchSummarize}
+                                    disabled={!summarizePrompt.trim()}
+                                >
+                                    {selectedIds.size > 0
+                                        ? `Summarize ${selectedIds.size} Selected`
+                                        : 'Summarize All Results'}
+                                </button>
+                            )}
+
+                            {(summarizeStatus === 'running' || summarizeStatus === 'done') && (
+                                <div style={{ background: 'var(--bg-primary)', padding: '12px', borderRadius: 'var(--radius-md)', border: '1px solid var(--border-secondary)' }}>
+                                    <div className="flex justify-between text-sm mb-4">
+                                        <span style={{ fontWeight: 600 }}>{summarizeTotal > 0 ? Math.round((summarizeProgress / summarizeTotal) * 100) : 0}%</span>
+                                        <span className="text-secondary">{summarizeProgress} / {summarizeTotal} docs</span>
+                                    </div>
+                                    <div style={{ height: '6px', background: 'var(--border-secondary)', borderRadius: '3px', overflow: 'hidden', marginBottom: '8px' }}>
+                                        <div style={{ height: '100%', background: 'var(--success)', width: `${summarizeTotal > 0 ? (summarizeProgress / summarizeTotal) * 100 : 0}%`, transition: 'width 0.3s' }}></div>
+                                    </div>
+                                    <div className="text-xs text-tertiary flex justify-between">
+                                        <span>{summarizeStatus === 'running' ? 'Summarizing...' : 'Complete!'}</span>
+                                        <span>{Math.floor(summarizeTime / 60)}m {summarizeTime % 60}s</span>
+                                    </div>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                    <div className="text-xs text-muted" style={{ marginTop: '10px', fontStyle: 'italic' }}>
+                        Results will be available on the Summaries page after completion.
                     </div>
                 </div>
             )}

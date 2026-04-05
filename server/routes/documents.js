@@ -41,15 +41,25 @@ const multerUpload = upload.array('files', 50);
 const router = express.Router();
 
 // ═══════════════════════════════════════════════════
-// Recover stuck import jobs from previous server crash
+// Auto-resume stuck import jobs from previous server crash
+// Phase 2 (extracting) is idempotent — safe to resume automatically.
+// Phase 1 (importing) requires source file — mark as failed for manual resume.
 // ═══════════════════════════════════════════════════
-const stuckJobs = db.prepare("SELECT id, filename FROM import_jobs WHERE status IN ('processing', 'pending')").all();
+const stuckJobs = db.prepare("SELECT id, filename, filepath, phase, investigation_id, custodian FROM import_jobs WHERE status IN ('processing', 'pending')").all();
+const jobsToAutoResume = [];
 for (const job of stuckJobs) {
-    db.prepare(`
-        UPDATE import_jobs SET status = 'failed',
-        error_log = ?, completed_at = datetime('now') WHERE id = ?
-    `).run(JSON.stringify([{ error: 'Server restarted during import', fatal: true }]), job.id);
-    console.log(`✦ Recovered stuck import job: ${job.filename} (${job.id})`);
+    if (job.phase === 'extracting') {
+        // Phase 2 was interrupted — auto-resume (chunked processing is idempotent)
+        db.prepare("UPDATE import_jobs SET status = 'processing' WHERE id = ?").run(job.id);
+        jobsToAutoResume.push(job);
+        console.log(`✦ Auto-resuming Phase 2 for: ${job.filename} (${job.id})`);
+    } else {
+        db.prepare(`
+            UPDATE import_jobs SET status = 'failed',
+            error_log = ?, completed_at = datetime('now') WHERE id = ?
+        `).run(JSON.stringify([{ error: 'Server restarted during import', fatal: true }]), job.id);
+        console.log(`✦ Recovered stuck import job: ${job.filename} (${job.id})`);
+    }
 }
 
 // ═══════════════════════════════════════════════════
@@ -166,10 +176,10 @@ async function processEmlFile(file, investigation_id, custodian) {
 // ═══════════════════════════════════════════════════
 import { Worker } from 'worker_threads';
 
-function spawnPstWorker(jobId, filename, filepath, originalname, investigation_id, custodian) {
+function spawnPstWorker(jobId, filename, filepath, originalname, investigation_id, custodian, extractionOnly = false) {
     const workerPath = path.join(__dirname, '..', 'workers', 'pst-worker.js');
     const worker = new Worker(workerPath, {
-        workerData: { jobId, filename, filepath, originalname, investigation_id, custodian }
+        workerData: { jobId, filename, filepath, originalname, investigation_id, custodian, resume: extractionOnly, extractionOnly }
     });
 
     worker.on('error', (err) => {
@@ -211,6 +221,20 @@ function spawnChatWorker(jobId, filename, filepath, originalname, investigation_
     });
 
     return worker;
+}
+
+// ═══════════════════════════════════════════════════
+// Deferred auto-resume: spawn workers for Phase 2 interrupted jobs
+// ═══════════════════════════════════════════════════
+if (jobsToAutoResume.length > 0) {
+    setTimeout(() => {
+        for (const job of jobsToAutoResume) {
+            console.log(`✦ Spawning worker for auto-resume: ${job.filename}`);
+            console.log(`✦ DEBUG: About to spawn worker thread for job ${job.id}...`);
+            const w = spawnPstWorker(job.id, path.basename(job.filepath || ''), job.filepath, job.filename, job.investigation_id, job.custodian, true);
+            console.log(`✦ DEBUG: Worker thread spawned, threadId=${w.threadId}`);
+        }
+    }, 2000); // Delay to let server finish starting
 }
 
 // ═══════════════════════════════════════════════════
