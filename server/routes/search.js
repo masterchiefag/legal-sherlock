@@ -150,7 +150,7 @@ router.get('/', (req, res) => {
         // Enrichment subqueries — applied only to the paged result set via CTE
         const enrichSelect = `
             d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,
-            d.doc_type, d.thread_id, d.parent_id, d.custodian, d.folder_path, d.text_content_size, d.doc_identifier,
+            d.doc_type, d.thread_id, d.parent_id, d.custodian, d.folder_path, d.text_content_size, d.doc_identifier, d.recipient_count, d.doc_created_at,
             d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at,
             d._snippet as snippet,
             d._rank as rank,
@@ -182,7 +182,7 @@ router.get('/', (req, res) => {
             SELECT
               d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,
               d.doc_type, d.thread_id, d.parent_id, d.investigation_id, d.custodian,
-              d.folder_path, d.text_content_size, d.doc_identifier,
+              d.folder_path, d.text_content_size, d.doc_identifier, d.recipient_count, d.doc_created_at,
               d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at,
               snippet(documents_fts, 1, '<mark>', '</mark>', '…', 40) as _snippet,
               rank as _rank
@@ -210,7 +210,7 @@ router.get('/', (req, res) => {
             SELECT
               d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,
               d.doc_type, d.thread_id, d.parent_id, d.investigation_id, d.custodian,
-              d.folder_path, d.text_content_size, d.doc_identifier,
+              d.folder_path, d.text_content_size, d.doc_identifier, d.recipient_count, d.doc_created_at,
               d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at,
               SUBSTR(d.text_content, 1, 200) as _snippet,
               NULL as _rank

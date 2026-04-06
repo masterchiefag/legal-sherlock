@@ -1137,3 +1137,122 @@ body {
   justify-content: center;
   padding: 60px;
 }
+
+/* View toggle */
+.view-toggle {
+  display: flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+.view-toggle-btn {
+  background: var(--bg-secondary);
+  border: none;
+  padding: 5px 8px;
+  cursor: pointer;
+  color: var(--text-secondary);
+  display: flex;
+  align-items: center;
+}
+.view-toggle-btn + .view-toggle-btn {
+  border-left: 1px solid var(--border);
+}
+.view-toggle-btn.active {
+  background: var(--primary);
+  color: #fff;
+}
+
+/* Results table */
+.results-table-wrap {
+  overflow-x: auto;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.results-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.results-table th,
+.results-table td {
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--border-secondary);
+  text-align: left;
+}
+.results-table thead th {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.sortable-th {
+  cursor: pointer;
+  user-select: none;
+}
+.sortable-th:hover {
+  color: var(--text-primary);
+}
+.th-content {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.sort-arrow {
+  font-size: 9px;
+  color: var(--primary);
+}
+.filter-row td {
+  padding: 2px 4px;
+  background: var(--bg-secondary);
+}
+.table-column-filter {
+  width: 100%;
+  padding: 3px 6px;
+  font-size: 11px;
+  border: 1px solid var(--border-secondary);
+  border-radius: 3px;
+  background: var(--bg-primary);
+  color: var(--text-primary);
+}
+.table-column-filter:focus {
+  border-color: var(--primary);
+  outline: none;
+}
+.results-table-row {
+  cursor: pointer;
+  transition: background 0.1s;
+}
+.results-table-row:hover {
+  background: var(--bg-tertiary);
+}
+.results-table-row.selected {
+  background: color-mix(in srgb, var(--primary) 8%, var(--bg-primary));
+}
+.type-cell {
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  font-size: 11px;
+}
+.docid-cell {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--primary);
+}
+.name-cell {
+  max-width: 300px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-weight: 500;
+}
+.path-cell {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  color: var(--text-tertiary);
+}

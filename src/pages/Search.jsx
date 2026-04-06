@@ -45,6 +45,12 @@ function Search({ activeInvestigationId, addToast }) {
     const [summarizeTotal, setSummarizeTotal] = useState(0);
     const [summarizeTime, setSummarizeTime] = useState(0);
 
+    // Table view
+    const [viewMode, setViewMode] = useState('cards'); // 'cards' or 'table'
+    const [sortField, setSortField] = useState(null);
+    const [sortDir, setSortDir] = useState('asc');
+    const [columnFilters, setColumnFilters] = useState({});
+
     // Saved searches (bookmarks)
     const [savedSearches, setSavedSearches] = useState(() => {
         try { return JSON.parse(localStorage.getItem('sherlock_saved_searches') || '[]'); } catch { return []; }
@@ -433,6 +439,84 @@ function Search({ activeInvestigationId, addToast }) {
             addToast('Batch summarization failed', 'error');
             setSummarizeStatus('idle');
         }
+    };
+
+    const getFileExt = (doc) => {
+        if (doc.doc_type === 'email') return 'EML';
+        if (doc.doc_type === 'chat') return 'Chat';
+        const ext = doc.original_name?.split('.').pop()?.toUpperCase();
+        return ext || 'FILE';
+    };
+
+    const getDocDate = (doc) => {
+        const d = doc.email_date || doc.doc_created_at;
+        if (!d) return '';
+        return new Date(d).toLocaleDateString();
+    };
+
+    const truncate = (str, len) => {
+        if (!str) return '';
+        return str.length > len ? str.slice(0, len) + '…' : str;
+    };
+
+    const toggleSort = (field) => {
+        if (sortField === field) {
+            if (sortDir === 'asc') setSortDir('desc');
+            else { setSortField(null); setSortDir('asc'); }
+        } else {
+            setSortField(field);
+            setSortDir('asc');
+        }
+    };
+
+    const setColFilter = (col, val) => {
+        setColumnFilters(prev => ({ ...prev, [col]: val }));
+    };
+
+    const getFilteredSortedResults = () => {
+        let filtered = results;
+        const active = Object.entries(columnFilters).filter(([, v]) => v.trim());
+        if (active.length > 0) {
+            filtered = filtered.filter(r => {
+                return active.every(([col, val]) => {
+                    const v = val.toLowerCase();
+                    const fieldMap = {
+                        name: getDisplayName(r),
+                        from: r.email_from,
+                        date: getDocDate(r),
+                        custodian: r.custodian,
+                        path: r.folder_path,
+                        docId: r.doc_identifier,
+                        type: getFileExt(r),
+                    };
+                    return (fieldMap[col] || '').toLowerCase().includes(v);
+                });
+            });
+        }
+        if (sortField) {
+            const getter = {
+                name: r => (getDisplayName(r) || '').toLowerCase(),
+                from: r => (r.email_from || '').toLowerCase(),
+                date: r => r.email_date || r.doc_created_at || '',
+                size: r => r.size_bytes || 0,
+                attachments: r => r.attachment_count || 0,
+                recipients: r => r.recipient_count || 0,
+                custodian: r => (r.custodian || '').toLowerCase(),
+                score: r => r.ai_score || 0,
+                path: r => (r.folder_path || '').toLowerCase(),
+                docId: r => r.doc_identifier || '',
+                type: r => getFileExt(r),
+                status: r => r.review_status || '',
+            }[sortField];
+            if (getter) {
+                filtered = [...filtered].sort((a, b) => {
+                    const av = getter(a), bv = getter(b);
+                    const cmp = typeof av === 'number' && typeof bv === 'number' ? av - bv : String(av).localeCompare(String(bv));
+                    return sortDir === 'desc' ? -cmp : cmp;
+                });
+            }
+        }
+        return filtered;
     };
 
     const getDocIcon = (doc) => {
@@ -828,8 +912,17 @@ function Search({ activeInvestigationId, addToast }) {
                                         />
                                         {selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Select all'}
                                     </label>
+                                    <div className="view-toggle">
+                                        <button className={`view-toggle-btn${viewMode === 'cards' ? ' active' : ''}`} onClick={() => setViewMode('cards')} title="Card view">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
+                                        </button>
+                                        <button className={`view-toggle-btn${viewMode === 'table' ? ' active' : ''}`} onClick={() => setViewMode('table')} title="Table view">
+                                            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16"><line x1="3" y1="6" x2="21" y2="6"/><line x1="3" y1="12" x2="21" y2="12"/><line x1="3" y1="18" x2="21" y2="18"/></svg>
+                                        </button>
+                                    </div>
                                 </div>
                             </div>
+                            {viewMode === 'cards' ? (
                             <div className="search-results">
                                 {results.map(r => (
                                     <div
@@ -920,6 +1013,98 @@ function Search({ activeInvestigationId, addToast }) {
                                     </div>
                                 ))}
                             </div>
+                            ) : (
+                            <div className="results-table-wrap">
+                                <table className="results-table">
+                                    <thead>
+                                        <tr>
+                                            <th style={{ width: '36px' }}></th>
+                                            {[
+                                                { key: 'type', label: 'Type', width: '70px' },
+                                                { key: 'docId', label: 'Doc ID', width: '90px' },
+                                                { key: 'name', label: 'Name', width: null },
+                                                { key: 'from', label: 'From', width: '160px' },
+                                                { key: 'date', label: 'Date', width: '100px' },
+                                                { key: 'size', label: 'Size', width: '80px' },
+                                                { key: 'attachments', label: 'Attach', width: '60px' },
+                                                { key: 'recipients', label: 'Recip', width: '60px' },
+                                                { key: 'path', label: 'Path', width: '140px' },
+                                                { key: 'custodian', label: 'Custodian', width: '110px' },
+                                                { key: 'status', label: 'Status', width: '90px' },
+                                                { key: 'score', label: 'Score', width: '60px' },
+                                            ].map(col => (
+                                                <th key={col.key} style={col.width ? { width: col.width } : {}} onClick={() => toggleSort(col.key)} className="sortable-th">
+                                                    <div className="th-content">
+                                                        <span>{col.label}</span>
+                                                        {sortField === col.key && <span className="sort-arrow">{sortDir === 'asc' ? '▲' : '▼'}</span>}
+                                                    </div>
+                                                </th>
+                                            ))}
+                                            <th style={{ width: '100px' }}>Tags</th>
+                                        </tr>
+                                        <tr className="filter-row">
+                                            <td></td>
+                                            {['type', 'docId', 'name', 'from', 'date', 'path', 'custodian'].map(col => (
+                                                <td key={col} colSpan={col === 'date' ? 1 : 1}>
+                                                    <input
+                                                        className="table-column-filter"
+                                                        placeholder="Filter…"
+                                                        value={columnFilters[col] || ''}
+                                                        onChange={e => setColFilter(col, e.target.value)}
+                                                    />
+                                                </td>
+                                            ))}
+                                            <td></td>
+                                            <td></td>
+                                            <td></td>
+                                            <td></td>
+                                            <td></td>
+                                            <td></td>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        {getFilteredSortedResults().map(r => (
+                                            <tr
+                                                key={r.id}
+                                                className={`results-table-row${selectedIds.has(r.id) ? ' selected' : ''}`}
+                                                onClick={() => navigate(`/documents/${r.id}${query ? `?q=${encodeURIComponent(query)}` : ''}`)}
+                                            >
+                                                <td onClick={e => e.stopPropagation()}>
+                                                    <input
+                                                        type="checkbox"
+                                                        checked={selectedIds.has(r.id)}
+                                                        onChange={() => toggleSelect(r.id)}
+                                                        style={{ width: '14px', height: '14px', cursor: 'pointer', accentColor: 'var(--primary)' }}
+                                                    />
+                                                </td>
+                                                <td><span className="type-cell">{getDocIcon(r)} {getFileExt(r)}</span></td>
+                                                <td><span className="docid-cell">{r.doc_identifier || '—'}</span></td>
+                                                <td className="name-cell" title={getDisplayName(r)}>{truncate(getDisplayName(r), 50)}</td>
+                                                <td title={r.email_from || ''}>{truncate(r.email_from?.split('<')[0]?.trim(), 20) || '—'}</td>
+                                                <td>{getDocDate(r) || '—'}</td>
+                                                <td>{formatSize(r.size_bytes)}</td>
+                                                <td style={{ textAlign: 'center' }}>{r.attachment_count ?? 0}</td>
+                                                <td style={{ textAlign: 'center' }}>{r.recipient_count ?? 0}</td>
+                                                <td className="path-cell" title={r.folder_path || ''}>{truncate(r.folder_path, 20) || '—'}</td>
+                                                <td title={r.custodian || ''}>{truncate(r.custodian, 14) || '—'}</td>
+                                                <td><span className={`status-badge ${r.review_status}`}>{r.review_status?.replace('_', ' ') || '—'}</span></td>
+                                                <td>{renderScoreBadge(r.ai_score)}</td>
+                                                <td>
+                                                    {r.tags?.length > 0
+                                                        ? r.tags.map(t => (
+                                                            <span key={t.id} className="tag-chip" style={{
+                                                                background: `${t.color}20`, color: t.color, borderColor: `${t.color}40`,
+                                                                fontSize: '10px', padding: '1px 5px', marginRight: '2px'
+                                                            }}>{t.name}</span>
+                                                        ))
+                                                        : '—'}
+                                                </td>
+                                            </tr>
+                                        ))}
+                                    </tbody>
+                                </table>
+                            </div>
+                            )}
                             {pagination.pages > 1 && (
                                 <div className="pagination">
                                     <button className="pagination-btn" disabled={pagination.page <= 1} onClick={() => doSearch(pagination.page - 1)}>← Previous</button>
