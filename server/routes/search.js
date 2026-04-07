@@ -55,11 +55,20 @@ router.get('/', (req, res) => {
 
         const hasQuery = q.trim().length > 0;
         const ftsQuery = hasQuery ? parseQuery(q) : '';
-        const useFts = hasQuery && ftsQuery.trim() && ftsQuery.trim() !== 'OR';
+
+        // Check if query looks like a doc_identifier prefix or full ID (e.g. CASE_XX_, CASE_XX_00001)
+        const isDocIdQuery = hasQuery && /^[A-Z0-9]{2,}_[A-Z0-9]{2,}(_|$)/i.test(q.trim());
+        const useFts = hasQuery && ftsQuery.trim() && ftsQuery.trim() !== 'OR' && !isDocIdQuery;
 
         // Build shared filter clauses
         let filterWhere = '';
         const filterParams = [];
+
+        // If query matches doc_identifier pattern, search by doc_identifier instead of FTS
+        if (isDocIdQuery) {
+            filterWhere += ' AND d.doc_identifier LIKE ?';
+            filterParams.push(`%${q.trim()}%`);
+        }
 
         // Hide attachments from top-level results unless explicitly filtering for them
         if (doc_type !== 'attachment') {

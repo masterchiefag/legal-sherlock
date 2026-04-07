@@ -27,10 +27,12 @@ console.log('✦ DEBUG: constants initializing');
 // Doc identifier generation: CASE_CUST_00001 for emails, CASE_CUST_00001_001 for attachments
 // ═══════════════════════════════════════════════════
 function getCustodianInitials(name) {
-    if (!name) return 'XX';
+    if (!name) return 'XXX';
     const parts = name.trim().split(/\s+/);
-    if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-    return name.substring(0, 2).toUpperCase();
+    if (parts.length >= 2) {
+        return (parts[0].substring(0, 2) + parts[parts.length - 1][0]).toUpperCase();
+    }
+    return name.substring(0, 3).toUpperCase();
 }
 
 const investigation = db.prepare('SELECT short_code FROM investigations WHERE id = ?').get(investigation_id);

@@ -53,6 +53,36 @@ for (const job of stuckJobs) {
 }
 
 // ═══════════════════════════════════════════════════
+// Doc identifier generation for direct uploads
+// ═══════════════════════════════════════════════════
+function getCustodianInitials(name) {
+    if (!name) return 'XXX';
+    const parts = name.trim().split(/\s+/);
+    if (parts.length >= 2) {
+        // First 2 chars of first name + first char of last name
+        return (parts[0].substring(0, 2) + parts[parts.length - 1][0]).toUpperCase();
+    }
+    return name.substring(0, 3).toUpperCase();
+}
+
+function generateDocIdentifier(investigationId, custodian, docType) {
+    const investigation = db.prepare('SELECT short_code FROM investigations WHERE id = ?').get(investigationId);
+    const caseCode = investigation?.short_code || 'CASE';
+    const custCode = getCustodianInitials(custodian);
+    const prefix = `${caseCode}_${custCode}`;
+
+    const maxExisting = db.prepare(
+        "SELECT MAX(CAST(SUBSTR(doc_identifier, ?, 5) AS INTEGER)) as max_seq FROM documents WHERE doc_identifier LIKE ?"
+    ).get(prefix.length + 2, `${prefix}_%`);
+    const seq = (maxExisting?.max_seq || 0) + 1;
+    return `${prefix}_${String(seq).padStart(5, '0')}`;
+}
+
+function generateAttIdentifier(parentIdentifier, attIndex) {
+    return `${parentIdentifier}_${String(attIndex).padStart(3, '0')}`;
+}
+
+// ═══════════════════════════════════════════════════
 // Shared: insert a parsed email + its attachments
 // ═══════════════════════════════════════════════════
 async function processEmailData(eml, emailId, filename, originalName, sizeBytes, investigation_id, custodian) {
@@ -72,6 +102,9 @@ async function processEmailData(eml, emailId, filename, originalName, sizeBytes,
     const threadId = resolveThreadId(eml.messageId, eml.inReplyTo, eml.references);
     result.thread_id = threadId;
 
+    // Generate doc identifier
+    const emailDocId = generateDocIdentifier(investigation_id, custodian, 'email');
+
     // Insert email document (with transport metadata)
     db.prepare(`
       INSERT INTO documents (
@@ -80,12 +113,12 @@ async function processEmailData(eml, emailId, filename, originalName, sizeBytes,
         email_from, email_to, email_cc, email_subject, email_date,
         email_bcc, email_headers_raw, email_received_chain,
         email_originating_ip, email_auth_results, email_server_info, email_delivery_date,
-        investigation_id, custodian
+        investigation_id, custodian, doc_identifier, text_content_size
       ) VALUES (?, ?, ?, ?, ?, ?, 'ready',
         'email', ?, ?, ?, ?,
         ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?, ?,
-        ?, ?)
+        ?, ?, ?, ?)
     `).run(
         emailId, filename, originalName, 'message/rfc822', sizeBytes, eml.textBody,
         threadId, eml.messageId, eml.inReplyTo, eml.references,
@@ -93,7 +126,7 @@ async function processEmailData(eml, emailId, filename, originalName, sizeBytes,
         eml.bcc || null, eml.headersRaw || null, eml.receivedChain || null,
         eml.originatingIp || null, eml.authResults || null,
         eml.serverInfo || null, eml.deliveryDate || null,
-        investigation_id, custodian || null
+        investigation_id, custodian || null, emailDocId, eml.textBody ? eml.textBody.length : 0
     );
 
     // Backfill thread for late arrivals
@@ -125,15 +158,19 @@ async function processEmailData(eml, emailId, filename, originalName, sizeBytes,
             meta = await extractMetadata(attPath, att.contentType);
         } catch (e) { /* best effort */ }
 
+        const attDocId = generateAttIdentifier(emailDocId, result.attachments.length + 1);
+
         db.prepare(`
           INSERT INTO documents (
             id, filename, original_name, mime_type, size_bytes, text_content, status,
             doc_type, parent_id, thread_id, content_hash, is_duplicate, investigation_id, custodian,
-            doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords
+            doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
+            doc_identifier, text_content_size
           ) VALUES (?, ?, ?, ?, ?, ?, 'ready',
-            'attachment', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            'attachment', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(attId, attFilename, att.filename, att.contentType, att.size, attText, emailId, threadId, attHash, isDuplicate, investigation_id, custodian || null,
-            meta.author, meta.title, meta.createdAt, meta.modifiedAt, meta.creatorTool, meta.keywords);
+            meta.author, meta.title, meta.createdAt, meta.modifiedAt, meta.creatorTool, meta.keywords,
+            attDocId, attText ? attText.length : 0);
 
         result.attachments.push({ id: attId, name: att.filename, size: att.size, content_type: att.contentType });
     }
@@ -226,10 +263,12 @@ async function processRegularFile(file, investigation_id, custodian) {
     const existingWithHash = db.prepare(`SELECT id FROM documents WHERE content_hash = ? AND investigation_id = ? LIMIT 1`).get(contentHash, investigation_id);
     const isDuplicate = existingWithHash ? 1 : 0;
 
+    const fileDocId = generateDocIdentifier(investigation_id, custodian, 'file');
+
     db.prepare(`
-    INSERT INTO documents (id, filename, original_name, mime_type, size_bytes, status, doc_type, content_hash, is_duplicate, investigation_id, custodian)
-    VALUES (?, ?, ?, ?, ?, 'processing', 'file', ?, ?, ?, ?)
-  `).run(id, file.filename, file.originalname, file.mimetype, file.size, contentHash, isDuplicate, investigation_id, custodian || null);
+    INSERT INTO documents (id, filename, original_name, mime_type, size_bytes, status, doc_type, content_hash, is_duplicate, investigation_id, custodian, doc_identifier)
+    VALUES (?, ?, ?, ?, ?, 'processing', 'file', ?, ?, ?, ?, ?)
+  `).run(id, file.filename, file.originalname, file.mimetype, file.size, contentHash, isDuplicate, investigation_id, custodian || null, fileDocId);
 
     try {
         const text = await extractText(file.path, file.mimetype);
@@ -240,11 +279,11 @@ async function processRegularFile(file, investigation_id, custodian) {
             meta = await extractMetadata(file.path, file.mimetype);
         } catch (_) { /* best effort */ }
 
-        db.prepare(`UPDATE documents SET text_content = ?, status = 'ready',
+        db.prepare(`UPDATE documents SET text_content = ?, text_content_size = ?, status = 'ready',
             doc_author = ?, doc_title = ?, doc_created_at = ?,
             doc_modified_at = ?, doc_creator_tool = ?, doc_keywords = ?
             WHERE id = ?`
-        ).run(text, meta.author, meta.title, meta.createdAt,
+        ).run(text, text ? text.length : 0, meta.author, meta.title, meta.createdAt,
             meta.modifiedAt, meta.creatorTool, meta.keywords, id);
         return [{ id, name: file.originalname, status: 'ready', size: file.size, doc_type: 'file' }];
     } catch (err) {

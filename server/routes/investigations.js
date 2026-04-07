@@ -95,8 +95,8 @@ router.post('/', (req, res) => {
         const { name, description, allegation, key_parties, remarks, date_range_start, date_range_end, short_code } = req.body;
         if (!name?.trim()) return res.status(400).json({ error: 'Investigation name is required' });
 
-        // Auto-generate short_code from name if not provided (uppercase, no spaces, max 10 chars)
-        const code = (short_code?.trim() || name.trim().replace(/[^a-zA-Z0-9]/g, '').substring(0, 10)).toUpperCase();
+        // Auto-generate short_code from name if not provided (uppercase, first 3 chars)
+        const code = (short_code?.trim() || name.trim().replace(/[^a-zA-Z0-9]/g, '').substring(0, 3)).toUpperCase();
 
         const id = crypto.randomUUID();
         db.prepare(`
