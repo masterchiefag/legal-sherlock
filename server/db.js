@@ -299,6 +299,37 @@ db.exec(`
   )
 `);
 
+db.exec(`
+  CREATE TABLE IF NOT EXISTS summarization_jobs (
+    id TEXT PRIMARY KEY,
+    investigation_id TEXT,
+    prompt TEXT NOT NULL,
+    model TEXT,
+    provider TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    total_docs INTEGER DEFAULT 0,
+    processed_docs INTEGER DEFAULT 0,
+    elapsed_seconds REAL DEFAULT 0,
+    started_at TEXT DEFAULT (datetime('now')),
+    completed_at TEXT,
+    FOREIGN KEY (investigation_id) REFERENCES investigations(id)
+  )
+`);
+
+db.exec(`
+  CREATE TABLE IF NOT EXISTS summaries (
+    id TEXT PRIMARY KEY,
+    job_id TEXT,
+    document_id TEXT NOT NULL,
+    summary TEXT,
+    provider TEXT,
+    model TEXT,
+    elapsed_seconds REAL DEFAULT 0,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (document_id) REFERENCES documents(id)
+  )
+`);
+
 // ═══════════════════════════════════════════════════
 // Rebuild FTS to include email fields
 // ═══════════════════════════════════════════════════

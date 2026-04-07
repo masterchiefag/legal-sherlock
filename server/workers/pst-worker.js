@@ -27,10 +27,12 @@ console.log('✦ DEBUG: constants initializing');
 // Doc identifier generation: CASE_CUST_00001 for emails, CASE_CUST_00001_001 for attachments
 // ═══════════════════════════════════════════════════
 function getCustodianInitials(name) {
-    if (!name) return 'XX';
+    if (!name) return 'XXX';
     const parts = name.trim().split(/\s+/);
-    if (parts.length >= 2) return (parts[0][0] + parts[parts.length - 1][0]).toUpperCase();
-    return name.substring(0, 2).toUpperCase();
+    if (parts.length >= 2) {
+        return (parts[0].substring(0, 2) + parts[parts.length - 1][0]).toUpperCase();
+    }
+    return name.substring(0, 3).toUpperCase();
 }
 
 const investigation = db.prepare('SELECT short_code FROM investigations WHERE id = ?').get(investigation_id);
@@ -212,7 +214,7 @@ async function main() {
         // Checkpoint WAL to reduce write overhead
         console.log('✦ DEBUG: checkpointing WAL...');
         try {
-            db.pragma('wal_checkpoint(TRUNCATE)');
+            db.pragma('wal_checkpoint(PASSIVE)');
             console.log('✦ PST Import: WAL checkpointed');
         } catch (e) {
             console.warn('✦ PST Import: WAL checkpoint failed:', e.message);
@@ -412,7 +414,7 @@ async function main() {
 
         // Checkpoint WAL after bulk writes
         try {
-            db.pragma('wal_checkpoint(TRUNCATE)');
+            db.pragma('wal_checkpoint(PASSIVE)');
             console.log('✦ PST Import: WAL checkpointed after Phase 1');
         } catch (_) {}
 
@@ -441,26 +443,40 @@ async function main() {
         let extractionOps = [];
         const failedExtractions = []; // Track docs that failed or timed out
 
+        // Use subprocess for extraction — mammoth/pdf-parse are CPU-bound and block the
+        // event loop, making Promise.race timeouts useless. execFile has a real OS timeout.
+        const EXTRACT_WORKER = path.join(__dirname, '..', 'lib', 'extract-worker.js');
+        const EXTRACT_TIMEOUT = 15000; // 15 seconds hard kill
+        const NODE_BIN = process.execPath;
+
+        function extractViaSubprocess(filePath, mimeType, mode = 'text') {
+            return new Promise((resolve, reject) => {
+                const child = execFile(NODE_BIN, [EXTRACT_WORKER, filePath, mimeType, mode], {
+                    timeout: EXTRACT_TIMEOUT,
+                    maxBuffer: 50 * 1024 * 1024,
+                    killSignal: 'SIGKILL',
+                }, (err, stdout, stderr) => {
+                    if (err) {
+                        if (err.killed) return reject(new Error('Extraction timed out (killed)'));
+                        return reject(new Error(stderr || err.message));
+                    }
+                    resolve(stdout);
+                });
+            });
+        }
+
         console.log(`✦ DEBUG: Starting runConcurrent with ${pendingDocs.length} docs...`);
         await runConcurrent(pendingDocs, PHASE2_CONCURRENCY, async (doc) => {
-            if (extracted === 0) console.log(`✦ DEBUG: Processing first doc: ${doc.id} ${doc.mime_type} ${doc.filename}`);
-            // Skip text extraction for oversized files (no file on disk)
             if (!doc.filename) {
                 extracted++;
                 return;
             }
             const filePath = path.join(UPLOADS_DIR, doc.filename);
-            // Timeout guard: skip documents that take too long (e.g., huge/corrupt PDFs)
-            const EXTRACT_TIMEOUT = 30000; // 30 seconds per document
-            const withTimeout = (promise, ms) => Promise.race([
-                promise,
-                new Promise((_, reject) => setTimeout(() => reject(new Error('Extraction timed out')), ms))
-            ]);
 
             let text = '';
             let extractionFailed = false;
             try {
-                text = await withTimeout(extractText(filePath, doc.mime_type), EXTRACT_TIMEOUT);
+                text = await extractViaSubprocess(filePath, doc.mime_type, 'text');
             } catch (e) {
                 text = `[Could not extract text: ${e.message}]`;
                 extractionFailed = true;
@@ -471,13 +487,16 @@ async function main() {
                     mime_type: doc.mime_type,
                     error: e.message
                 });
-                console.warn(`✦ Phase 2 FAILED: ${doc.original_name || doc.filename} — ${e.message}`);
+                if (failedExtractions.length <= 20) {
+                    console.warn(`✦ Phase 2 FAILED: ${doc.original_name || doc.filename} — ${e.message}`);
+                }
             }
 
             let meta = { author: null, title: null, createdAt: null, modifiedAt: null, creatorTool: null, keywords: null };
             if (!extractionFailed) {
                 try {
-                    meta = await withTimeout(extractMetadata(filePath, doc.mime_type), EXTRACT_TIMEOUT);
+                    const metaJson = await extractViaSubprocess(filePath, doc.mime_type, 'meta');
+                    if (metaJson) meta = JSON.parse(metaJson);
                 } catch (_) { /* best effort */ }
             }
 
@@ -488,7 +507,7 @@ async function main() {
             );
             extracted++;
 
-            // Flush DB writes in batches — all at once, not per-document
+            // Flush DB writes in batches
             if (extractionOps.length >= DB_BATCH_SIZE) {
                 const ops = extractionOps;
                 extractionOps = [];

@@ -55,11 +55,20 @@ router.get('/', (req, res) => {
 
         const hasQuery = q.trim().length > 0;
         const ftsQuery = hasQuery ? parseQuery(q) : '';
-        const useFts = hasQuery && ftsQuery.trim() && ftsQuery.trim() !== 'OR';
+
+        // Check if query looks like a doc_identifier prefix or full ID (e.g. CASE_XX_, CASE_XX_00001)
+        const isDocIdQuery = hasQuery && /^[A-Z0-9]{2,}_[A-Z0-9]{2,}(_|$)/i.test(q.trim());
+        const useFts = hasQuery && ftsQuery.trim() && ftsQuery.trim() !== 'OR' && !isDocIdQuery;
 
         // Build shared filter clauses
         let filterWhere = '';
         const filterParams = [];
+
+        // If query matches doc_identifier pattern, search by doc_identifier instead of FTS
+        if (isDocIdQuery) {
+            filterWhere += ' AND d.doc_identifier LIKE ?';
+            filterParams.push(`%${q.trim()}%`);
+        }
 
         // Hide attachments from top-level results unless explicitly filtering for them
         if (doc_type !== 'attachment') {
@@ -150,7 +159,7 @@ router.get('/', (req, res) => {
         // Enrichment subqueries — applied only to the paged result set via CTE
         const enrichSelect = `
             d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,
-            d.doc_type, d.thread_id, d.parent_id, d.custodian, d.folder_path, d.text_content_size, d.doc_identifier,
+            d.doc_type, d.thread_id, d.parent_id, d.custodian, d.folder_path, d.text_content_size, d.doc_identifier, d.recipient_count, d.doc_created_at,
             d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at,
             d._snippet as snippet,
             d._rank as rank,
@@ -182,7 +191,7 @@ router.get('/', (req, res) => {
             SELECT
               d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,
               d.doc_type, d.thread_id, d.parent_id, d.investigation_id, d.custodian,
-              d.folder_path, d.text_content_size, d.doc_identifier,
+              d.folder_path, d.text_content_size, d.doc_identifier, d.recipient_count, d.doc_created_at,
               d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at,
               snippet(documents_fts, 1, '<mark>', '</mark>', '…', 40) as _snippet,
               rank as _rank
@@ -210,7 +219,7 @@ router.get('/', (req, res) => {
             SELECT
               d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,
               d.doc_type, d.thread_id, d.parent_id, d.investigation_id, d.custodian,
-              d.folder_path, d.text_content_size, d.doc_identifier,
+              d.folder_path, d.text_content_size, d.doc_identifier, d.recipient_count, d.doc_created_at,
               d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at,
               SUBSTR(d.text_content, 1, 200) as _snippet,
               NULL as _rank
