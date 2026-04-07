@@ -26,7 +26,7 @@ const upload = multer({
     storage,
     // limits: { fileSize: 5000 * 1024 * 1024 }, // Removed to allow massive PST files
     fileFilter: (req, file, cb) => {
-        const allowed = ['.pdf', '.docx', '.txt', '.csv', '.md', '.eml', '.pst', '.ost', '.sqlite', '.db'];
+        const allowed = ['.pdf', '.docx', '.doc', '.xls', '.xlsx', '.txt', '.csv', '.md', '.eml', '.pst', '.ost', '.sqlite', '.db', '.zip'];
         const ext = path.extname(file.originalname).toLowerCase();
         if (allowed.includes(ext)) {
             cb(null, true);
@@ -250,6 +250,30 @@ function spawnChatWorker(jobId, filename, filepath, originalname, investigation_
     return worker;
 }
 
+// ═══════════════════════════════════════════════════
+// ZIP processing pipeline (Delegated to Worker)
+// ═══════════════════════════════════════════════════
+function spawnZipWorker(jobId, filename, filepath, originalname, investigation_id, custodian) {
+    const workerPath = path.join(__dirname, '..', 'workers', 'zip-worker.js');
+    const worker = new Worker(workerPath, {
+        workerData: { jobId, filename, filepath, originalname, investigation_id, custodian }
+    });
+
+    worker.on('error', (err) => {
+        console.error(`⚠ ZIP Worker error for job ${jobId}:`, err);
+        db.prepare(`UPDATE import_jobs SET status = 'failed', error_log = ?, completed_at = datetime('now') WHERE id = ?`).run(
+            JSON.stringify([{ error: `Worker crashed: ${err.message}` }]), jobId
+        );
+    });
+
+    worker.on('exit', (code) => {
+        if (code !== 0) {
+            console.error(`⚠ ZIP Worker for job ${jobId} stopped with exit code ${code}`);
+        }
+    });
+
+    return worker;
+}
 
 // ═══════════════════════════════════════════════════
 // Regular file processing (PDF, DOCX, TXT, etc.)
@@ -358,6 +382,22 @@ router.post('/upload', (req, res, next) => {
                 return res.status(202).json({
                     message: "Chat DB uploaded. Processing in background.",
                     jobId: jobId
+                });
+            } else if (ext === '.zip') {
+                // Background job for ZIP archives
+                const jobId = uuidv4();
+
+                db.prepare(`
+                    INSERT INTO import_jobs (id, filename, filepath, status, investigation_id, custodian)
+                    VALUES (?, ?, ?, 'pending', ?, ?)
+                `).run(jobId, file.originalname, file.path, investigation_id, custodian || null);
+
+                spawnZipWorker(jobId, file.filename, file.path, file.originalname, investigation_id, custodian);
+
+                return res.status(202).json({
+                    message: "ZIP archive uploaded. Processing in background.",
+                    jobId: jobId,
+                    filename: file.originalname
                 });
             } else {
                 const fileResults = await processRegularFile(file, investigation_id, custodian);

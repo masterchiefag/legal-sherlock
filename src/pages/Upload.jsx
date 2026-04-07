@@ -58,7 +58,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
     const handleFiles = useCallback((fileList) => {
         const newFiles = Array.from(fileList).filter(f => {
             const ext = f.name.split('.').pop().toLowerCase();
-            return ['pdf', 'docx', 'txt', 'csv', 'md', 'eml', 'pst', 'ost', 'sqlite', 'db'].includes(ext);
+            return ['pdf', 'docx', 'doc', 'xls', 'xlsx', 'txt', 'csv', 'md', 'eml', 'pst', 'ost', 'sqlite', 'db', 'zip'].includes(ext);
         });
         setFiles(prev => [...prev, ...newFiles]);
         setResults([]);
@@ -211,11 +211,15 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
     const getJobType = (job) => {
         const ext = job?.filename?.split('.').pop().toLowerCase() || '';
         if (ext === 'sqlite' || ext === 'db') return 'chat';
+        if (ext === 'zip') return 'zip';
         return 'pst'; // PST/OST
     };
 
     const getJobLabel = (job) => {
-        return getJobType(job) === 'chat' ? 'Chat Import' : 'PST Import';
+        const type = getJobType(job);
+        if (type === 'chat') return 'Chat Import';
+        if (type === 'zip') return 'ZIP Import';
+        return 'PST Import';
     };
 
     if (!activeInvestigationId) {
@@ -291,7 +295,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                     ref={inputRef}
                     type="file"
                     multiple
-                    accept=".pdf,.docx,.txt,.csv,.md,.eml,.pst,.ost,.sqlite,.db"
+                    accept=".pdf,.docx,.doc,.xls,.xlsx,.txt,.csv,.md,.eml,.pst,.ost,.sqlite,.db,.zip"
                     onChange={(e) => handleFiles(e.target.files)}
                     style={{ display: 'none' }}
                 />
@@ -304,7 +308,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                     <strong>Drop files here</strong> or click to browse
                 </p>
                 <p className="dropzone-sub">
-                    Supports PDF, DOCX, TXT, CSV, MD, EML, PST, SQLite
+                    Supports PDF, DOCX, DOC, XLS, XLSX, TXT, CSV, EML, PST, ZIP, SQLite
                 </p>
                 <p className="dropzone-sub" style={{ fontSize: '11px', marginTop: '4px', color: 'var(--text-muted)' }}>
                     💡 For large PST files, keep your laptop awake during import (run <code>caffeinate -i</code> in Terminal)
@@ -379,12 +383,16 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                                     {activeJob.phase === 'reading'
                                         ? getJobType(activeJob) === 'chat'
                                             ? 'Reading chat database...'
+                                            : getJobType(activeJob) === 'zip'
+                                            ? 'Scanning ZIP archive...'
                                             : 'Reading PST file (this takes a few minutes)...'
                                         : activeJob.phase === 'extracting'
-                                        ? 'Extracting text from attachments...'
+                                        ? 'Extracting text from files...'
                                         : activeJob.phase === 'importing' || activeJob.status === 'processing'
                                         ? getJobType(activeJob) === 'chat'
                                             ? 'Importing chat messages...'
+                                            : getJobType(activeJob) === 'zip'
+                                            ? 'Importing files & emails from archive...'
                                             : 'Importing emails & attachments...'
                                         : `Status: ${activeJob.status}`}
                                 </p>
