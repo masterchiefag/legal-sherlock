@@ -8,9 +8,9 @@ const router = express.Router();
 // ═══════════════════════════════════════════════════
 // Build document content for summarization (same as classify.js)
 // ═══════════════════════════════════════════════════
-const MAX_BODY_CHARS = 1500;
-const MAX_THREAD_CHARS = 400;
-const MAX_ATTACHMENT_CHARS = 400;
+const MAX_BODY_CHARS = 8000;
+const MAX_THREAD_CHARS = 1500;
+const MAX_ATTACHMENT_CHARS = 1500;
 
 function buildDocumentContent(doc, thread, attachments) {
     let content = '';

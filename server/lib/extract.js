@@ -11,13 +11,13 @@ export async function extractText(filePath, mimeType) {
     try {
         const stat = fs.statSync(filePath);
         // Protect against synchronous parsing lockups (OOM/CPU freeze)
-        if (stat.size > 10 * 1024 * 1024 && ['.xlsx', '.xls', '.docx', '.pdf'].includes(ext)) {
+        if (stat.size > 50 * 1024 * 1024 && ['.xlsx', '.xls', '.docx', '.pdf'].includes(ext)) {
             console.warn(`[extractText] Skipping ${filePath} - file too large (${Math.round(stat.size/1e6)}MB)`);
             return `[File too large to safely extract text: ${Math.round(stat.size/1e6)}MB]`;
         }
 
         if (ext === '.txt' || ext === '.csv' || ext === '.md') {
-            if (stat.size > 10 * 1024 * 1024) return ''; // limit arbitrary text too
+            if (stat.size > 50 * 1024 * 1024) return ''; // limit arbitrary text too
             return fs.readFileSync(filePath, 'utf-8');
         }
 
@@ -95,7 +95,7 @@ export async function extractText(filePath, mimeType) {
 
         // Fallback: try reading as text for unknown but potentially text-based formats
         // Cap at 10MB to prevent memory issues with large binary files
-        if (stat.size > 10 * 1024 * 1024) {
+        if (stat.size > 50 * 1024 * 1024) {
             return '';
         }
         return fs.readFileSync(filePath, 'utf-8');
@@ -135,7 +135,7 @@ export async function extractMetadata(filePath, mimeType) {
 
     try {
         // Protect against parsing locks during metadata resolution
-        if (stat && stat.size > 10 * 1024 * 1024 && ['.xlsx', '.xls', '.docx', '.pdf'].includes(ext)) {
+        if (stat && stat.size > 50 * 1024 * 1024 && ['.xlsx', '.xls', '.docx', '.pdf'].includes(ext)) {
             console.warn(`[extractMetadata] Skipping ${filePath} - file too large (${Math.round(stat.size/1e6)}MB)`);
             return meta;
         }

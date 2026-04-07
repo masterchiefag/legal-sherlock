@@ -63,8 +63,8 @@ class OllamaProvider {
                 keep_alive: 10,
                 options: {
                     temperature: 0.3,
-                    num_predict: 200,
-                    num_ctx: 2048,
+                    num_predict: 1024,
+                    num_ctx: 8192,
                     num_thread: 8,
                 },
             }),
@@ -231,7 +231,7 @@ class AnthropicProvider {
             },
             body: JSON.stringify({
                 model: activeModel,
-                max_tokens: 300,
+                max_tokens: 1024,
                 temperature: 0.3,
                 system: systemPrompt,
                 messages: [

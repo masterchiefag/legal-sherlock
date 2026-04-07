@@ -1,5 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
+import ReactMarkdown from 'react-markdown';
 
 function SummarizationJobs({ activeInvestigationId, addToast }) {
     const navigate = useNavigate();
@@ -11,6 +12,9 @@ function SummarizationJobs({ activeInvestigationId, addToast }) {
     const [results, setResults] = useState([]);
     const [resultsPagination, setResultsPagination] = useState(null);
     const [resultsLoading, setResultsLoading] = useState(false);
+
+    // Modal state for viewing summaries
+    const [viewingSummary, setViewingSummary] = useState(null);
 
     const loadJobs = useCallback(async () => {
         try {
@@ -185,7 +189,14 @@ function SummarizationJobs({ activeInvestigationId, addToast }) {
                                                 {r.email_to || '-'}
                                             </td>
                                             <td style={{ fontSize: '12px', lineHeight: '1.4', color: 'var(--text-primary)' }}>
-                                                {r.summary || <span className="text-muted">No summary</span>}
+                                                {r.summary ? (
+                                                    <span 
+                                                        style={{ color: 'var(--primary)', textDecoration: 'underline' }}
+                                                        onClick={(e) => { e.stopPropagation(); setViewingSummary(r.summary); }}
+                                                    >
+                                                        View Summary
+                                                    </span>
+                                                ) : <span className="text-muted">No summary</span>}
                                             </td>
                                         </tr>
                                     ))}
@@ -215,6 +226,44 @@ function SummarizationJobs({ activeInvestigationId, addToast }) {
                             </div>
                         )}
                     </>
+                )}
+
+                {/* Markdown Summary Modal */}
+                {viewingSummary && (
+                    <div className="modal-overlay" onClick={() => setViewingSummary(null)}>
+                        <div className="modal" style={{ maxWidth: '800px', width: '90%', maxHeight: '80vh', display: 'flex', flexDirection: 'column' }} onClick={e => e.stopPropagation()}>
+                            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px' }}>
+                                <h2 style={{ margin: 0 }}>Document Summary</h2>
+                                <button className="btn btn-ghost btn-sm" onClick={() => setViewingSummary(null)}>✕</button>
+                            </div>
+                            <div style={{ 
+                                overflowY: 'auto', 
+                                paddingRight: '10px',
+                                fontSize: '14px',
+                                lineHeight: '1.6',
+                                color: 'var(--text-secondary)'
+                            }}>
+                                <ReactMarkdown
+                                    components={{
+                                        h1: ({node, ...props}) => <h1 style={{ color: 'var(--text-primary)', marginTop: '20px', marginBottom: '10px', fontSize: '1.4em' }} {...props} />,
+                                        h2: ({node, ...props}) => <h2 style={{ color: 'var(--text-primary)', marginTop: '16px', marginBottom: '8px', fontSize: '1.2em' }} {...props} />,
+                                        h3: ({node, ...props}) => <h3 style={{ color: 'var(--text-primary)', marginTop: '14px', marginBottom: '8px', fontSize: '1.1em' }} {...props} />,
+                                        p: ({node, ...props}) => <p style={{ marginBottom: '12px' }} {...props} />,
+                                        ul: ({node, ...props}) => <ul style={{ marginBottom: '12px', paddingLeft: '20px' }} {...props} />,
+                                        ol: ({node, ...props}) => <ol style={{ marginBottom: '12px', paddingLeft: '20px' }} {...props} />,
+                                        li: ({node, ...props}) => <li style={{ marginBottom: '4px' }} {...props} />,
+                                        strong: ({node, ...props}) => <strong style={{ color: 'var(--text-primary)' }} {...props} />,
+                                        blockquote: ({node, ...props}) => <blockquote style={{ borderLeft: '3px solid var(--primary)', paddingLeft: '12px', margin: '12px 0', color: 'var(--text-tertiary)', fontStyle: 'italic' }} {...props} />,
+                                    }}
+                                >
+                                    {viewingSummary}
+                                </ReactMarkdown>
+                            </div>
+                            <div className="modal-actions">
+                                <button className="btn btn-secondary" onClick={() => setViewingSummary(null)}>Close</button>
+                            </div>
+                        </div>
+                    </div>
                 )}
             </div>
         );
