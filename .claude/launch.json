@@ -6,6 +6,12 @@
       "runtimeExecutable": "/opt/homebrew/bin/node",
       "runtimeArgs": ["node_modules/.bin/vite"],
       "port": 5173
+    },
+    {
+      "name": "server",
+      "runtimeExecutable": "/opt/homebrew/bin/node",
+      "runtimeArgs": ["server/index.js"],
+      "port": 3001
     }
   ]
 }

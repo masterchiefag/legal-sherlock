@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { formatSize, getScoreColor } from '../utils/format';
 
-function Search({ activeInvestigationId, addToast }) {
+function Search({ activeInvestigationId, activeInvestigation, addToast }) {
     const [searchParams, setSearchParams] = useSearchParams();
     const [query, setQuery] = useState(searchParams.get('q') || '');
     const [results, setResults] = useState([]);
@@ -348,6 +348,10 @@ function Search({ activeInvestigationId, addToast }) {
         if (docType) params.set('doc_type', docType);
         if (dateFrom) params.set('date_from', dateFrom);
         if (dateTo) params.set('date_to', dateTo);
+        if (hideDuplicates) params.set('hide_duplicates', '1');
+        if (latestThreadOnly) params.set('latest_thread_only', '1');
+        if (custodianFilter) params.set('custodian', custodianFilter);
+        if (activeInvestigationId) params.set('investigation_id', activeInvestigationId);
         if (scoreFilter) {
             if (scoreFilter === 'unscored') params.set('score_min', 'unscored');
             else if (scoreFilter === 'scored') params.set('score_min', '1');
@@ -449,7 +453,7 @@ function Search({ activeInvestigationId, addToast }) {
     };
 
     const getDocDate = (doc) => {
-        const d = doc.email_date || doc.doc_created_at;
+        const d = doc.primary_date || doc.email_date || doc.doc_created_at;
         if (!d) return '';
         return new Date(d).toLocaleDateString();
     };
@@ -482,7 +486,7 @@ function Search({ activeInvestigationId, addToast }) {
                     const v = val.toLowerCase();
                     const fieldMap = {
                         name: getDisplayName(r),
-                        from: r.email_from,
+                        from: getFrom(r),
                         date: getDocDate(r),
                         custodian: r.custodian,
                         path: r.folder_path,
@@ -496,9 +500,10 @@ function Search({ activeInvestigationId, addToast }) {
         if (sortField) {
             const getter = {
                 name: r => (getDisplayName(r) || '').toLowerCase(),
-                from: r => (r.email_from || '').toLowerCase(),
-                date: r => r.email_date || r.doc_created_at || '',
+                from: r => (getFrom(r)).toLowerCase(),
+                date: r => r.primary_date || r.email_date || r.doc_created_at || '',
                 size: r => r.size_bytes || 0,
+                textSize: r => r.text_content_size || 0,
                 attachments: r => r.attachment_count || 0,
                 recipients: r => r.recipient_count || 0,
                 custodian: r => (r.custodian || '').toLowerCase(),
@@ -532,22 +537,101 @@ function Search({ activeInvestigationId, addToast }) {
         if ((doc.doc_type === 'email' || doc.doc_type === 'chat') && doc.email_subject) {
             return doc.email_subject;
         }
-        return doc.original_name;
+        return doc.doc_title || doc.original_name;
+    };
+
+    const getFrom = (doc) => {
+        return doc.email_from || doc.doc_author || '';
+    };
+
+    const exportCsv = async () => {
+        try {
+            const res = await fetch(`/api/search?${buildSearchParams()}`);
+            const data = await res.json();
+            let docs = data.results || [];
+
+            if (selectedIds.size > 0) {
+                docs = docs.filter(d => selectedIds.has(d.id));
+            }
+
+            if (docs.length === 0) {
+                addToast('No results to export', 'error');
+                return;
+            }
+
+            const csvEscape = (val) => {
+                if (val == null) return '';
+                const s = String(val);
+                if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+                    return '"' + s.replace(/"/g, '""') + '"';
+                }
+                return s;
+            };
+
+            const getExt = (d) => {
+                if (d.doc_type === 'email') return 'EML';
+                if (d.doc_type === 'chat') return 'Chat';
+                return d.original_name?.split('.').pop()?.toUpperCase() || 'FILE';
+            };
+            const getPrimaryDate = (d) => {
+                const dt = d.primary_date || d.email_date || d.doc_created_at;
+                return dt ? new Date(dt).toISOString() : '';
+            };
+
+            const headers = ['Doc ID', 'Type', 'Name', 'From', 'To', 'CC', 'Subject', 'Date', 'Size', 'Text Size', 'Attachments', 'Recipients', 'Path', 'Custodian', 'Review Status', 'AI Score', 'Tags'];
+            const rows = docs.map(d => [
+                d.doc_identifier || '',
+                getExt(d),
+                d.doc_type === 'email' || d.doc_type === 'chat' ? (d.email_subject || d.doc_title || d.original_name) : (d.doc_title || d.original_name),
+                d.email_from || d.doc_author || '',
+                d.email_to || '',
+                d.email_cc || '',
+                d.email_subject || d.doc_title || '',
+                getPrimaryDate(d),
+                d.size_bytes,
+                d.text_content_size || 0,
+                d.attachment_count ?? 0,
+                d.recipient_count ?? 0,
+                d.folder_path || '',
+                d.custodian || '',
+                d.review_status || '',
+                d.ai_score || '',
+                (d.tags || []).map(t => t.name).join('; '),
+            ].map(csvEscape));
+
+            const csv = [headers.join(','), ...rows.map(r => r.join(','))].join('\n');
+            const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            const caseName = (activeInvestigation?.name || 'all').replace(/[^a-zA-Z0-9]+/g, '-').toLowerCase();
+            a.download = `${caseName}-export-${new Date().toISOString().slice(0, 10)}.csv`;
+            a.click();
+            URL.revokeObjectURL(url);
+            addToast(`Exported ${docs.length} results to CSV`, 'success');
+        } catch (err) {
+            console.error('CSV export failed:', err);
+            addToast('Failed to export CSV', 'error');
+        }
     };
 
     const getSubline = (doc) => {
+        const from = getFrom(doc);
         if (doc.doc_type === 'email') {
             const parts = [];
-            if (doc.email_from) parts.push(`From: ${doc.email_from.split('<')[0].trim()}`);
-            if (doc.email_date) parts.push(new Date(doc.email_date).toLocaleDateString());
+            if (from) parts.push(`From: ${from.split('<')[0].trim()}`);
+            const d = getDocDate(doc);
+            if (d) parts.push(d);
             return parts.join(' • ');
         }
         if (doc.doc_type === 'chat') {
             const parts = [];
-            if (doc.email_from) parts.push(`From: ${doc.email_from}`);
-            if (doc.email_date) parts.push(new Date(doc.email_date).toLocaleDateString());
+            if (from) parts.push(`From: ${from}`);
+            const d = getDocDate(doc);
+            if (d) parts.push(d);
             return parts.join(' • ');
         }
+        if (from) return `Author: ${from}`;
         return null;
     };
 
@@ -912,6 +996,14 @@ function Search({ activeInvestigationId, addToast }) {
                                         />
                                         {selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Select all'}
                                     </label>
+                                    <button className="btn btn-ghost btn-sm" onClick={exportCsv} title="Export results to CSV" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
+                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: '14px', height: '14px' }}>
+                                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
+                                            <polyline points="7 10 12 15 17 10" />
+                                            <line x1="12" y1="15" x2="12" y2="3" />
+                                        </svg>
+                                        Export CSV
+                                    </button>
                                     <div className="view-toggle">
                                         <button className={`view-toggle-btn${viewMode === 'cards' ? ' active' : ''}`} onClick={() => setViewMode('cards')} title="Card view">
                                             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="16" height="16"><rect x="3" y="3" width="7" height="7"/><rect x="14" y="3" width="7" height="7"/><rect x="3" y="14" width="7" height="7"/><rect x="14" y="14" width="7" height="7"/></svg>
@@ -966,7 +1058,7 @@ function Search({ activeInvestigationId, addToast }) {
                                                 </>
                                             )}
                                             <span>•</span>
-                                            <span>{r.email_date ? new Date(r.email_date).toLocaleDateString() : 'No date'}</span>
+                                            <span>{getDocDate(r) || 'No date'}</span>
                                             {r.folder_path && r.folder_path !== '/' && (
                                                 <>
                                                     <span>•</span>
@@ -1026,6 +1118,7 @@ function Search({ activeInvestigationId, addToast }) {
                                                 { key: 'from', label: 'From', width: '160px' },
                                                 { key: 'date', label: 'Date', width: '100px' },
                                                 { key: 'size', label: 'Size', width: '80px' },
+                                                { key: 'textSize', label: 'Text', width: '70px' },
                                                 { key: 'attachments', label: 'Attach', width: '60px' },
                                                 { key: 'recipients', label: 'Recip', width: '60px' },
                                                 { key: 'path', label: 'Path', width: '140px' },
@@ -1060,6 +1153,7 @@ function Search({ activeInvestigationId, addToast }) {
                                             <td></td>
                                             <td></td>
                                             <td></td>
+                                            <td></td>
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -1080,9 +1174,10 @@ function Search({ activeInvestigationId, addToast }) {
                                                 <td><span className="type-cell">{getDocIcon(r)} {getFileExt(r)}</span></td>
                                                 <td><span className="docid-cell">{r.doc_identifier || '—'}</span></td>
                                                 <td className="name-cell" title={getDisplayName(r)}>{truncate(getDisplayName(r), 50)}</td>
-                                                <td title={r.email_from || ''}>{truncate(r.email_from?.split('<')[0]?.trim(), 20) || '—'}</td>
+                                                <td title={getFrom(r)}>{truncate(getFrom(r).split('<')[0]?.trim(), 20) || '—'}</td>
                                                 <td>{getDocDate(r) || '—'}</td>
                                                 <td>{formatSize(r.size_bytes)}</td>
+                                                <td>{r.text_content_size ? formatSize(r.text_content_size) : '—'}</td>
                                                 <td style={{ textAlign: 'center' }}>{r.attachment_count ?? 0}</td>
                                                 <td style={{ textAlign: 'center' }}>{r.recipient_count ?? 0}</td>
                                                 <td className="path-cell" title={r.folder_path || ''}>{truncate(r.folder_path, 20) || '—'}</td>

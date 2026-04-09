@@ -26,6 +26,7 @@ class OllamaProvider {
         const response = await fetch(`${this.baseUrl}/api/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            signal: AbortSignal.timeout(120000), // 2 min timeout for classification
             body: JSON.stringify({
                 model: activeModel,
                 prompt: fullPrompt,
@@ -51,20 +52,24 @@ class OllamaProvider {
 
     async summarize(systemPrompt, documentContent, overrideModel = null) {
         const activeModel = overrideModel || this.model;
-        const fullPrompt = `${systemPrompt}\n\n--- DOCUMENT START ---\n${documentContent}\n--- DOCUMENT END ---\n\nRespond with ONLY the summary text. No JSON, no preamble.`;
+        
+        // Ensure instructions are at the BOTTOM of the prompt context 
+        // to combat "recency bias" and guarantee they aren't truncated out.
+        const fullPrompt = `--- DOCUMENT START ---\n${documentContent}\n--- DOCUMENT END ---\n\nINSTRUCTION:\n${systemPrompt}\n\nRespond with ONLY the summary text. No JSON, no preamble.`;
 
         const response = await fetch(`${this.baseUrl}/api/generate`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
+            signal: AbortSignal.timeout(300000), // 5 min timeout for summarization
             body: JSON.stringify({
                 model: activeModel,
                 prompt: fullPrompt,
                 stream: false,
                 keep_alive: 10,
                 options: {
-                    temperature: 0.3,
-                    num_predict: 200,
-                    num_ctx: 2048,
+                    temperature: 0.1,
+                    num_predict: 2048,
+                    num_ctx: 32768, // ~32k tokens ensures our 100,000 char texts don't truncate
                     num_thread: 8,
                 },
             }),
@@ -156,7 +161,7 @@ class OpenAIProvider {
             },
             body: JSON.stringify({
                 model: activeModel,
-                temperature: 0.3,
+                temperature: 0.1,
                 messages: [
                     { role: 'system', content: systemPrompt },
                     { role: 'user', content: documentContent },
@@ -170,7 +175,8 @@ class OpenAIProvider {
         }
 
         const data = await response.json();
-        return { summary: (data.choices[0]?.message?.content || '').trim() };
+        const raw = data.choices[0]?.message?.content || '';
+        return { summary: raw.trim() };
     }
 }
 
@@ -231,8 +237,8 @@ class AnthropicProvider {
             },
             body: JSON.stringify({
                 model: activeModel,
-                max_tokens: 300,
-                temperature: 0.3,
+                max_tokens: 2048,
+                temperature: 0.1,
                 system: systemPrompt,
                 messages: [
                     { role: 'user', content: documentContent },
@@ -246,7 +252,8 @@ class AnthropicProvider {
         }
 
         const data = await response.json();
-        return { summary: (data.content[0]?.text || '').trim() };
+        const raw = data.content[0]?.text || '';
+        return { summary: raw.trim() };
     }
 }
 

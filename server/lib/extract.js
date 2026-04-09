@@ -11,13 +11,13 @@ export async function extractText(filePath, mimeType) {
     try {
         const stat = fs.statSync(filePath);
         // Protect against synchronous parsing lockups (OOM/CPU freeze)
-        if (stat.size > 10 * 1024 * 1024 && ['.xlsx', '.xls', '.docx', '.pdf'].includes(ext)) {
+        if (stat.size > 50 * 1024 * 1024 && ['.xlsx', '.xls', '.docx', '.pdf'].includes(ext)) {
             console.warn(`[extractText] Skipping ${filePath} - file too large (${Math.round(stat.size/1e6)}MB)`);
             return `[File too large to safely extract text: ${Math.round(stat.size/1e6)}MB]`;
         }
 
         if (ext === '.txt' || ext === '.csv' || ext === '.md') {
-            if (stat.size > 10 * 1024 * 1024) return ''; // limit arbitrary text too
+            if (stat.size > 50 * 1024 * 1024) return ''; // limit arbitrary text too
             return fs.readFileSync(filePath, 'utf-8');
         }
 
@@ -25,7 +25,21 @@ export async function extractText(filePath, mimeType) {
             const pdfParse = (await import('pdf-parse')).default;
             const buffer = fs.readFileSync(filePath);
             const data = await pdfParse(buffer);
-            return data.text;
+            const text = (data.text || '').trim();
+
+            // If pdf-parse returned very little text, the PDF is likely scanned/image-based.
+            // Fall back to OCR: convert pages to images with pdftoppm, then run tesseract.
+            if (text.length < 100) {
+                console.log(`[extractText] PDF has only ${text.length} chars of text — attempting OCR fallback for ${filePath}`);
+                const ocrText = await ocrPdf(filePath);
+                if (ocrText && ocrText.trim().length > text.length) {
+                    console.log(`[extractText] OCR recovered ${ocrText.trim().length} chars from ${filePath}`);
+                    return ocrText.trim();
+                }
+                console.log(`[extractText] OCR did not improve results for ${filePath}`);
+            }
+
+            return text;
         }
 
         if (ext === '.docx') {
@@ -95,7 +109,7 @@ export async function extractText(filePath, mimeType) {
 
         // Fallback: try reading as text for unknown but potentially text-based formats
         // Cap at 10MB to prevent memory issues with large binary files
-        if (stat.size > 10 * 1024 * 1024) {
+        if (stat.size > 50 * 1024 * 1024) {
             return '';
         }
         return fs.readFileSync(filePath, 'utf-8');
@@ -135,7 +149,7 @@ export async function extractMetadata(filePath, mimeType) {
 
     try {
         // Protect against parsing locks during metadata resolution
-        if (stat && stat.size > 10 * 1024 * 1024 && ['.xlsx', '.xls', '.docx', '.pdf'].includes(ext)) {
+        if (stat && stat.size > 50 * 1024 * 1024 && ['.xlsx', '.xls', '.docx', '.pdf'].includes(ext)) {
             console.warn(`[extractMetadata] Skipping ${filePath} - file too large (${Math.round(stat.size/1e6)}MB)`);
             return meta;
         }
@@ -389,4 +403,88 @@ function extractDocOle2Metadata(filePath, meta) {
     }
 
     return meta;
+}
+
+/**
+ * OCR a PDF file by converting pages to images and running tesseract.
+ * Requires system dependencies: poppler (pdftoppm) and tesseract.
+ * 
+ * Flow: PDF → pdftoppm (page images) → tesseract (text per page) → concatenated text
+ */
+async function ocrPdf(filePath) {
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const os = await import('os');
+    const execFileAsync = promisify(execFile);
+
+    // Verify both tools are available
+    try {
+        await execFileAsync('pdftoppm', ['-v']);
+    } catch (err) {
+        if (err.code === 'ENOENT') {
+            console.warn('[OCR] pdftoppm not found. Install with: brew install poppler');
+            return '';
+        }
+        // pdftoppm -v exits with code 0 and prints to stderr, which is fine
+    }
+    try {
+        await execFileAsync('tesseract', ['--version']);
+    } catch (err) {
+        if (err.code === 'ENOENT') {
+            console.warn('[OCR] tesseract not found. Install with: brew install tesseract');
+            return '';
+        }
+    }
+
+    // Create a temp directory for page images
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sherlock-ocr-'));
+
+    try {
+        // Convert PDF pages to PNG images (300 DPI for good OCR quality)
+        const prefix = path.join(tmpDir, 'page');
+        console.log(`[OCR] Converting PDF pages to images...`);
+        await execFileAsync('pdftoppm', [
+            '-png', '-r', '300', filePath, prefix
+        ], { timeout: 120000 }); // 2 min timeout
+
+        // List generated page images, sorted
+        const pageFiles = fs.readdirSync(tmpDir)
+            .filter(f => f.endsWith('.png'))
+            .sort()
+            .map(f => path.join(tmpDir, f));
+
+        if (pageFiles.length === 0) {
+            console.warn('[OCR] pdftoppm produced no page images');
+            return '';
+        }
+        console.log(`[OCR] Generated ${pageFiles.length} page images, running tesseract...`);
+
+        // OCR each page
+        const pageTexts = [];
+        for (let i = 0; i < pageFiles.length; i++) {
+            try {
+                const { stdout } = await execFileAsync('tesseract', [
+                    pageFiles[i], 'stdout', '--psm', '6'
+                ], { timeout: 60000, maxBuffer: 10 * 1024 * 1024 });
+                const pageText = stdout.trim();
+                if (pageText) {
+                    pageTexts.push(`--- Page ${i + 1} ---\n${pageText}`);
+                }
+            } catch (pageErr) {
+                console.warn(`[OCR] Tesseract failed on page ${i + 1}:`, pageErr.message);
+            }
+        }
+
+        const fullText = pageTexts.join('\n\n');
+        console.log(`[OCR] Completed: ${pageFiles.length} pages, ${fullText.length} chars extracted`);
+        return fullText;
+    } catch (err) {
+        console.error('[OCR] Pipeline failed:', err.message);
+        return '';
+    } finally {
+        // Clean up temp directory
+        try {
+            fs.rmSync(tmpDir, { recursive: true, force: true });
+        } catch (_) {}
+    }
 }
