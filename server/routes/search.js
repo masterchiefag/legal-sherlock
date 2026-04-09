@@ -157,10 +157,12 @@ router.get('/', (req, res) => {
         let countRow, results;
 
         // Enrichment subqueries — applied only to the paged result set via CTE
+        // primary_date: email_date for emails/chats, doc_created_at for files/attachments
         const enrichSelect = `
             d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,
             d.doc_type, d.thread_id, d.parent_id, d.custodian, d.folder_path, d.text_content_size, d.doc_identifier, d.recipient_count, d.doc_created_at,
-            d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at,
+            d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at, d.doc_title, d.doc_author,
+            COALESCE(d.email_date, d.doc_created_at, d.doc_modified_at, d.uploaded_at) as primary_date,
             d._snippet as snippet,
             d._rank as rank,
             (SELECT COUNT(*) FROM documents c WHERE c.parent_id = d.id) as attachment_count,
@@ -192,7 +194,7 @@ router.get('/', (req, res) => {
               d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,
               d.doc_type, d.thread_id, d.parent_id, d.investigation_id, d.custodian,
               d.folder_path, d.text_content_size, d.doc_identifier, d.recipient_count, d.doc_created_at,
-              d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at,
+              d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at, d.doc_title, d.doc_author,
               snippet(documents_fts, 1, '<mark>', '</mark>', '…', 40) as _snippet,
               rank as _rank
             FROM documents_fts fts
@@ -220,16 +222,16 @@ router.get('/', (req, res) => {
               d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,
               d.doc_type, d.thread_id, d.parent_id, d.investigation_id, d.custodian,
               d.folder_path, d.text_content_size, d.doc_identifier, d.recipient_count, d.doc_created_at,
-              d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at,
+              d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at, d.doc_title, d.doc_author,
               SUBSTR(d.text_content, 1, 200) as _snippet,
               NULL as _rank
             FROM documents d
             WHERE 1=1 ${filterWhere}
-            ORDER BY COALESCE(d.email_date, d.uploaded_at) DESC
+            ORDER BY COALESCE(d.email_date, d.doc_created_at, d.doc_modified_at, d.uploaded_at) DESC
             LIMIT ? OFFSET ?
           )
           SELECT ${enrichSelect} FROM page d
-          ORDER BY COALESCE(d.email_date, d.uploaded_at) DESC
+          ORDER BY COALESCE(d.email_date, d.doc_created_at, d.doc_modified_at, d.uploaded_at) DESC
         `).all(...filterParams, parseInt(limit), offset);
         }
 

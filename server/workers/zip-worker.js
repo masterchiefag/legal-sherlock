@@ -231,7 +231,7 @@ async function processEmlEntry(zipPath, entry) {
         batchBuffer.push(() => {
             insertEmail.run(
                 emailId, null, eml.subject || path.basename(entry.path),
-                'message/rfc822', entry.size, textBody, 'ready',
+                'message/rfc822', entry.size, textBody,
                 threadId, eml.messageId || null, eml.inReplyTo || null, eml.references || null,
                 eml.from || null, eml.to || null, eml.cc || null, eml.subject || null, eml.date || null,
                 investigation_id, custodian || null, folderPath, textBody.length,
