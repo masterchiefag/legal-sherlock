@@ -2,6 +2,7 @@ import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../db.js';
 import { getProvider, listProviders } from '../lib/llm-providers.js';
+import { LLM_LIMITS } from '../lib/config.js';
 
 const router = express.Router();
 
@@ -16,9 +17,7 @@ Respond ONLY with JSON: {"score": <1-5>, "reasoning": "<1 sentence>"}`;
 }
 
 // Target ~2500 chars of content to stay well within 4096 token context
-const MAX_BODY_CHARS = 1500;
-const MAX_THREAD_CHARS = 400;
-const MAX_ATTACHMENT_CHARS = 400;
+// Limits are now managed centrally in lib/config.js
 
 function buildDocumentContent(doc, thread, attachments) {
     let content = '';
@@ -33,7 +32,7 @@ function buildDocumentContent(doc, thread, attachments) {
     }
 
     // Main body — aggressively trimmed
-    const body = (doc.text_content || '').substring(0, MAX_BODY_CHARS);
+    const body = (doc.text_content || '').substring(0, LLM_LIMITS.MAX_BODY_CHARS);
     content += body + '\n';
 
     // Thread context — just subjects and senders, minimal body
@@ -43,7 +42,7 @@ function buildDocumentContent(doc, thread, attachments) {
         for (const msg of thread) {
             if (msg.id === doc.id) continue;
             const line = `- ${msg.email_from || '?'}: ${msg.email_subject || '?'}\n`;
-            if (threadLen + line.length > MAX_THREAD_CHARS) break;
+            if (threadLen + line.length > LLM_LIMITS.MAX_THREAD_CHARS) break;
             threadContent += line;
             threadLen += line.length;
         }
@@ -58,7 +57,7 @@ function buildDocumentContent(doc, thread, attachments) {
             const attDoc = db.prepare('SELECT text_content, original_name FROM documents WHERE id = ?').get(att.id);
             if (attDoc) {
                 const line = `- ${attDoc.original_name}: ${(attDoc.text_content || '').substring(0, 200)}\n`;
-                if (attLen + line.length > MAX_ATTACHMENT_CHARS) break;
+                if (attLen + line.length > LLM_LIMITS.MAX_ATTACHMENT_CHARS) break;
                 attContent += line;
                 attLen += line.length;
             }
@@ -104,6 +103,8 @@ router.post('/:documentId', async (req, res) => {
         const provider = getProvider();
         const activeModel = model || provider.modelName;
         console.log(`🔍 Classifying document ${documentId} with ${provider.name}/${activeModel}...`);
+        console.log(`   Document Length: ${doc.text_content ? doc.text_content.length : 0} chars`);
+        console.log(`   Sent Content Length: ${documentContent.length} chars (Limit: ${LLM_LIMITS.MAX_BODY_CHARS} body)`);
 
         const startTime = Date.now();
         const result = await provider.classify(systemPrompt, documentContent, model);

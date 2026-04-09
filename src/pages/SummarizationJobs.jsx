@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 function SummarizationJobs({ activeInvestigationId, addToast }) {
     const navigate = useNavigate();
@@ -244,6 +245,7 @@ function SummarizationJobs({ activeInvestigationId, addToast }) {
                                 color: 'var(--text-secondary)'
                             }}>
                                 <ReactMarkdown
+                                    remarkPlugins={[remarkGfm]}
                                     components={{
                                         h1: ({node, ...props}) => <h1 style={{ color: 'var(--text-primary)', marginTop: '20px', marginBottom: '10px', fontSize: '1.4em' }} {...props} />,
                                         h2: ({node, ...props}) => <h2 style={{ color: 'var(--text-primary)', marginTop: '16px', marginBottom: '8px', fontSize: '1.2em' }} {...props} />,
@@ -254,6 +256,19 @@ function SummarizationJobs({ activeInvestigationId, addToast }) {
                                         li: ({node, ...props}) => <li style={{ marginBottom: '4px' }} {...props} />,
                                         strong: ({node, ...props}) => <strong style={{ color: 'var(--text-primary)' }} {...props} />,
                                         blockquote: ({node, ...props}) => <blockquote style={{ borderLeft: '3px solid var(--primary)', paddingLeft: '12px', margin: '12px 0', color: 'var(--text-tertiary)', fontStyle: 'italic' }} {...props} />,
+                                        table: ({node, ...props}) => (
+                                            <div style={{ overflowX: 'auto', marginBottom: '16px' }}>
+                                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }} {...props} />
+                                            </div>
+                                        ),
+                                        thead: ({node, ...props}) => <thead style={{ borderBottom: '2px solid var(--border-secondary)' }} {...props} />,
+                                        th: ({node, ...props}) => <th style={{ padding: '8px 12px', textAlign: 'left', color: 'var(--text-primary)', fontWeight: 600, whiteSpace: 'nowrap' }} {...props} />,
+                                        td: ({node, ...props}) => <td style={{ padding: '8px 12px', borderBottom: '1px solid var(--border-secondary)', color: 'var(--text-secondary)' }} {...props} />,
+                                        tr: ({node, ...props}) => <tr style={{ borderBottom: '1px solid var(--border-secondary)' }} {...props} />,
+                                        hr: ({node, ...props}) => <hr style={{ border: 'none', borderTop: '1px solid var(--border-secondary)', margin: '16px 0' }} {...props} />,
+                                        code: ({node, inline, ...props}) => inline
+                                            ? <code style={{ background: 'var(--bg-tertiary)', padding: '2px 6px', borderRadius: '4px', fontSize: '12px', fontFamily: 'var(--font-mono)' }} {...props} />
+                                            : <pre style={{ background: 'var(--bg-tertiary)', padding: '12px', borderRadius: '8px', overflowX: 'auto', fontSize: '12px', fontFamily: 'var(--font-mono)', marginBottom: '12px' }}><code {...props} /></pre>,
                                     }}
                                 >
                                     {viewingSummary}
