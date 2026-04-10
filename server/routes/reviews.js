@@ -1,11 +1,13 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../db.js';
+import { requireRole } from '../middleware/auth.js';
+import { logAudit, ACTIONS } from '../lib/audit.js';
 
 const router = express.Router();
 
-// Set/update review for a document
-router.put('/documents/:docId/review', (req, res) => {
+// Set/update review for a document — reviewer+ only
+router.put('/documents/:docId/review', requireRole('admin', 'reviewer'), (req, res) => {
     try {
         const { status, notes } = req.body;
         if (!status) return res.status(400).json({ error: 'Review status is required' });
@@ -17,9 +19,18 @@ router.put('/documents/:docId/review', (req, res) => {
 
         const id = uuidv4();
         db.prepare(`
-      INSERT INTO document_reviews (id, document_id, status, notes)
-      VALUES (?, ?, ?, ?)
-    `).run(id, req.params.docId, status, notes || null);
+      INSERT INTO document_reviews (id, document_id, status, notes, reviewer_id)
+      VALUES (?, ?, ?, ?, ?)
+    `).run(id, req.params.docId, status, notes || null, req.user.id);
+
+        logAudit(db, {
+            userId: req.user.id,
+            action: ACTIONS.REVIEW_UPDATE,
+            resourceType: 'document',
+            resourceId: req.params.docId,
+            details: { status },
+            ipAddress: req.ip,
+        });
 
         const review = db.prepare('SELECT * FROM document_reviews WHERE id = ?').get(id);
         res.json(review);
@@ -44,13 +55,24 @@ router.get('/documents/:docId/review', (req, res) => {
     }
 });
 
-// Get stats for dashboard
+// Get stats for dashboard — scoped to user's investigations
 router.get('/stats', (req, res) => {
     try {
-        const { investigation_id } = req.query;
-        const invFilter = investigation_id ? ' AND investigation_id = ?' : '';
+        let { investigation_id } = req.query;
+
+        // For non-admin without specific investigation, scope to accessible investigations
+        let invFilter, invParams;
+        if (investigation_id) {
+            invFilter = ' AND investigation_id = ?';
+            invParams = [investigation_id];
+        } else if (req.user.role !== 'admin') {
+            invFilter = ' AND investigation_id IN (SELECT investigation_id FROM investigation_members WHERE user_id = ?)';
+            invParams = [req.user.id];
+        } else {
+            invFilter = '';
+            invParams = [];
+        }
         const invFilterWhere = investigation_id ? ' WHERE investigation_id = ?' : '';
-        const invParams = investigation_id ? [investigation_id] : [];
 
         const totalDocs = db.prepare(`SELECT COUNT(*) as count FROM documents WHERE 1=1${invFilter}`).get(...invParams).count;
         const readyDocs = db.prepare(`SELECT COUNT(*) as count FROM documents WHERE status = 'ready'${invFilter}`).get(...invParams).count;

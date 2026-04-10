@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from 'react';
 import { formatSize } from '../utils/format';
+import { apiFetch } from '../utils/api';
 
 function ImageExtraction({ addToast }) {
     // Scan state
@@ -28,7 +29,7 @@ function ImageExtraction({ addToast }) {
     const pollJob = (jobId, onUpdate, onComplete) => {
         const poll = async () => {
             try {
-                const res = await fetch(`/api/images/jobs/${jobId}`);
+                const res = await apiFetch(`/api/images/jobs/${jobId}`);
                 if (!res.ok) return;
                 const job = await res.json();
                 onUpdate(job);
@@ -68,7 +69,7 @@ function ImageExtraction({ addToast }) {
         setExtractJobId(null);
 
         try {
-            const res = await fetch('/api/images/scan', {
+            const res = await apiFetch('/api/images/scan', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ imagePath: imagePath.trim(), searchPattern: searchPattern.trim() }),
@@ -146,7 +147,7 @@ function ImageExtraction({ addToast }) {
         const filesToExtract = [...selectedFiles].map(idx => foundFiles[idx]);
 
         try {
-            const res = await fetch('/api/images/extract', {
+            const res = await apiFetch('/api/images/extract', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

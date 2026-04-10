@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
+import { apiFetch } from '../utils/api';
 
 function SummarizationJobs({ activeInvestigationId, addToast }) {
     const navigate = useNavigate();
@@ -20,7 +21,7 @@ function SummarizationJobs({ activeInvestigationId, addToast }) {
     const loadJobs = useCallback(async () => {
         try {
             const params = activeInvestigationId ? `?investigation_id=${activeInvestigationId}` : '';
-            const res = await fetch(`/api/summarize/jobs${params}`);
+            const res = await apiFetch(`/api/summarize/jobs${params}`);
             const data = await res.json();
             setJobs(data.jobs || []);
         } catch (err) {
@@ -46,7 +47,7 @@ function SummarizationJobs({ activeInvestigationId, addToast }) {
         setSelectedJob(job);
         setResultsLoading(true);
         try {
-            const res = await fetch(`/api/summarize/jobs/${job.id}/results?page=${page}&limit=50`);
+            const res = await apiFetch(`/api/summarize/jobs/${job.id}/results?page=${page}&limit=50`);
             const data = await res.json();
             setResults(data.results || []);
             setResultsPagination(data.pagination);
@@ -60,7 +61,7 @@ function SummarizationJobs({ activeInvestigationId, addToast }) {
     const deleteJob = async (jobId, e) => {
         e.stopPropagation();
         try {
-            await fetch(`/api/summarize/jobs/${jobId}`, {
+            await apiFetch(`/api/summarize/jobs/${jobId}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ status: 'failed' }),

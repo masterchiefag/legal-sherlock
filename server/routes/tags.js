@@ -1,6 +1,8 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../db.js';
+import { requireRole } from '../middleware/auth.js';
+import { logAudit, ACTIONS } from '../lib/audit.js';
 
 const router = express.Router();
 
@@ -21,8 +23,8 @@ router.get('/', (req, res) => {
     }
 });
 
-// Create a tag
-router.post('/', (req, res) => {
+// Create a tag — reviewer+
+router.post('/', requireRole('admin', 'reviewer'), (req, res) => {
     try {
         const { name, color = '#3b82f6' } = req.body;
         if (!name) return res.status(400).json({ error: 'Tag name is required' });
@@ -41,8 +43,8 @@ router.post('/', (req, res) => {
     }
 });
 
-// Update a tag
-router.put('/:id', (req, res) => {
+// Update a tag — reviewer+
+router.put('/:id', requireRole('admin', 'reviewer'), (req, res) => {
     try {
         const { name, color } = req.body;
         const updates = [];
@@ -65,8 +67,8 @@ router.put('/:id', (req, res) => {
     }
 });
 
-// Delete a tag
-router.delete('/:id', (req, res) => {
+// Delete a tag — admin only
+router.delete('/:id', requireRole('admin'), (req, res) => {
     try {
         const result = db.prepare('DELETE FROM tags WHERE id = ?').run(req.params.id);
         if (result.changes === 0) return res.status(404).json({ error: 'Tag not found' });
@@ -77,8 +79,8 @@ router.delete('/:id', (req, res) => {
     }
 });
 
-// Assign tag to document
-router.post('/documents/:docId/tags', (req, res) => {
+// Assign tag to document — reviewer+
+router.post('/documents/:docId/tags', requireRole('admin', 'reviewer'), (req, res) => {
     try {
         const { tag_id } = req.body;
         if (!tag_id) return res.status(400).json({ error: 'tag_id is required' });
@@ -91,8 +93,8 @@ router.post('/documents/:docId/tags', (req, res) => {
     }
 });
 
-// Remove tag from document
-router.delete('/documents/:docId/tags/:tagId', (req, res) => {
+// Remove tag from document — reviewer+
+router.delete('/documents/:docId/tags/:tagId', requireRole('admin', 'reviewer'), (req, res) => {
     try {
         db.prepare('DELETE FROM document_tags WHERE document_id = ? AND tag_id = ?').run(req.params.docId, req.params.tagId);
         res.json({ removed: true });

@@ -5,6 +5,9 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 
 import db from './db.js';
+import { authenticate, requireAuth } from './middleware/auth.js';
+import authRouter from './routes/auth.js';
+import usersRouter from './routes/users.js';
 import documentsRouter from './routes/documents.js';
 import searchRouter from './routes/search.js';
 import tagsRouter from './routes/tags.js';
@@ -14,6 +17,7 @@ import investigationsRouter from './routes/investigations.js';
 import playgroundRouter from './routes/playground.js';
 import imagesRouter from './routes/images.js';
 import summarizeRouter from './routes/summarize.js';
+import auditLogsRouter from './routes/audit-logs.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
@@ -46,7 +50,19 @@ app.use((req, res, next) => {
 // Serve uploaded files
 app.use('/uploads', express.static(UPLOADS_DIR));
 
+// Populate req.user from JWT on all requests (permissive — does not block)
+app.use(authenticate);
+
+// Global auth enforcement — public paths bypass, everything else requires auth
+app.use('/api', (req, res, next) => {
+    const publicPaths = ['/auth/login', '/auth/register', '/auth/setup-status', '/health'];
+    if (publicPaths.some(p => req.path === p)) return next();
+    return requireAuth(req, res, next);
+});
+
 // API Routes
+app.use('/api/auth', authRouter);
+app.use('/api/users', usersRouter);
 app.use('/api/documents', documentsRouter);
 app.use('/api/search', searchRouter);
 app.use('/api/tags', tagsRouter);
@@ -56,6 +72,7 @@ app.use('/api/investigations', investigationsRouter);
 app.use('/api/playground', playgroundRouter);
 app.use('/api/images', imagesRouter);
 app.use('/api/summarize', summarizeRouter);
+app.use('/api/audit-logs', auditLogsRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { getScoreColor } from '../utils/format';
+import { apiFetch } from '../utils/api';
 
 function ClassificationLogs({ activeInvestigationId }) {
     const [activeTab, setActiveTab] = useState('logs');
@@ -29,7 +30,7 @@ function ClassificationLogs({ activeInvestigationId }) {
             return;
         }
         try {
-            const res = await fetch(`/api/classify/logs?page=${page}&limit=20&investigation_id=${activeInvestigationId}`);
+            const res = await apiFetch(`/api/classify/logs?page=${page}&limit=20&investigation_id=${activeInvestigationId}`);
             const data = await res.json();
             setLogs(data.logs || []);
             setPagination(data.pagination);
@@ -42,7 +43,7 @@ function ClassificationLogs({ activeInvestigationId }) {
 
     const loadPrompts = async () => {
         try {
-            const res = await fetch('/api/classify/compare/prompts');
+            const res = await apiFetch('/api/classify/compare/prompts');
             const data = await res.json();
             setPrompts(data.prompts || []);
             if (data.prompts?.length > 0 && !selectedPrompt) {
@@ -58,7 +59,7 @@ function ClassificationLogs({ activeInvestigationId }) {
         if (!prompt) return;
         setCompLoading(true);
         try {
-            const res = await fetch(`/api/classify/compare?prompt=${encodeURIComponent(prompt)}`);
+            const res = await apiFetch(`/api/classify/compare?prompt=${encodeURIComponent(prompt)}`);
             const data = await res.json();
             setComparison(data);
         } catch (err) {

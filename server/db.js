@@ -331,6 +331,72 @@ db.exec(`
 `);
 
 // ═══════════════════════════════════════════════════
+// Auth & access control tables
+// ═══════════════════════════════════════════════════
+db.exec(`
+  CREATE TABLE IF NOT EXISTS users (
+    id TEXT PRIMARY KEY,
+    email TEXT NOT NULL UNIQUE,
+    password_hash TEXT NOT NULL,
+    name TEXT NOT NULL,
+    role TEXT NOT NULL DEFAULT 'viewer' CHECK(role IN ('admin', 'reviewer', 'viewer')),
+    is_active INTEGER DEFAULT 1,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now'))
+  );
+
+  CREATE TABLE IF NOT EXISTS investigation_members (
+    id TEXT PRIMARY KEY,
+    investigation_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    role_override TEXT CHECK(role_override IN ('admin', 'reviewer', 'viewer')),
+    added_by TEXT,
+    added_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(investigation_id, user_id),
+    FOREIGN KEY (investigation_id) REFERENCES investigations(id) ON DELETE CASCADE,
+    FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+    FOREIGN KEY (added_by) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS audit_logs (
+    id TEXT PRIMARY KEY,
+    user_id TEXT,
+    action TEXT NOT NULL,
+    resource_type TEXT,
+    resource_id TEXT,
+    details TEXT,
+    ip_address TEXT,
+    created_at TEXT DEFAULT (datetime('now')),
+    FOREIGN KEY (user_id) REFERENCES users(id)
+  );
+`);
+
+db.exec(`CREATE INDEX IF NOT EXISTS idx_users_email ON users(email)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_investigation_members_user ON investigation_members(user_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_investigation_members_inv ON investigation_members(investigation_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_audit_logs_user ON audit_logs(user_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_audit_logs_action ON audit_logs(action)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_audit_logs_created ON audit_logs(created_at DESC)`);
+
+// Migration: Add user attribution columns to existing tables
+if (!columnExists('documents', 'uploaded_by')) {
+  db.exec(`ALTER TABLE documents ADD COLUMN uploaded_by TEXT`);
+  console.log(`✦ Migration: added column documents.uploaded_by`);
+}
+if (!columnExists('document_reviews', 'reviewer_id')) {
+  db.exec(`ALTER TABLE document_reviews ADD COLUMN reviewer_id TEXT`);
+  console.log(`✦ Migration: added column document_reviews.reviewer_id`);
+}
+if (!columnExists('classifications', 'requested_by')) {
+  db.exec(`ALTER TABLE classifications ADD COLUMN requested_by TEXT`);
+  console.log(`✦ Migration: added column classifications.requested_by`);
+}
+if (!columnExists('import_jobs', 'started_by')) {
+  db.exec(`ALTER TABLE import_jobs ADD COLUMN started_by TEXT`);
+  console.log(`✦ Migration: added column import_jobs.started_by`);
+}
+
+// ═══════════════════════════════════════════════════
 // Rebuild FTS to include email fields
 // ═══════════════════════════════════════════════════
 

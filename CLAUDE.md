@@ -23,6 +23,7 @@ No test framework or linter is configured.
 - **Forensic extraction**: The Sleuth Kit (mmls, fls, icat for E01 images), unzip (UFDR/ZIP archives)
 - **File uploads**: Multer (5GB limit), ZIP archive ingestion via zip-worker
 - **AI classification/summarization**: Pluggable LLM providers (Ollama, OpenAI, Anthropic)
+- **Auth**: bcryptjs (password hashing), jsonwebtoken (JWT sessions)
 - **Package manager**: npm
 
 ## Project Structure
@@ -39,27 +40,40 @@ src/                    # React frontend
     Playground.jsx      # Interactive LLM testing interface
     ImageExtraction.jsx # E01/UFDR scanning and file extraction
     SummarizationJobs.jsx # Batch summarization jobs + results with markdown modal
+    Login.jsx           # Login / first-user registration page
+    UserManagement.jsx  # Admin: user CRUD, role management
+    AuditLog.jsx        # Admin: paginated audit trail viewer
+  contexts/             # React context providers
+    AuthContext.jsx     # Auth state, login/logout/register, token validation
   utils/                # Shared utilities
+    api.js              # Auth-aware fetch wrapper (apiFetch, apiPost, etc.)
     format.js           # formatSize, getScoreColor, getScoreLabel
     sanitize.js         # escapeHtml, highlightText (XSS-safe)
-  App.jsx               # Root layout with sidebar + routing + investigation context
-  main.jsx              # Entry point
+  App.jsx               # Root layout with sidebar + routing + auth gate
+  main.jsx              # Entry point (wraps with AuthProvider)
   index.css             # Global styles with CSS variables
 
 server/                 # Express backend
-  index.js              # Server setup, middleware, graceful shutdown
+  index.js              # Server setup, middleware, auth enforcement, graceful shutdown
   db.js                 # SQLite schema, migrations, indexes, and connection
+  middleware/           # Express middleware
+    auth.js             # authenticate, requireAuth, requireRole, requireInvestigationAccess
   routes/               # API route handlers
+    auth.js             # Login, register, me, setup-status, change-password
+    users.js            # Admin: user CRUD (list, create, update, deactivate)
+    audit-logs.js       # Admin: paginated audit log query
     documents.js        # Upload, list, delete, PST import jobs, doc identifier generation
     search.js           # FTS5 full-text search with filters + NL2SQL + doc ID search
     summarize.js        # Batch summarization jobs + per-document summarization
-    images.js           # E01/UFDR scan + extract jobs
+    images.js           # E01/UFDR scan + extract jobs (admin only)
     tags.js             # Tag CRUD
     reviews.js          # Document review status + dashboard stats
     classify.js         # AI classification + batch ops + logs + model comparison
-    investigations.js   # Investigation/case CRUD with aggregated stats
+    investigations.js   # Investigation/case CRUD + member management
     playground.js       # Freeform LLM queries with model/temperature selection
   lib/                  # Utilities
+    auth.js             # Password hashing (bcrypt) + JWT token generation/verification
+    audit.js            # Audit logging function + action constants
     extract.js          # Text extraction (PDF, DOCX, XLS/XLSX, DOC, TXT, CSV, MD)
     extract-worker.js   # Subprocess-based extraction with timeout/SIGKILL
     config.js           # Shared configuration constants
@@ -104,7 +118,10 @@ Key tables:
 - `investigations` — Case management (name, description, status, allegation, key_parties, date_range)
 - `classifications` — AI scores with model, elapsed time, reasoning, investigation_prompt
 - `tags`, `document_tags` — Tagging system
-- `document_reviews` — Review status tracking (pending/relevant/not_relevant/privileged)
+- `document_reviews` — Review status tracking (pending/relevant/not_relevant/privileged), reviewer_id
+- `users` — User accounts (email, password_hash, name, role: admin/reviewer/viewer, is_active)
+- `investigation_members` — Explicit user-to-investigation access (user_id, investigation_id, role_override)
+- `audit_logs` — Full audit trail (user_id, action, resource_type, resource_id, details JSON, ip_address)
 - `import_jobs` — PST import job tracking with phase and investigation_id
 - `image_jobs` — E01/UFDR scan and extraction job tracking (type, status, progress, result_data as JSON)
 - `summarization_jobs` — Batch summarization job tracking (prompt, model, progress)
@@ -125,10 +142,15 @@ Notable document columns: `doc_type` (file/email/attachment/chat), `parent_id` (
 | `OPENAI_MODEL` | `gpt-4o-mini` | OpenAI model |
 | `ANTHROPIC_API_KEY` | — | Anthropic API key |
 | `CORS_ORIGIN` | `true` (all origins) | Restrict CORS in production |
+| `JWT_SECRET` | auto-generated | **Required in production**. Secret for JWT signing |
+| `BCRYPT_ROUNDS` | `12` | bcrypt cost factor for password hashing |
 
 ## Key Patterns
 
-- **Investigations**: Multi-case support; all documents, imports, and searches scoped to active investigation via `investigation_id`; default "General Investigation" for backward compatibility; investigation selector in sidebar
+- **Authentication**: Local email/password auth via bcryptjs + JWT (24h expiry). First registered user auto-becomes admin. `authenticate` middleware populates `req.user` globally; `requireAuth` enforces on all `/api/*` except `/api/auth/login`, `/api/auth/register`, `/api/auth/setup-status`, `/api/health`. Frontend stores JWT in localStorage, `apiFetch()` wrapper auto-attaches `Authorization: Bearer` header, global 401 triggers logout.
+- **Authorization**: 3 roles — Admin (full access + user management), Reviewer (CRUD within assigned investigations), Viewer (read-only on assigned investigations). `requireRole(...roles)` middleware gates routes. `requireInvestigationAccess` checks `investigation_members` table (admins bypass). Investigation list auto-filtered by membership for non-admins. Search auto-scoped to user's investigations.
+- **Audit logging**: All significant actions logged to `audit_logs` table via `logAudit()` from `server/lib/audit.js`. Action constants in `ACTIONS` object (auth.login, document.upload, review.update, etc.). Admin-only `/api/audit-logs` endpoint with pagination and action prefix filtering.
+- **Investigations**: Multi-case support; all documents, imports, and searches scoped to active investigation via `investigation_id`; default "General Investigation" for backward compatibility; investigation selector in sidebar; explicit membership via `investigation_members` table; member management endpoints `GET/POST/DELETE /:id/members` (admin only)
 - **PST import**: Two-phase ingestion via native `readpst -e -D` CLI — Phase 1 parses emails + writes attachments, Phase 2 extracts text via subprocess with timeout; job tracking in `import_jobs` table, polled from frontend every 3s; stuck jobs marked as failed on server restart (no auto-resume)
 - **Worker thread DB**: Workers open their own `better-sqlite3` connection with `timeout: 15000` and `busy_timeout = 10000`; do NOT set `journal_mode = WAL` in workers (already set by main process, setting it again deadlocks)
 - **Email threading**: Resolves `thread_id` via `In-Reply-To`/`References` headers with exact message-ID matching; backfill unifies orphan threads on late-arriving emails

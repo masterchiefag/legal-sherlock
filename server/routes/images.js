@@ -7,11 +7,15 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import db from '../db.js';
+import { requireRole } from '../middleware/auth.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const execFileAsync = promisify(execFile);
 
 const router = express.Router();
+
+// All image extraction routes require admin
+router.use(requireRole('admin'));
 
 const VALID_EXTENSIONS = ['.e01', '.e01x', '.ex01', '.zip', '.ufdr'];
 
