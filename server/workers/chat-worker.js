@@ -128,7 +128,24 @@ async function main() {
             console.log(`✦ Chat Import: ZWAGROUPMEMBER not available (${e.message})`);
         }
 
-        // Source 2: Session partner names (covers 1:1 chats)
+        // Source 2: Push names (user-set display names, often the best source)
+        try {
+            const pushNames = chatDb.prepare(`
+                SELECT ZJID as jid, ZPUSHNAME as name
+                FROM ZWAPROFILEPUSHNAME
+                WHERE ZJID IS NOT NULL AND ZPUSHNAME IS NOT NULL AND ZPUSHNAME != ''
+            `).all();
+            for (const pn of pushNames) {
+                if (!jidNameMap.has(pn.jid)) {
+                    jidNameMap.set(pn.jid, pn.name);
+                }
+            }
+            console.log(`✦ Chat Import: loaded ${pushNames.length} push names`);
+        } catch (e) {
+            console.log(`✦ Chat Import: ZWAPROFILEPUSHNAME not available (${e.message})`);
+        }
+
+        // Source 3: Session partner names (covers 1:1 chats)
         try {
             const partners = chatDb.prepare(`
                 SELECT ZCONTACTJID as jid, ZPARTNERNAME as name
@@ -197,23 +214,54 @@ async function main() {
         }
 
         // ── Query all messages ──
+        // Join ZGROUPMEMBER to resolve sender when ZFROMJID is NULL (common in group messages)
 
-        const stmt = chatDb.prepare(`
-            SELECT
-                s.Z_PK as session_id,
-                COALESCE(s.ZPARTNERNAME, s.ZCONTACTJID, 'Unknown Chat') as session_name,
-                m.ZTEXT as text,
-                m.ZMESSAGEDATE as date_ts,
-                m.ZISFROMME as is_from_me,
-                m.ZFROMJID as from_jid
-            FROM ZWACHATSESSION s
-            JOIN ZWAMESSAGE m ON m.ZCHATSESSION = s.Z_PK
-            WHERE m.ZTEXT IS NOT NULL AND m.ZTEXT != ''
-            ORDER BY s.Z_PK, m.ZMESSAGEDATE ASC
-        `);
-
+        let messages;
         console.log(`✦ Chat Import: querying messages...`);
-        const messages = stmt.all();
+        try {
+            const stmt = chatDb.prepare(`
+                SELECT
+                    s.Z_PK as session_id,
+                    COALESCE(s.ZPARTNERNAME, s.ZCONTACTJID, 'Unknown Chat') as session_name,
+                    s.ZCONTACTJID as session_jid,
+                    m.ZTEXT as text,
+                    m.ZMESSAGEDATE as date_ts,
+                    m.ZISFROMME as is_from_me,
+                    m.ZFROMJID as from_jid,
+                    m.ZMESSAGETYPE as msg_type,
+                    m.ZFLAGS as flags,
+                    gm.ZMEMBERJID as member_jid,
+                    gm.ZCONTACTNAME as member_name
+                FROM ZWACHATSESSION s
+                JOIN ZWAMESSAGE m ON m.ZCHATSESSION = s.Z_PK
+                LEFT JOIN ZWAGROUPMEMBER gm ON m.ZGROUPMEMBER = gm.Z_PK
+                WHERE (m.ZTEXT IS NOT NULL AND m.ZTEXT != '') OR m.ZMESSAGETYPE = 14
+                ORDER BY s.Z_PK, m.ZMESSAGEDATE ASC
+            `);
+            messages = stmt.all();
+        } catch (e) {
+            // Fallback if ZGROUPMEMBER column doesn't exist on ZWAMESSAGE
+            console.log(`✦ Chat Import: ZGROUPMEMBER join failed (${e.message}), falling back`);
+            const stmt = chatDb.prepare(`
+                SELECT
+                    s.Z_PK as session_id,
+                    COALESCE(s.ZPARTNERNAME, s.ZCONTACTJID, 'Unknown Chat') as session_name,
+                    s.ZCONTACTJID as session_jid,
+                    m.ZTEXT as text,
+                    m.ZMESSAGEDATE as date_ts,
+                    m.ZISFROMME as is_from_me,
+                    m.ZFROMJID as from_jid,
+                    m.ZMESSAGETYPE as msg_type,
+                    m.ZFLAGS as flags,
+                    NULL as member_jid,
+                    NULL as member_name
+                FROM ZWACHATSESSION s
+                JOIN ZWAMESSAGE m ON m.ZCHATSESSION = s.Z_PK
+                WHERE (m.ZTEXT IS NOT NULL AND m.ZTEXT != '') OR m.ZMESSAGETYPE = 14
+                ORDER BY s.Z_PK, m.ZMESSAGEDATE ASC
+            `);
+            messages = stmt.all();
+        }
         console.log(`✦ Chat Import: found ${messages.length} text messages`);
 
         let currentSessionId = null;
@@ -281,7 +329,12 @@ async function main() {
             if (!msgDate) continue;
 
             const dayString = msgDate.toISOString().split('T')[0]; // YYYY-MM-DD
-            const timeString = msgDate.toISOString().split('T')[1].substring(0, 5); // HH:MM
+            // Format time as 12-hour with AM/PM and UTC indicator
+            const hours = msgDate.getUTCHours();
+            const minutes = msgDate.getUTCMinutes();
+            const ampm = hours >= 12 ? 'PM' : 'AM';
+            const hour12 = hours % 12 || 12;
+            const timeString = `${hour12}:${String(minutes).padStart(2, '0')} ${ampm} UTC`;
 
             // If session changed, flush and reset participants
             if (currentSessionId !== null && currentSessionId !== msg.session_id) {
@@ -301,16 +354,39 @@ async function main() {
 
             // Resolve sender identity
             let sender;
+            const meta = sessionMeta.get(msg.session_id);
+            const isGroup = meta?.isGroup || false;
+
             if (msg.is_from_me) {
                 sender = custodianLabel;
-            } else {
-                sender = resolveJid(msg.from_jid) || currentSessionName;
+            } else if (msg.member_jid) {
+                // ZGROUPMEMBER FK resolved — most reliable for group chats
+                const phone = extractPhone(msg.member_jid);
+                const name = msg.member_name || jidNameMap.get(msg.member_jid);
+                sender = formatParticipant(name, phone);
+            } else if (msg.from_jid && !msg.from_jid.endsWith('@g.us')) {
+                // Individual JID (1:1 chats have sender JID here; skip group JIDs)
+                sender = resolveJid(msg.from_jid);
+            } else if (!isGroup && meta?.jid) {
+                // 1:1 chat with no from_jid: sender is the chat partner
+                sender = resolveJid(meta.jid);
             }
+            if (!sender) sender = currentSessionName;
 
             currentSenders.add(sender);
             currentParticipants.add(sender);
 
-            currentDayTranscript.push(`[${timeString}] ${sender}: ${msg.text}`);
+            // Build transcript line with deleted/forwarded annotations
+            let displayText;
+            if (msg.msg_type === 14) {
+                displayText = '[This message was deleted]';
+            } else if (msg.flags && (msg.flags & 256) !== 0) {
+                displayText = `[Forwarded] ${msg.text}`;
+            } else {
+                displayText = msg.text;
+            }
+
+            currentDayTranscript.push(`[${timeString}] ${sender}: ${displayText}`);
 
             // Periodically update progress
             if (i % 10000 === 0) {

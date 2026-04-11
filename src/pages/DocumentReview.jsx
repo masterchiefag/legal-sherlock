@@ -301,7 +301,7 @@ function DocumentReview({ addToast }) {
                         <div className="flex gap-8">
                             <span style={{ color: 'var(--text-tertiary)', minWidth: '40px' }}>Date</span>
                             <span style={{ color: 'var(--text-secondary)' }}>
-                                {doc.email_date ? new Date(doc.email_date).toLocaleString() : '—'}
+                                {doc.email_date ? new Date(doc.email_date).toLocaleString('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'medium', hour12: true }) + ' UTC' : '—'}
                             </span>
                         </div>
                     </div>
@@ -338,7 +338,7 @@ function DocumentReview({ addToast }) {
                         <div className="flex gap-8">
                             <span style={{ color: 'var(--text-tertiary)', minWidth: '80px' }}>Date</span>
                             <span style={{ color: 'var(--text-secondary)' }}>
-                                {doc.email_date ? new Date(doc.email_date).toLocaleString() : '—'}
+                                {doc.email_date ? new Date(doc.email_date).toLocaleString('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'medium', hour12: true }) + ' UTC' : '—'}
                             </span>
                         </div>
                     </div>
@@ -487,7 +487,7 @@ function DocumentReview({ addToast }) {
                                     {doc.email_from && <p style={{ margin: '0 0 8px' }}><strong>From:</strong> {doc.email_from}</p>}
                                     {doc.email_to && <p style={{ margin: '0 0 8px' }}><strong>To:</strong> {doc.email_to}</p>}
                                     {doc.email_cc && <p style={{ margin: '0 0 8px' }}><strong>Cc:</strong> {doc.email_cc}</p>}
-                                    {doc.email_date && <p style={{ margin: '0' }}><strong>Date:</strong> {new Date(doc.email_date).toLocaleString()}</p>}
+                                    {doc.email_date && <p style={{ margin: '0' }}><strong>Date:</strong> {new Date(doc.email_date).toLocaleString('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'medium', hour12: true }) + ' UTC'}</p>}
                                 </div>
                             </div>
                         );
@@ -927,7 +927,7 @@ function DocumentReview({ addToast }) {
                                                     {t.email_subject || t.original_name}
                                                 </div>
                                                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                                    {t.email_from?.split('<')[0].trim()} • {t.email_date ? new Date(t.email_date).toLocaleString() : ''}
+                                                    {t.email_from?.split('<')[0].trim()} • {t.email_date ? new Date(t.email_date).toLocaleString('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'medium', hour12: true }) + ' UTC' : ''}
                                                 </div>
                                             </Link>
                                         </div>
