@@ -204,6 +204,9 @@ async function processEmlFile(file, investigation_id, custodian) {
 // PST processing pipeline (Now delegated to Worker)
 // ═══════════════════════════════════════════════════
 import { Worker } from 'worker_threads';
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+const execFileAsync = promisify(execFile);
 
 function spawnPstWorker(jobId, filename, filepath, originalname, investigation_id, custodian, extractionOnly = false) {
     const workerPath = path.join(__dirname, '..', 'workers', 'pst-worker.js');
@@ -230,10 +233,10 @@ function spawnPstWorker(jobId, filename, filepath, originalname, investigation_i
 // ═══════════════════════════════════════════════════
 // Chat/SQLite processing pipeline (Delegated to Worker)
 // ═══════════════════════════════════════════════════
-function spawnChatWorker(jobId, filename, filepath, originalname, investigation_id, custodian) {
+function spawnChatWorker(jobId, filename, filepath, originalname, investigation_id, custodian, zipPath = null, sqliteEntry = null) {
     const workerPath = path.join(__dirname, '..', 'workers', 'chat-worker.js');
     const worker = new Worker(workerPath, {
-        workerData: { jobId, filename, filepath, originalname, investigation_id, custodian }
+        workerData: { jobId, filename, filepath, originalname, investigation_id, custodian, zipPath, sqliteEntry }
     });
 
     worker.on('error', (err) => {
@@ -405,13 +408,43 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
                     jobId: jobId
                 });
             } else if (ext === '.zip') {
-                // Background job for ZIP archives
+                // Check if ZIP contains a WhatsApp ChatStorage.sqlite
+                let sqliteEntry = null;
+                try {
+                    const { stdout } = await execFileAsync('unzip', ['-l', file.path], {
+                        timeout: 30000,
+                        maxBuffer: 10 * 1024 * 1024,
+                    });
+                    const lines = stdout.split('\n');
+                    for (const line of lines) {
+                        const match = line.match(/\s(\S*ChatStorage\.sqlite)\s*$/i);
+                        if (match) {
+                            sqliteEntry = match[1];
+                            break;
+                        }
+                    }
+                } catch (e) {
+                    console.log(`⚠ Could not peek inside ZIP: ${e.message}`);
+                }
+
                 const jobId = uuidv4();
 
                 db.prepare(`
                     INSERT INTO import_jobs (id, filename, filepath, status, investigation_id, custodian)
                     VALUES (?, ?, ?, 'pending', ?, ?)
                 `).run(jobId, file.originalname, file.path, investigation_id, custodian || null);
+
+                if (sqliteEntry) {
+                    // WhatsApp chat+media ZIP — route to chat worker
+                    console.log(`✦ Detected WhatsApp ZIP: ${sqliteEntry}`);
+                    spawnChatWorker(jobId, file.filename, file.path, file.originalname, investigation_id, custodian, file.path, sqliteEntry);
+
+                    return res.status(202).json({
+                        message: "WhatsApp chat+media ZIP uploaded. Processing in background.",
+                        jobId: jobId,
+                        filename: file.originalname
+                    });
+                }
 
                 spawnZipWorker(jobId, file.filename, file.path, file.originalname, investigation_id, custodian);
 
