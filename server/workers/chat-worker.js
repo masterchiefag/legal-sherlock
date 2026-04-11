@@ -637,6 +637,137 @@ async function main() {
 
         console.log(`✦ Chat Import: ingested ${totalChatDocs} daily chat transcripts, ${totalAttachments} media attachments.`);
 
+        // ═══════════════════════════════════════════
+        // Phase 2: Extract text from media attachments
+        // ═══════════════════════════════════════════
+        if (totalAttachments > 0) {
+            updateProgress.run(totalChatDocs, 50, 'extracting', jobId);
+
+            const EXTRACT_WORKER = path.join(__dirname, '..', 'lib', 'extract-worker.js');
+            const EXTRACT_TIMEOUT = 15000;
+            const OCR_TIMEOUT = 180000;
+            const NODE_BIN = process.execPath;
+            const PHASE2_CONCURRENCY = 4;
+
+            function extractViaSubprocess(filePath, mimeType, mode = 'text') {
+                const timeout = mode === 'textocr' ? OCR_TIMEOUT : EXTRACT_TIMEOUT;
+                return new Promise((resolve, reject) => {
+                    const child = execFile(NODE_BIN, [EXTRACT_WORKER, filePath, mimeType, mode], {
+                        timeout,
+                        maxBuffer: 50 * 1024 * 1024,
+                        killSignal: 'SIGKILL',
+                    }, (err, stdout, stderr) => {
+                        if (err) {
+                            if (err.killed) return reject(new Error('Extraction timed out (killed)'));
+                            return reject(new Error(stderr || err.message));
+                        }
+                        resolve(stdout);
+                    });
+                });
+            }
+
+            // Skip duplicates — backfill from originals later
+            const pendingDocs = db.prepare(
+                "SELECT id, filename, original_name, mime_type FROM documents WHERE status = 'processing' AND doc_type = 'attachment' AND is_duplicate = 0 AND investigation_id = ?"
+            ).all(investigation_id);
+
+            const dupeCount = db.prepare(
+                "UPDATE documents SET status = 'ready' WHERE status = 'processing' AND doc_type = 'attachment' AND is_duplicate = 1 AND investigation_id = ?"
+            ).run(investigation_id);
+            if (dupeCount.changes > 0) {
+                console.log(`✦ Phase 2: skipped ${dupeCount.changes} duplicate attachments`);
+            }
+
+            const updateDocText = db.prepare(
+                "UPDATE documents SET text_content = ?, text_content_size = ?, status = 'ready', ocr_applied = ?, ocr_time_ms = ? WHERE id = ?"
+            );
+            const updateDocMeta = db.prepare(
+                "UPDATE documents SET doc_author = ?, doc_title = ?, doc_created_at = ?, doc_modified_at = ?, doc_creator_tool = ?, doc_keywords = ? WHERE id = ?"
+            );
+
+            console.log(`✦ Phase 2: extracting text from ${pendingDocs.length} attachments (concurrency=${PHASE2_CONCURRENCY})...`);
+            let extracted = 0;
+            let ocrCount = 0, ocrSuccess = 0;
+
+            // Simple concurrency limiter
+            const queue = [...pendingDocs];
+            async function processNext() {
+                while (queue.length > 0) {
+                    const doc = queue.shift();
+                    const filePath = path.join(UPLOADS_DIR, doc.filename);
+                    const isPdf = path.extname(doc.filename).toLowerCase() === '.pdf';
+                    let text = '';
+                    let ocrApplied = 0;
+                    let docOcrTimeMs = null;
+
+                    try {
+                        if (isPdf) {
+                            const raw = await extractViaSubprocess(filePath, doc.mime_type, 'textocr');
+                            try {
+                                const jsonStart = raw.indexOf('{"text":');
+                                const jsonStr = jsonStart >= 0 ? raw.substring(jsonStart) : raw;
+                                const result = JSON.parse(jsonStr);
+                                text = result.text || '';
+                                if (result.ocr && result.ocr.attempted) {
+                                    ocrCount++;
+                                    docOcrTimeMs = result.ocr.timeMs || null;
+                                    if (result.ocr.succeeded) {
+                                        ocrSuccess++;
+                                        ocrApplied = 1;
+                                    }
+                                }
+                            } catch (_) {
+                                text = raw || '';
+                            }
+                        } else {
+                            text = await extractViaSubprocess(filePath, doc.mime_type, 'text');
+                        }
+                    } catch (e) {
+                        text = `[Could not extract text: ${e.message}]`;
+                        console.warn(`✦ Phase 2 FAILED: ${doc.original_name || doc.filename} — ${e.message}`);
+                    }
+
+                    updateDocText.run(text, text ? text.length : 0, ocrApplied, docOcrTimeMs, doc.id);
+
+                    // Extract metadata (best effort)
+                    try {
+                        const metaJson = await extractViaSubprocess(filePath, doc.mime_type, 'meta');
+                        if (metaJson) {
+                            const meta = JSON.parse(metaJson);
+                            updateDocMeta.run(meta.author, meta.title, meta.createdAt, meta.modifiedAt, meta.creatorTool, meta.keywords, doc.id);
+                        }
+                    } catch (_) { /* best effort */ }
+
+                    extracted++;
+                    if (extracted % 20 === 0 || extracted === pendingDocs.length) {
+                        const pct = Math.round((extracted / pendingDocs.length) * 100);
+                        console.log(`✦ Phase 2: ${extracted}/${pendingDocs.length} (${pct}%)`);
+                        updateProgress.run(totalChatDocs, pct, 'extracting', jobId);
+                    }
+                }
+            }
+
+            // Run concurrent workers
+            const workers = [];
+            for (let w = 0; w < Math.min(PHASE2_CONCURRENCY, pendingDocs.length); w++) {
+                workers.push(processNext());
+            }
+            await Promise.all(workers);
+
+            // Backfill text from originals into duplicates
+            if (dupeCount.changes > 0) {
+                db.prepare(`
+                    UPDATE documents SET
+                        text_content = (SELECT d2.text_content FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 AND d2.text_content IS NOT NULL LIMIT 1),
+                        text_content_size = (SELECT d2.text_content_size FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 AND d2.text_content IS NOT NULL LIMIT 1)
+                    WHERE is_duplicate = 1 AND doc_type = 'attachment' AND investigation_id = ? AND text_content IS NULL
+                `).run(investigation_id);
+            }
+
+            console.log(`✦ Phase 2 complete: extracted text from ${extracted} attachments` +
+                (ocrCount > 0 ? `, OCR: ${ocrSuccess}/${ocrCount} succeeded` : ''));
+        }
+
         db.prepare(`
             UPDATE import_jobs
             SET status = 'completed',
