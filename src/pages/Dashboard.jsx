@@ -122,6 +122,78 @@ function Dashboard({ activeInvestigationId, activeInvestigation, addToast }) {
                 </div>
             </div>
 
+            {/* Attachment Types + OCR */}
+            {((stats.attachment_types && stats.attachment_types.length > 0) || stats.ocr_doc_count > 0) && (
+                <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', marginBottom: '24px' }}>
+                    {/* Attachment File Types */}
+                    {stats.attachment_types && stats.attachment_types.length > 0 && (
+                        <div style={{
+                            padding: '20px 24px',
+                            background: 'var(--bg-secondary)', borderRadius: 'var(--radius-lg)',
+                            border: '1px solid var(--border)'
+                        }}>
+                            <h3 style={{ margin: '0 0 12px', fontSize: '14px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '1px' }}>
+                                Attachment Types
+                            </h3>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                {stats.attachment_types.map(t => (
+                                    <div key={t.ext} style={{
+                                        display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                                        padding: '6px 10px', borderRadius: '6px',
+                                        background: 'var(--bg-tertiary)', border: '1px solid var(--border-secondary)',
+                                        cursor: 'pointer', fontSize: '13px'
+                                    }} onClick={() => navigate(`/search?type=attachment&q=${encodeURIComponent(`original_name:"${t.ext.replace('.', '')}"`)}`)}>
+                                        <span style={{ fontWeight: 500, color: 'var(--text-primary)', fontFamily: 'var(--font-mono, monospace)' }}>
+                                            {t.ext}
+                                        </span>
+                                        <span style={{ color: 'var(--text-muted)', fontSize: '12px' }}>{t.count.toLocaleString()}</span>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* OCR Stats */}
+                    {stats.ocr_doc_count > 0 && (
+                        <div style={{
+                            padding: '20px 24px',
+                            background: 'var(--bg-secondary)', borderRadius: 'var(--radius-lg)',
+                            border: '1px solid var(--border)'
+                        }}>
+                            <h3 style={{ margin: '0 0 12px', fontSize: '14px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '1px' }}>
+                                OCR Processing
+                            </h3>
+                            <div
+                                style={{
+                                    padding: '12px 16px', borderRadius: '8px',
+                                    background: 'var(--bg-tertiary)', border: '1px solid var(--border-secondary)',
+                                    cursor: 'pointer'
+                                }}
+                                onClick={() => navigate(`/search?ocr_applied=1&investigation_id=${activeInvestigationId}`)}
+                            >
+                                <p style={{ margin: '0 0 4px', fontSize: '24px', fontWeight: 700, color: 'var(--text-primary)' }}>
+                                    {stats.ocr_doc_count.toLocaleString()}
+                                </p>
+                                <p style={{ margin: 0, fontSize: '12px', color: 'var(--text-muted)' }}>
+                                    Documents processed with OCR
+                                </p>
+                            </div>
+                            {/* Per-import OCR breakdown */}
+                            {stats.import_jobs.some(j => j.ocr_count > 0) && (
+                                <div style={{ marginTop: '12px', fontSize: '12px', color: 'var(--text-muted)' }}>
+                                    {stats.import_jobs.filter(j => j.ocr_count > 0).map((j, i) => (
+                                        <div key={i} style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 0', borderBottom: '1px solid var(--border-secondary)' }}>
+                                            <span style={{ color: 'var(--text-secondary)' }}>{j.original_name}</span>
+                                            <span>{j.ocr_success}/{j.ocr_count} succeeded · {(j.ocr_time_ms / 1000).toFixed(1)}s</span>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    )}
+                </div>
+            )}
+
             {/* Data Sources + Custodians side by side */}
             <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '24px', marginBottom: '24px' }}>
                 {/* Data Sources */}

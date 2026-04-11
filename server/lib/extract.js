@@ -31,7 +31,9 @@ export async function extractText(filePath, mimeType) {
             // Fall back to OCR: convert pages to images with pdftoppm, then run tesseract.
             if (text.length < 100) {
                 console.log(`[extractText] PDF has only ${text.length} chars of text — attempting OCR fallback for ${filePath}`);
+                const ocrStart = Date.now();
                 const ocrText = await ocrPdf(filePath);
+                const ocrTimeMs = Date.now() - ocrStart;
                 if (ocrText && ocrText.trim().length > text.length) {
                     console.log(`[extractText] OCR recovered ${ocrText.trim().length} chars from ${filePath}`);
                     return ocrText.trim();
@@ -403,6 +405,50 @@ function extractDocOle2Metadata(filePath, meta) {
     }
 
     return meta;
+}
+
+/**
+ * Extract text with OCR tracking info.
+ * Returns: { text, ocr: { attempted, succeeded, timeMs } }
+ */
+export async function extractTextWithOcrInfo(filePath, mimeType) {
+    const ext = path.extname(filePath).toLowerCase();
+    const ocrInfo = { attempted: false, succeeded: false, timeMs: 0 };
+
+    // Only PDFs can trigger OCR
+    if (ext !== '.pdf') {
+        const text = await extractText(filePath, mimeType);
+        return { text, ocr: ocrInfo };
+    }
+
+    try {
+        const stat = fs.statSync(filePath);
+        if (stat.size > 50 * 1024 * 1024) {
+            return { text: `[File too large to safely extract text: ${Math.round(stat.size/1e6)}MB]`, ocr: ocrInfo };
+        }
+
+        const pdfParse = (await import('pdf-parse')).default;
+        const buffer = fs.readFileSync(filePath);
+        const data = await pdfParse(buffer);
+        const text = (data.text || '').trim();
+
+        if (text.length < 100) {
+            ocrInfo.attempted = true;
+            const ocrStart = Date.now();
+            const ocrText = await ocrPdf(filePath);
+            ocrInfo.timeMs = Date.now() - ocrStart;
+
+            if (ocrText && ocrText.trim().length > text.length) {
+                ocrInfo.succeeded = true;
+                return { text: ocrText.trim(), ocr: ocrInfo };
+            }
+        }
+
+        return { text, ocr: ocrInfo };
+    } catch (err) {
+        console.error(`Text extraction failed for ${filePath}:`, err.message);
+        return { text: `[Extraction failed: ${err.message}]`, ocr: ocrInfo };
+    }
 }
 
 /**

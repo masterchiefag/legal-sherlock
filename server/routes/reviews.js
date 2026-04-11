@@ -136,10 +136,33 @@ router.get('/stats', (req, res) => {
 
         // Import jobs for this investigation
         const importJobs = investigation_id ? db.prepare(`
-      SELECT filename as original_name, status, total_emails, total_attachments, custodian, started_at, completed_at
+      SELECT filename as original_name, status, total_emails, total_attachments, custodian, started_at, completed_at,
+             ocr_count, ocr_success, ocr_failed, ocr_time_ms
       FROM import_jobs WHERE investigation_id = ?
       ORDER BY rowid DESC
     `).all(investigation_id) : [];
+
+        // Attachment file extension breakdown
+        const rawAttachments = db.prepare(`
+      SELECT original_name FROM documents WHERE doc_type = 'attachment'${invFilter}
+    `).all(...invParams);
+        const extCounts = {};
+        for (const row of rawAttachments) {
+            const name = row.original_name || '';
+            const lastDot = name.lastIndexOf('.');
+            const ext = lastDot > 0 ? name.substring(lastDot).toLowerCase() : 'unknown';
+            extCounts[ext] = (extCounts[ext] || 0) + 1;
+        }
+        const attachmentTypesCorrected = Object.entries(extCounts)
+            .map(([ext, count]) => ({ ext, count }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 20);
+
+        // OCR stats for this investigation
+        const ocrStats = db.prepare(`
+      SELECT COUNT(*) as ocr_doc_count
+      FROM documents WHERE ocr_applied = 1${invFilter}
+    `).get(...invParams);
 
         // Custodian breakdown
         const custodians = investigation_id ? db.prepare(`
@@ -167,6 +190,8 @@ router.get('/stats', (req, res) => {
             top_senders: topSenders,
             import_jobs: importJobs,
             custodians: custodians,
+            attachment_types: attachmentTypesCorrected,
+            ocr_doc_count: ocrStats?.ocr_doc_count || 0,
         });
     } catch (err) {
         console.error(err);

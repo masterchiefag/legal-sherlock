@@ -158,6 +158,10 @@ router.get('/', (req, res) => {
             filterParams.push(parseInt(score_max));
         }
 
+        if (req.query.ocr_applied === '1') {
+            filterWhere += ' AND d.ocr_applied = 1';
+        }
+
         let countRow, results;
 
         // Enrichment subqueries — applied only to the paged result set via CTE

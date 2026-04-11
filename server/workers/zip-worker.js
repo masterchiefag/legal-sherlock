@@ -80,8 +80,10 @@ const insertEmail = db.prepare(`
         id, filename, original_name, mime_type, size_bytes, text_content, status,
         doc_type, thread_id, message_id, in_reply_to, email_references,
         email_from, email_to, email_cc, email_subject, email_date,
+        email_bcc, email_headers_raw, email_received_chain,
+        email_originating_ip, email_auth_results, email_server_info, email_delivery_date,
         investigation_id, custodian, folder_path, text_content_size, doc_identifier, recipient_count
-    ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const insertAttachment = db.prepare(`
@@ -216,10 +218,12 @@ async function processEmlEntry(zipPath, entry) {
         const emlBuffer = await extractFileFromZip(zipPath, entry.path);
         const eml = await parseEml(emlBuffer);
 
-        const textBody = eml.text || eml.html?.replace(/<[^>]+>/g, ' ') || '';
-        const recipientCount = (eml.to ? eml.to.split(',').length : 0)
-            + (eml.cc ? eml.cc.split(',').length : 0)
-            + (eml.bcc ? eml.bcc.split(',').length : 0);
+        const textBody = eml.textBody || '';
+        const subject = eml.subject || '(no subject)';
+
+        // Count recipients across To, Cc, Bcc
+        const countAddrs = (s) => s ? s.split(',').filter(a => a.trim()).length : 0;
+        const recipientCount = countAddrs(eml.to) + countAddrs(eml.cc) + countAddrs(eml.bcc);
 
         // Threading
         const threadId = resolveThreadId(eml.messageId, eml.inReplyTo, eml.references);
@@ -230,10 +234,13 @@ async function processEmlEntry(zipPath, entry) {
 
         batchBuffer.push(() => {
             insertEmail.run(
-                emailId, path.basename(entry.path), eml.subject || path.basename(entry.path),
+                emailId, path.basename(entry.path), subject,
                 'message/rfc822', entry.size, textBody,
                 threadId, eml.messageId || null, eml.inReplyTo || null, eml.references || null,
-                eml.from || null, eml.to || null, eml.cc || null, eml.subject || null, eml.date || null,
+                eml.from || null, eml.to || null, eml.cc || null, subject, eml.date || null,
+                eml.bcc || null, eml.headersRaw || null, eml.receivedChain || null,
+                eml.originatingIp || null, eml.authResults || null,
+                eml.serverInfo || null, eml.deliveryDate || null,
                 investigation_id, custodian || null, folderPath, textBody.length,
                 emailDocId, recipientCount
             );

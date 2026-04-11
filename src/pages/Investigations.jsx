@@ -392,7 +392,7 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
                                     >
                                         <option value="">Select user to add...</option>
                                         {allUsers
-                                            .filter(u => u.is_active && !members.some(m => m.user_id === u.id))
+                                            .filter(u => u.is_active && !members.some(m => m.id === u.id))
                                             .map(u => (
                                                 <option key={u.id} value={u.id}>{u.name} ({u.email}) — {u.role}</option>
                                             ))
@@ -420,18 +420,18 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
                                         </thead>
                                         <tbody>
                                             {members.map(m => (
-                                                <tr key={m.user_id} style={{ borderBottom: '1px solid var(--border-secondary)' }}>
+                                                <tr key={m.id} style={{ borderBottom: '1px solid var(--border-secondary)' }}>
                                                     <td style={tdStyle}>
-                                                        <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{m.user_name}</div>
-                                                        <div className="text-xs text-muted">{m.user_email}</div>
+                                                        <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{m.name}</div>
+                                                        <div className="text-xs text-muted">{m.email}</div>
                                                     </td>
                                                     <td style={tdStyle}>
                                                         <span style={{
                                                             padding: '2px 8px', borderRadius: 10, fontSize: '11px', fontWeight: 600,
-                                                            background: m.user_role === 'admin' ? 'rgba(99,102,241,0.15)' : m.user_role === 'reviewer' ? 'rgba(34,197,94,0.15)' : 'rgba(148,163,184,0.15)',
-                                                            color: m.user_role === 'admin' ? '#818cf8' : m.user_role === 'reviewer' ? '#22c55e' : '#94a3b8',
+                                                            background: m.global_role === 'admin' ? 'rgba(99,102,241,0.15)' : m.global_role === 'reviewer' ? 'rgba(34,197,94,0.15)' : 'rgba(148,163,184,0.15)',
+                                                            color: m.global_role === 'admin' ? '#818cf8' : m.global_role === 'reviewer' ? '#22c55e' : '#94a3b8',
                                                         }}>
-                                                            {m.user_role}
+                                                            {m.global_role}
                                                         </span>
                                                     </td>
                                                     <td style={tdStyle} className="text-xs">
@@ -441,7 +441,7 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
                                                         <button
                                                             className="btn btn-ghost btn-sm"
                                                             style={{ fontSize: '11px', color: 'var(--error)' }}
-                                                            onClick={() => handleRemoveMember(m.user_id)}
+                                                            onClick={() => handleRemoveMember(m.id)}
                                                         >
                                                             Remove
                                                         </button>

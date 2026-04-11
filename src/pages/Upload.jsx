@@ -416,12 +416,12 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                                         </span>
                                         <span className="text-xs fw-bold">{activeJob.progress_percent}%</span>
                                     </div>
-                                    <div style={{ height: '6px', background: 'var(--bg-tertiary)', borderRadius: '3px', overflow: 'hidden' }}>
+                                    <div style={{ height: '10px', background: 'rgba(255,255,255,0.1)', borderRadius: '5px', overflow: 'hidden' }}>
                                         <div style={{
                                             height: '100%',
                                             width: `${activeJob.progress_percent}%`,
-                                            background: 'var(--accent)',
-                                            borderRadius: '3px',
+                                            background: '#5b9aff',
+                                            borderRadius: '5px',
                                             transition: 'width 0.3s ease'
                                         }} />
                                     </div>
@@ -444,7 +444,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                                                 {pct}%{etaText ? ` · ETA ${etaText}` : ''}
                                             </span>
                                         </div>
-                                        <div style={{ height: '6px', background: 'var(--bg-tertiary)', borderRadius: '3px', overflow: 'hidden' }}>
+                                        <div style={{ height: '10px', background: 'rgba(255,255,255,0.1)', borderRadius: '5px', overflow: 'hidden' }}>
                                             <div style={{
                                                 height: '100%',
                                                 width: `${pct}%`,
@@ -465,12 +465,12 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                                         <span className="text-xs text-muted">Text Extraction</span>
                                         <span className="text-xs fw-bold">{activeJob.progress_percent || 0}%</span>
                                     </div>
-                                    <div style={{ height: '6px', background: 'var(--bg-tertiary)', borderRadius: '3px', overflow: 'hidden' }}>
+                                    <div style={{ height: '10px', background: 'rgba(255,255,255,0.1)', borderRadius: '5px', overflow: 'hidden' }}>
                                         <div style={{
                                             height: '100%',
                                             width: `${activeJob.progress_percent || 0}%`,
-                                            background: 'var(--accent)',
-                                            borderRadius: '3px',
+                                            background: '#5b9aff',
+                                            borderRadius: '5px',
                                             transition: 'width 0.3s ease'
                                         }} />
                                     </div>
@@ -505,6 +505,22 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                                     <div>
                                         <p className="text-xs text-muted m-0 uppercase tracking-wide">Phase 2 (Extract)</p>
                                         <p className="text-lg fw-bold m-0">{phase2Time}</p>
+                                    </div>
+                                )}
+                                {activeJob.ocr_count > 0 && (
+                                    <div
+                                        style={{ cursor: 'pointer' }}
+                                        onClick={() => navigate(`/search?ocr_applied=1&investigation_id=${activeInvestigationId}`)}
+                                        title="Click to view OCR-processed documents"
+                                    >
+                                        <p className="text-xs text-muted m-0 uppercase tracking-wide">OCR Processed</p>
+                                        <p className="text-lg fw-bold m-0" style={{ color: 'var(--text-accent)' }}>
+                                            {activeJob.ocr_success}/{activeJob.ocr_count}
+                                        </p>
+                                        <p className="text-xs text-muted m-0">
+                                            {(activeJob.ocr_time_ms / 1000).toFixed(1)}s
+                                            {activeJob.ocr_failed > 0 && <span style={{ color: 'var(--danger)' }}> · {activeJob.ocr_failed} failed</span>}
+                                        </p>
                                     </div>
                                 )}
                             </div>

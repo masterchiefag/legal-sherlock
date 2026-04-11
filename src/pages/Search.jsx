@@ -21,6 +21,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
     const [latestThreadOnly, setLatestThreadOnly] = useState(searchParams.get('latest_thread') !== '0');
     const [custodianFilter, setCustodianFilter] = useState(searchParams.get('custodian') || '');
     const [custodianList, setCustodianList] = useState([]);
+    const [ocrAppliedFilter, setOcrAppliedFilter] = useState(searchParams.get('ocr_applied') || '');
 
     // Batch Classification
     const [showBatchPanel, setShowBatchPanel] = useState(false);
@@ -106,7 +107,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
             .catch(() => {});
     }, [activeInvestigationId]);
 
-    const hasActiveFilters = reviewStatus || docType || scoreFilter || dateFrom || dateTo || custodianFilter;
+    const hasActiveFilters = reviewStatus || docType || scoreFilter || dateFrom || dateTo || custodianFilter || ocrAppliedFilter;
 
     const doSearch = useCallback(async (page = 1) => {
         setLoading(true);
@@ -122,6 +123,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
         if (hideDuplicates) apiParams.set('hide_duplicates', '1');
         if (latestThreadOnly) apiParams.set('latest_thread_only', '1');
         if (custodianFilter) apiParams.set('custodian', custodianFilter);
+        if (ocrAppliedFilter) apiParams.set('ocr_applied', ocrAppliedFilter);
         if (activeInvestigationId) apiParams.set('investigation_id', activeInvestigationId);
 
         if (scoreFilter) {
@@ -148,6 +150,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
         if (!hideDuplicates) urlParams.dedup = '0';
         if (latestThreadOnly) urlParams.latest_thread = '1';
         if (custodianFilter) urlParams.custodian = custodianFilter;
+        if (ocrAppliedFilter) urlParams.ocr_applied = ocrAppliedFilter;
         if (page > 1) urlParams.page = String(page);
         setSearchParams(urlParams, { replace: true });
 
@@ -162,7 +165,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
         }
 
         setLoading(false);
-    }, [query, reviewStatus, docType, scoreFilter, dateFrom, dateTo, hideDuplicates, latestThreadOnly, custodianFilter, hasActiveFilters, setSearchParams]);
+    }, [query, reviewStatus, docType, scoreFilter, dateFrom, dateTo, hideDuplicates, latestThreadOnly, custodianFilter, ocrAppliedFilter, hasActiveFilters, setSearchParams]);
 
     const handleKeyDown = (e) => {
         if (e.key === 'Enter') doSearch();
@@ -213,6 +216,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
         setDateTo('');
         setLastNlQuery('');
         setCustodianFilter('');
+        setOcrAppliedFilter('');
         setHideDuplicates(true);
         setSearched(false);
         setResults([]);
@@ -772,6 +776,12 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
                                 &#9733;
                             </button>
                         </>
+                    )}
+                    {ocrAppliedFilter && (
+                        <span className="status-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px' }}>
+                            OCR Processed
+                            <span style={{ cursor: 'pointer', fontWeight: 700 }} onClick={() => { setOcrAppliedFilter(''); setShouldRefresh(n => n + 1); }}>&times;</span>
+                        </span>
                     )}
                     {results.length > 0 && (
                         <>

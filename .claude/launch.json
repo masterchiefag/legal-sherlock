@@ -10,7 +10,7 @@
     {
       "name": "server",
       "runtimeExecutable": "/opt/homebrew/bin/node",
-      "runtimeArgs": ["server/index.js"],
+      "runtimeArgs": ["--env-file=.env", "server/index.js"],
       "port": 3001
     }
   ]
