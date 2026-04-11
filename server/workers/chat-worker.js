@@ -345,14 +345,49 @@ async function main() {
             console.log(`✦ Chat Import: Could not load group participants (${e.message})`);
         }
 
+        // ── Query media metadata (ZIP mode only) ──
+        // Build a map of message PK → media info for attachment creation
+        const mediaMap = new Map(); // msg_pk → { media_path, media_title, media_size, msg_type }
+        const seenHashes = new Map(); // content_hash → filename (for dedup)
+
+        if (isZipMode) {
+            try {
+                const mediaRows = chatDb.prepare(`
+                    SELECT m.Z_PK as msg_pk, mi.ZMEDIALOCALPATH as media_path,
+                           mi.ZTITLE as media_title, mi.ZFILESIZE as media_size,
+                           m.ZMESSAGETYPE as msg_type
+                    FROM ZWAMESSAGE m
+                    JOIN ZWAMEDIAITEM mi ON mi.ZMESSAGE = m.Z_PK
+                    WHERE mi.ZMEDIALOCALPATH IS NOT NULL AND mi.ZMEDIALOCALPATH != ''
+                      AND m.ZMESSAGETYPE IN (1, 8)
+                `).all();
+                for (const row of mediaRows) {
+                    // Only include if the file actually exists in the ZIP
+                    const resolved = resolveMediaInZip(row.media_path, mediaPathSet, mediaByBasename);
+                    if (resolved) {
+                        mediaMap.set(row.msg_pk, { ...row, resolvedPath: resolved });
+                    }
+                }
+                console.log(`✦ Chat Import: found ${mediaMap.size} media items with matching files in ZIP (of ${mediaRows.length} total)`);
+            } catch (e) {
+                console.log(`✦ Chat Import: media query failed (${e.message}), skipping media`);
+            }
+        }
+
         // ── Query all messages ──
         // Join ZGROUPMEMBER to resolve sender when ZFROMJID is NULL (common in group messages)
 
         let messages;
         console.log(`✦ Chat Import: querying messages...`);
+        // Include media-only messages (no text) when in ZIP mode so they appear in transcript
+        const mediaOnlyClause = isZipMode
+            ? 'OR (m.ZMEDIAITEM IS NOT NULL AND m.ZMESSAGETYPE IN (1, 8))'
+            : '';
+
         try {
             const stmt = chatDb.prepare(`
                 SELECT
+                    m.Z_PK as msg_pk,
                     s.Z_PK as session_id,
                     COALESCE(s.ZPARTNERNAME, s.ZCONTACTJID, 'Unknown Chat') as session_name,
                     s.ZCONTACTJID as session_jid,
@@ -367,7 +402,7 @@ async function main() {
                 FROM ZWACHATSESSION s
                 JOIN ZWAMESSAGE m ON m.ZCHATSESSION = s.Z_PK
                 LEFT JOIN ZWAGROUPMEMBER gm ON m.ZGROUPMEMBER = gm.Z_PK
-                WHERE (m.ZTEXT IS NOT NULL AND m.ZTEXT != '') OR m.ZMESSAGETYPE = 14
+                WHERE (m.ZTEXT IS NOT NULL AND m.ZTEXT != '') OR m.ZMESSAGETYPE = 14 ${mediaOnlyClause}
                 ORDER BY s.Z_PK, m.ZMESSAGEDATE ASC
             `);
             messages = stmt.all();
@@ -376,6 +411,7 @@ async function main() {
             console.log(`✦ Chat Import: ZGROUPMEMBER join failed (${e.message}), falling back`);
             const stmt = chatDb.prepare(`
                 SELECT
+                    m.Z_PK as msg_pk,
                     s.Z_PK as session_id,
                     COALESCE(s.ZPARTNERNAME, s.ZCONTACTJID, 'Unknown Chat') as session_name,
                     s.ZCONTACTJID as session_jid,
@@ -389,7 +425,7 @@ async function main() {
                     NULL as member_name
                 FROM ZWACHATSESSION s
                 JOIN ZWAMESSAGE m ON m.ZCHATSESSION = s.Z_PK
-                WHERE (m.ZTEXT IS NOT NULL AND m.ZTEXT != '') OR m.ZMESSAGETYPE = 14
+                WHERE (m.ZTEXT IS NOT NULL AND m.ZTEXT != '') OR m.ZMESSAGETYPE = 14 ${mediaOnlyClause}
                 ORDER BY s.Z_PK, m.ZMESSAGEDATE ASC
             `);
             messages = stmt.all();
@@ -399,13 +435,24 @@ async function main() {
         let currentSessionId = null;
         let currentDayString = null;
         let currentDayTranscript = [];
+        let currentDayMedia = [];             // media items for this day (for attachment creation)
         let totalChatDocs = 0;
+        let totalAttachments = 0;
         let currentSessionName = "Unknown";
         let currentDayDate = null;
         let currentSenders = new Set();       // who sent messages this day (for email_from)
         let currentParticipants = new Set();  // all participants in current session (for email_to)
 
-        const flushTranscript = () => {
+        const insertAttachment = db.prepare(`
+            INSERT INTO documents (
+                id, filename, original_name, mime_type, size_bytes, text_content, status,
+                doc_type, parent_id, thread_id,
+                content_hash, is_duplicate, investigation_id, custodian, doc_identifier, recipient_count
+            ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
+                ?, ?, ?, ?, ?, 0)
+        `);
+
+        const flushTranscript = async () => {
             if (currentDayTranscript.length > 0) {
                 const docId = uuidv4();
                 const sessionThreadId = `wa-chat-${currentSessionId}`;
@@ -448,7 +495,48 @@ async function main() {
                 );
 
                 totalChatDocs++;
+
+                // ── Create attachment documents for media in this day's messages ──
+                if (isZipMode && currentDayMedia.length > 0) {
+                    for (let j = 0; j < currentDayMedia.length; j++) {
+                        const media = currentDayMedia[j];
+                        try {
+                            const attId = uuidv4();
+                            const originalName = media.media_title || path.basename(media.resolvedPath);
+                            const ext = path.extname(originalName) || path.extname(media.resolvedPath) ||
+                                (media.msg_type === 1 ? '.jpg' : '');
+                            const attFilename = `${attId}${ext}`;
+                            const attDiskPath = path.join(UPLOADS_DIR, attFilename);
+
+                            // Extract file from ZIP
+                            const fileBuffer = await extractFileFromZip(zipPath, media.resolvedPath);
+                            fs.writeFileSync(attDiskPath, fileBuffer);
+
+                            // Content hash for dedup
+                            const contentHash = crypto.createHash('md5').update(fileBuffer).digest('hex');
+                            const isDuplicate = seenHashes.has(contentHash) ? 1 : 0;
+                            if (!isDuplicate) seenHashes.set(contentHash, attFilename);
+
+                            const mime = guessMimeType(originalName || media.resolvedPath, media.msg_type);
+                            const attDocIdentifier = `${chatDocIdentifier}_${String(j + 1).padStart(3, '0')}`;
+
+                            insertAttachment.run(
+                                attId, attFilename, originalName, mime,
+                                media.media_size || fileBuffer.length,
+                                docId,              // parent_id = chat document
+                                sessionThreadId,    // thread_id
+                                contentHash, isDuplicate,
+                                investigation_id, custodian || null, attDocIdentifier
+                            );
+                            totalAttachments++;
+                        } catch (e) {
+                            console.warn(`✦ Chat Import: failed to extract media ${media.resolvedPath}: ${e.message}`);
+                        }
+                    }
+                }
+
                 currentDayTranscript = [];
+                currentDayMedia = [];
                 currentSenders = new Set();
                 // Don't reset currentParticipants — accumulate across days within a session
             }
@@ -470,11 +558,11 @@ async function main() {
 
             // If session changed, flush and reset participants
             if (currentSessionId !== null && currentSessionId !== msg.session_id) {
-                flushTranscript();
+                await flushTranscript();
                 currentParticipants = new Set(); // Reset for new session
             } else if (currentSessionId !== null && currentDayString !== dayString) {
                 // Day changed within same session — flush but keep participants
-                flushTranscript();
+                await flushTranscript();
             }
 
             currentSessionId = msg.session_id;
@@ -508,17 +596,32 @@ async function main() {
             currentSenders.add(sender);
             currentParticipants.add(sender);
 
-            // Build transcript line with deleted/forwarded annotations
+            // Check for media attachment on this message
+            const mediaInfo = mediaMap.get(msg.msg_pk);
+            if (mediaInfo) {
+                currentDayMedia.push(mediaInfo);
+            }
+
+            // Build transcript line with deleted/forwarded/media annotations
             let displayText;
             if (msg.msg_type === 14) {
                 displayText = '[This message was deleted]';
+            } else if (mediaInfo) {
+                const mediaLabel = `[Attachment: ${mediaInfo.media_title || path.basename(mediaInfo.resolvedPath)}]`;
+                if (msg.text) {
+                    displayText = `${msg.text} ${mediaLabel}`;
+                } else {
+                    displayText = mediaLabel;
+                }
             } else if (msg.flags && (msg.flags & 256) !== 0) {
                 displayText = `[Forwarded] ${msg.text}`;
             } else {
-                displayText = msg.text;
+                displayText = msg.text || '';
             }
 
-            currentDayTranscript.push(`[${timeString}] ${sender}: ${displayText}`);
+            if (displayText) {
+                currentDayTranscript.push(`[${timeString}] ${sender}: ${displayText}`);
+            }
 
             // Periodically update progress
             if (i % 10000 === 0) {
@@ -528,9 +631,11 @@ async function main() {
         }
 
         // Flush last transcript
-        flushTranscript();
+        await flushTranscript();
 
         chatDb.close();
+
+        console.log(`✦ Chat Import: ingested ${totalChatDocs} daily chat transcripts, ${totalAttachments} media attachments.`);
 
         db.prepare(`
             UPDATE import_jobs
@@ -541,8 +646,6 @@ async function main() {
                 completed_at = datetime('now')
             WHERE id = ?
         `).run(totalChatDocs, jobId);
-
-        console.log(`✦ Chat Import: complete. Ingested ${totalChatDocs} daily chat transcripts.`);
 
         // Clean up uploaded/temp files
         try {
