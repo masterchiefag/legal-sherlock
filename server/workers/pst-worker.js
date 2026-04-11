@@ -105,6 +105,10 @@ const updateDocText = db.prepare(
     "UPDATE documents SET text_content = ?, text_content_size = ?, status = 'ready' WHERE id = ?"
 );
 
+const updateDocTextOcr = db.prepare(
+    "UPDATE documents SET text_content = ?, text_content_size = ?, status = 'ready', ocr_applied = ?, ocr_time_ms = ? WHERE id = ?"
+);
+
 const updateDocMeta = db.prepare(
     `UPDATE documents SET doc_author = ?, doc_title = ?, doc_created_at = ?,
      doc_modified_at = ?, doc_creator_tool = ?, doc_keywords = ?,
@@ -430,9 +434,18 @@ async function main() {
         console.log(`✦ DEBUG: totalEmails=${totalEmails}, totalAttachments=${totalAttachments}`);
         updateProgress.run(totalEmails, totalAttachments, 'extracting', jobId);
 
+        // Skip duplicates — they share the same file on disk, no need to extract twice
         const pendingDocs = db.prepare(
-            "SELECT id, filename, mime_type FROM documents WHERE status = 'processing' AND doc_type = 'attachment' AND investigation_id = ?"
+            "SELECT id, filename, mime_type FROM documents WHERE status = 'processing' AND doc_type = 'attachment' AND is_duplicate = 0 AND investigation_id = ?"
         ).all(investigation_id);
+
+        // Mark duplicates as ready immediately (copy text from original later via backfill)
+        const dupeCount = db.prepare(
+            "UPDATE documents SET status = 'ready' WHERE status = 'processing' AND doc_type = 'attachment' AND is_duplicate = 1 AND investigation_id = ?"
+        ).run(investigation_id);
+        if (dupeCount.changes > 0) {
+            console.log(`✦ Phase 2: skipped ${dupeCount.changes} duplicate attachments`);
+        }
 
         const totalPending = pendingDocs.length;
         console.log(`✦ DEBUG: Found ${totalPending} pending docs to extract`);
@@ -443,16 +456,21 @@ async function main() {
         let extractionOps = [];
         const failedExtractions = []; // Track docs that failed or timed out
 
+        // OCR tracking
+        let ocrCount = 0, ocrSuccess = 0, ocrFailed = 0, ocrTotalTimeMs = 0;
+
         // Use subprocess for extraction — mammoth/pdf-parse are CPU-bound and block the
         // event loop, making Promise.race timeouts useless. execFile has a real OS timeout.
         const EXTRACT_WORKER = path.join(__dirname, '..', 'lib', 'extract-worker.js');
         const EXTRACT_TIMEOUT = 15000; // 15 seconds hard kill
+        const OCR_TIMEOUT = 180000; // 3 minutes for OCR (pdftoppm + tesseract)
         const NODE_BIN = process.execPath;
 
         function extractViaSubprocess(filePath, mimeType, mode = 'text') {
+            const timeout = mode === 'textocr' ? OCR_TIMEOUT : EXTRACT_TIMEOUT;
             return new Promise((resolve, reject) => {
                 const child = execFile(NODE_BIN, [EXTRACT_WORKER, filePath, mimeType, mode], {
-                    timeout: EXTRACT_TIMEOUT,
+                    timeout,
                     maxBuffer: 50 * 1024 * 1024,
                     killSignal: 'SIGKILL',
                 }, (err, stdout, stderr) => {
@@ -473,10 +491,40 @@ async function main() {
             }
             const filePath = path.join(UPLOADS_DIR, doc.filename);
 
+            const isPdf = doc.filename && path.extname(doc.filename).toLowerCase() === '.pdf';
             let text = '';
             let extractionFailed = false;
+            let ocrApplied = 0;
+            let docOcrTimeMs = null;
             try {
-                text = await extractViaSubprocess(filePath, doc.mime_type, 'text');
+                if (isPdf) {
+                    // Use textocr mode for PDFs to get OCR tracking info
+                    const raw = await extractViaSubprocess(filePath, doc.mime_type, 'textocr');
+                    try {
+                        // Extract JSON from the end of output (skip any pdfjs warnings on stdout)
+                        const jsonStart = raw.indexOf('{"text":');
+                        const jsonStr = jsonStart >= 0 ? raw.substring(jsonStart) : raw;
+                        const result = JSON.parse(jsonStr);
+                        text = result.text || '';
+                        if (result.ocr && result.ocr.attempted) {
+                            ocrCount++;
+                            const timeMs = result.ocr.timeMs || 0;
+                            ocrTotalTimeMs += timeMs;
+                            docOcrTimeMs = timeMs;
+                            if (result.ocr.succeeded) {
+                                ocrSuccess++;
+                                ocrApplied = 1;
+                            } else {
+                                ocrFailed++;
+                            }
+                        }
+                    } catch (jsonErr) {
+                        // JSON parse failed (e.g. native lib wrote to stdout) — use raw as text
+                        text = raw || '';
+                    }
+                } else {
+                    text = await extractViaSubprocess(filePath, doc.mime_type, 'text');
+                }
             } catch (e) {
                 text = `[Could not extract text: ${e.message}]`;
                 extractionFailed = true;
@@ -502,7 +550,7 @@ async function main() {
 
             const docId = doc.id;
             extractionOps.push(
-                () => updateDocText.run(text, text ? text.length : 0, docId),
+                () => updateDocTextOcr.run(text, text ? text.length : 0, ocrApplied, docOcrTimeMs, docId),
                 () => updateDocMeta.run(meta.author, meta.title, meta.createdAt, meta.modifiedAt, meta.creatorTool, meta.keywords, meta.lastModifiedBy, meta.printedAt, meta.lastAccessedAt, docId)
             );
             extracted++;
@@ -523,7 +571,23 @@ async function main() {
 
         if (extractionOps.length > 0) flushBatch(extractionOps);
 
+        // Backfill text from originals into duplicates (they share content_hash)
+        if (dupeCount.changes > 0) {
+            const backfilled = db.prepare(`
+                UPDATE documents SET
+                    text_content = (SELECT d2.text_content FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 AND d2.text_content IS NOT NULL LIMIT 1),
+                    text_content_size = (SELECT d2.text_content_size FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 AND d2.text_content IS NOT NULL LIMIT 1),
+                    ocr_applied = (SELECT d2.ocr_applied FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 LIMIT 1),
+                    ocr_time_ms = (SELECT d2.ocr_time_ms FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 LIMIT 1)
+                WHERE is_duplicate = 1 AND doc_type = 'attachment' AND investigation_id = ? AND text_content IS NULL
+            `).run(investigation_id);
+            console.log(`✦ Phase 2: backfilled text for ${backfilled.changes} duplicates`);
+        }
+
         console.log(`✦ PST Import Phase 2 complete: extracted text from ${extracted} attachments`);
+        if (ocrCount > 0) {
+            console.log(`✦ OCR Summary: ${ocrCount} attempted, ${ocrSuccess} succeeded, ${ocrFailed} failed, ${(ocrTotalTimeMs / 1000).toFixed(1)}s total OCR time`);
+        }
 
         // ── Extraction failure summary ──
         if (failedExtractions.length > 0) {
@@ -583,9 +647,13 @@ async function main() {
                 total_attachments = ?,
                 progress_percent = 100,
                 error_log = ?,
+                ocr_count = ?,
+                ocr_success = ?,
+                ocr_failed = ?,
+                ocr_time_ms = ?,
                 completed_at = datetime('now')
             WHERE id = ?
-        `).run(totalEmails, totalAttachments, JSON.stringify(errorLog), jobId);
+        `).run(totalEmails, totalAttachments, JSON.stringify(errorLog), ocrCount, ocrSuccess, ocrFailed, ocrTotalTimeMs, jobId);
 
         // Auto-cleanup: delete source PST/OST file after successful import
         try {

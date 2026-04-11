@@ -450,6 +450,34 @@ db.exec(`
   END;
 `);
 
+// ═══════════════════════════════════════════════════
+// Migration: OCR tracking on documents and import_jobs
+// ═══════════════════════════════════════════════════
+if (!columnExists('documents', 'ocr_applied')) {
+  db.exec(`ALTER TABLE documents ADD COLUMN ocr_applied INTEGER DEFAULT 0`);
+  console.log(`✦ Migration: added column documents.ocr_applied`);
+}
+if (!columnExists('documents', 'ocr_time_ms')) {
+  db.exec(`ALTER TABLE documents ADD COLUMN ocr_time_ms INTEGER`);
+  console.log(`✦ Migration: added column documents.ocr_time_ms`);
+}
+if (!columnExists('import_jobs', 'ocr_count')) {
+  db.exec(`ALTER TABLE import_jobs ADD COLUMN ocr_count INTEGER DEFAULT 0`);
+  console.log(`✦ Migration: added column import_jobs.ocr_count`);
+}
+if (!columnExists('import_jobs', 'ocr_success')) {
+  db.exec(`ALTER TABLE import_jobs ADD COLUMN ocr_success INTEGER DEFAULT 0`);
+  console.log(`✦ Migration: added column import_jobs.ocr_success`);
+}
+if (!columnExists('import_jobs', 'ocr_failed')) {
+  db.exec(`ALTER TABLE import_jobs ADD COLUMN ocr_failed INTEGER DEFAULT 0`);
+  console.log(`✦ Migration: added column import_jobs.ocr_failed`);
+}
+if (!columnExists('import_jobs', 'ocr_time_ms')) {
+  db.exec(`ALTER TABLE import_jobs ADD COLUMN ocr_time_ms INTEGER DEFAULT 0`);
+  console.log(`✦ Migration: added column import_jobs.ocr_time_ms`);
+}
+
 // Note: don't checkpoint WAL here — TRUNCATE requires exclusive lock and
 // blocks worker threads from opening DB connections, causing deadlocks.
 
