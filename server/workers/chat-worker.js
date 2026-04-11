@@ -3,7 +3,13 @@ import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
+import os from 'os';
 import { fileURLToPath } from 'url';
+import { execFile, spawn } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -17,7 +23,8 @@ db.pragma('foreign_keys = ON');
 db.pragma('busy_timeout = 10000');
 console.log('✦ Chat Worker: DB connection ready');
 
-const { jobId, filename, filepath, originalname, investigation_id, custodian } = workerData;
+const { jobId, filename, filepath, originalname, investigation_id, custodian, zipPath, sqliteEntry } = workerData;
+const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
 
 // ═══════════════════════════════════════════════════
 // Doc identifier generation: CASE_CUST_00001 for chats
@@ -46,10 +53,111 @@ function nextDocIdentifier() {
     return `${docIdPrefix}_${String(docSeq).padStart(5, '0')}`;
 }
 
-// TODO (Feature Request): Add support for WhatsApp media attachments.
-// This requires a mechanism to upload a ZIP containing both ChatStorage.sqlite
-// and the Message/Media folder. The worker would then extract images to the
-// uploads directory and link them via parent_id to the created chat document.
+// ═══════════════════════════════════════════════════
+// ZIP helpers for WhatsApp media extraction
+// ═══════════════════════════════════════════════════
+
+/**
+ * Extract a single file from a ZIP via `unzip -p` (pipe to stdout).
+ * Returns file content as a Buffer.
+ */
+function extractFileFromZip(zipFilePath, internalPath) {
+    return new Promise((resolve, reject) => {
+        const chunks = [];
+        const child = spawn('unzip', ['-p', zipFilePath, internalPath]);
+        child.stdout.on('data', (chunk) => chunks.push(chunk));
+        child.stderr.on('data', () => {}); // ignore warnings
+        child.on('close', (code) => {
+            if (code === 0 || code === 1) { // code 1 = minor warnings
+                resolve(Buffer.concat(chunks));
+            } else {
+                reject(new Error(`unzip exited with code ${code} for ${internalPath}`));
+            }
+        });
+        child.on('error', reject);
+    });
+}
+
+/**
+ * List all media file paths inside a ZIP.
+ * Returns a Map<lowercase_basename, full_path> and a Set<full_path>.
+ */
+async function listZipMedia(zipFilePath) {
+    const { stdout } = await execFileAsync('unzip', ['-l', zipFilePath], {
+        timeout: 120000,
+        maxBuffer: 50 * 1024 * 1024,
+    });
+    const mediaPathSet = new Set();
+    const mediaByBasename = new Map();
+    const lines = stdout.split('\n');
+    for (const line of lines) {
+        // unzip -l format: "  length  date  time  name"
+        const match = line.match(/\s(\S+\/Media\/\S+)$/);
+        if (match) {
+            const p = match[1];
+            if (!p.endsWith('/')) { // skip directories
+                mediaPathSet.add(p);
+                mediaByBasename.set(path.basename(p).toLowerCase(), p);
+            }
+        }
+        // Also match bare Media/ paths (no parent)
+        const match2 = line.match(/\s(Media\/\S+)$/);
+        if (match2) {
+            const p = match2[1];
+            if (!p.endsWith('/')) {
+                mediaPathSet.add(p);
+                mediaByBasename.set(path.basename(p).toLowerCase(), p);
+            }
+        }
+    }
+    return { mediaPathSet, mediaByBasename };
+}
+
+/**
+ * Resolve a ZMEDIALOCALPATH from the DB to an actual ZIP entry path.
+ * Tries exact match, prefix variations, and basename fallback.
+ */
+function resolveMediaInZip(dbPath, mediaPathSet, mediaByBasename) {
+    if (!dbPath) return null;
+    // Try exact match
+    if (mediaPathSet.has(dbPath)) return dbPath;
+    // Try with common prefixes
+    const variants = [
+        `Message/${dbPath}`,
+        dbPath.replace(/^Message\//, ''),
+        dbPath.replace(/^Media\//, 'Message/Media/'),
+    ];
+    for (const v of variants) {
+        if (mediaPathSet.has(v)) return v;
+    }
+    // Basename fallback (least reliable)
+    const basename = path.basename(dbPath).toLowerCase();
+    if (basename && mediaByBasename.has(basename)) return mediaByBasename.get(basename);
+    return null;
+}
+
+/**
+ * Guess MIME type from file extension and WhatsApp message type.
+ */
+function guessMimeType(filePath, msgType) {
+    const ext = path.extname(filePath).toLowerCase();
+    const mimeMap = {
+        '.pdf': 'application/pdf', '.doc': 'application/msword',
+        '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        '.xls': 'application/vnd.ms-excel',
+        '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        '.ppt': 'application/vnd.ms-powerpoint',
+        '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+        '.gif': 'image/gif', '.webp': 'image/webp', '.heic': 'image/heic',
+        '.txt': 'text/plain', '.csv': 'text/csv',
+    };
+    if (mimeMap[ext]) return mimeMap[ext];
+    // Fallback by message type
+    if (msgType === 1) return 'image/jpeg';
+    if (msgType === 8) return 'application/octet-stream';
+    return 'application/octet-stream';
+}
 
 // CoreData epoch offset (seconds between Jan 1 1970 and Jan 1 2001)
 const CORE_DATA_OFFSET = 978307200;
@@ -98,9 +206,33 @@ async function main() {
     try {
         db.prepare("UPDATE import_jobs SET status = 'processing', phase = 'reading' WHERE id = ?").run(jobId);
 
-        console.log(`✦ Chat Import: opening ${filepath} for investigation ${investigation_id}`);
-        // Open the uploaded WhatsApp DB (read-only)
-        const chatDb = new Database(filepath, { readonly: true });
+        // ── Resolve SQLite path (bare file or extract from ZIP) ──
+        let sqlitePath = filepath;
+        let tempSqlitePath = null;
+        let mediaPathSet = null;
+        let mediaByBasename = null;
+        const isZipMode = !!zipPath;
+
+        if (isZipMode) {
+            console.log(`✦ Chat Import: ZIP mode — extracting ${sqliteEntry} from ${zipPath}`);
+            // Extract ChatStorage.sqlite to temp file
+            tempSqlitePath = path.join(os.tmpdir(), `chat-import-${jobId}.sqlite`);
+            const sqliteBuffer = await extractFileFromZip(zipPath, sqliteEntry);
+            fs.writeFileSync(tempSqlitePath, sqliteBuffer);
+            sqlitePath = tempSqlitePath;
+            console.log(`✦ Chat Import: extracted SQLite to ${tempSqlitePath} (${Math.round(sqliteBuffer.length / 1024 / 1024)}MB)`);
+
+            // List all media files in ZIP
+            const mediaIndex = await listZipMedia(zipPath);
+            mediaPathSet = mediaIndex.mediaPathSet;
+            mediaByBasename = mediaIndex.mediaByBasename;
+            console.log(`✦ Chat Import: found ${mediaPathSet.size} media files in ZIP`);
+        } else {
+            console.log(`✦ Chat Import: opening ${filepath} for investigation ${investigation_id}`);
+        }
+
+        // Open the uploaded/extracted WhatsApp DB (read-only)
+        const chatDb = new Database(sqlitePath, { readonly: true });
 
         try {
             // Verify it's an iOS WhatsApp ChatStorage.sqlite
@@ -412,8 +544,11 @@ async function main() {
 
         console.log(`✦ Chat Import: complete. Ingested ${totalChatDocs} daily chat transcripts.`);
 
+        // Clean up uploaded/temp files
         try {
-            fs.unlinkSync(filepath);
+            if (tempSqlitePath) fs.unlinkSync(tempSqlitePath);
+            if (!isZipMode && filepath) fs.unlinkSync(filepath);
+            // ZIP file is kept — may be re-processed or needed for debugging
         } catch (_) { /* Best effort */ }
 
     } catch (err) {
