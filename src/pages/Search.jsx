@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { formatSize, getScoreColor } from '../utils/format';
+import { apiFetch } from '../utils/api';
 
 function Search({ activeInvestigationId, activeInvestigation, addToast }) {
     const [searchParams, setSearchParams] = useSearchParams();
@@ -99,7 +100,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
     // Fetch custodian list for filter dropdown
     useEffect(() => {
         if (!activeInvestigationId) return;
-        fetch(`/api/investigations/${activeInvestigationId}/custodians`)
+        apiFetch(`/api/investigations/${activeInvestigationId}/custodians`)
             .then(r => r.json())
             .then(data => setCustodianList(Array.isArray(data) ? data : []))
             .catch(() => {});
@@ -151,7 +152,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
         setSearchParams(urlParams, { replace: true });
 
         try {
-            const res = await fetch(`/api/search?${apiParams}`);
+            const res = await apiFetch(`/api/search?${apiParams}`);
             const data = await res.json();
             setResults(data.results);
             setPagination(data.pagination);
@@ -176,7 +177,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
         const currentNlQuery = query.trim();
         setLoading(true);
         try {
-            const res = await fetch('/api/search/nl-to-sql', {
+            const res = await apiFetch('/api/search/nl-to-sql', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ query })
@@ -247,7 +248,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
         if (models.length === 0) {
             setModelsError('');
             try {
-                const res = await fetch('/api/classify/models');
+                const res = await apiFetch('/api/classify/models');
                 const data = await res.json();
                 setModels(data.models || []);
                 if (data.error) {
@@ -283,7 +284,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
         setBatchTime(0);
 
         try {
-            const searchRes = await fetch(`/api/search?${buildSearchParams()}`);
+            const searchRes = await apiFetch(`/api/search?${buildSearchParams()}`);
             const searchData = await searchRes.json();
             const allDocs = searchData.results || [];
 
@@ -312,7 +313,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
             for (let i = 0; i < docsToClassify.length; i++) {
                 const doc = docsToClassify[i];
                 try {
-                    await fetch(`/api/classify/${doc.id}`, {
+                    await apiFetch(`/api/classify/${doc.id}`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -369,7 +370,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
         setSummarizeTime(0);
 
         try {
-            const searchRes = await fetch(`/api/search?${buildSearchParams()}`);
+            const searchRes = await apiFetch(`/api/search?${buildSearchParams()}`);
             const searchData = await searchRes.json();
             const allDocs = searchData.results || [];
 
@@ -385,7 +386,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
             setSummarizeTotal(docsToSummarize.length);
 
             // Create job record
-            const jobRes = await fetch('/api/summarize/jobs', {
+            const jobRes = await apiFetch('/api/summarize/jobs', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -405,7 +406,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
             for (let i = 0; i < docsToSummarize.length; i++) {
                 const doc = docsToSummarize[i];
                 try {
-                    await fetch(`/api/summarize/${doc.id}`, {
+                    await apiFetch(`/api/summarize/${doc.id}`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({
@@ -424,7 +425,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
             const totalElapsed = Math.floor((Date.now() - startTime) / 1000);
 
             // Mark job complete
-            await fetch(`/api/summarize/jobs/${job.id}`, {
+            await apiFetch(`/api/summarize/jobs/${job.id}`, {
                 method: 'PATCH',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
@@ -546,7 +547,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
 
     const exportCsv = async () => {
         try {
-            const res = await fetch(`/api/search?${buildSearchParams()}`);
+            const res = await apiFetch(`/api/search?${buildSearchParams()}`);
             const data = await res.json();
             let docs = data.results || [];
 

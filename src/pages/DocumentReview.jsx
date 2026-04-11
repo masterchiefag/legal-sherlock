@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom';
 import { formatSize, getScoreColor, getScoreLabel } from '../utils/format';
 import { highlightText } from '../utils/sanitize';
+import { apiFetch } from '../utils/api';
 
 const REVIEW_OPTIONS = [
     { status: 'relevant', label: 'Relevant', color: '#10b981', key: 'r' },
@@ -35,8 +36,8 @@ function DocumentReview({ addToast }) {
     const loadDocument = useCallback(async () => {
         try {
             const [docRes, tagsRes] = await Promise.all([
-                fetch(`/api/documents/${id}`),
-                fetch('/api/tags'),
+                apiFetch(`/api/documents/${id}`),
+                apiFetch('/api/tags'),
             ]);
             const docData = await docRes.json();
             const tagsData = await tagsRes.json();
@@ -62,7 +63,7 @@ function DocumentReview({ addToast }) {
 
     const loadClassifications = useCallback(async () => {
         try {
-            const res = await fetch(`/api/classify/${id}`);
+            const res = await apiFetch(`/api/classify/${id}`);
             const data = await res.json();
             if (data.classifications?.length > 0) {
                 setClassification(data.classifications[0]);
@@ -85,7 +86,7 @@ function DocumentReview({ addToast }) {
         setClassifying(true);
         localStorage.setItem('sherlock_investigation_prompt', investigationPrompt);
         try {
-            const res = await fetch(`/api/classify/${id}`, {
+            const res = await apiFetch(`/api/classify/${id}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ investigationPrompt: investigationPrompt.trim() }),
@@ -118,7 +119,7 @@ function DocumentReview({ addToast }) {
     const handleReview = async (status) => {
         setSaving(true);
         try {
-            const res = await fetch(`/api/reviews/documents/${id}/review`, {
+            const res = await apiFetch(`/api/reviews/documents/${id}/review`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ status, notes }),
@@ -137,7 +138,7 @@ function DocumentReview({ addToast }) {
     const saveNotes = async () => {
         setSaving(true);
         try {
-            await fetch(`/api/reviews/documents/${id}/review`, {
+            await apiFetch(`/api/reviews/documents/${id}/review`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ status: reviewStatus, notes }),
@@ -154,9 +155,9 @@ function DocumentReview({ addToast }) {
         const hasTag = doc.tags?.some(t => t.id === tagId);
         try {
             if (hasTag) {
-                await fetch(`/api/tags/documents/${id}/tags/${tagId}`, { method: 'DELETE' });
+                await apiFetch(`/api/tags/documents/${id}/tags/${tagId}`, { method: 'DELETE' });
             } else {
-                await fetch(`/api/tags/documents/${id}/tags`, {
+                await apiFetch(`/api/tags/documents/${id}/tags`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ tag_id: tagId }),
@@ -173,7 +174,7 @@ function DocumentReview({ addToast }) {
         const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
         const color = colors[Math.floor(Math.random() * colors.length)];
         try {
-            const res = await fetch('/api/tags', {
+            const res = await apiFetch('/api/tags', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name: newTagName.trim(), color }),
@@ -181,7 +182,7 @@ function DocumentReview({ addToast }) {
             if (res.ok) {
                 setNewTagName('');
                 setShowNewTag(false);
-                const tagsRes = await fetch('/api/tags');
+                const tagsRes = await apiFetch('/api/tags');
                 setAllTags(await tagsRes.json());
                 addToast('Tag created', 'success');
             } else {
@@ -199,7 +200,7 @@ function DocumentReview({ addToast }) {
 
     const confirmDelete = async () => {
         try {
-            await fetch(`/api/documents/${id}`, { method: 'DELETE' });
+            await apiFetch(`/api/documents/${id}`, { method: 'DELETE' });
             addToast('Document deleted', 'success');
             navigate('/search');
         } catch (err) {

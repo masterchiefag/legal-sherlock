@@ -1,6 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formatSize } from '../utils/format';
+import { apiFetch, getAuthHeader } from '../utils/api';
 
 function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
     const [files, setFiles] = useState([]);
@@ -17,7 +18,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
     // Load recent jobs for this investigation on mount
     useEffect(() => {
         if (!activeInvestigationId) return;
-        fetch(`/api/documents/jobs/recent/${activeInvestigationId}`)
+        apiFetch(`/api/documents/jobs/recent/${activeInvestigationId}`)
             .then(r => r.json())
             .then(data => {
                 const jobs = data.jobs || [];
@@ -37,7 +38,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
 
     const pollJobStatus = async (jobId) => {
         try {
-            const res = await fetch(`/api/documents/jobs/${jobId}`);
+            const res = await apiFetch(`/api/documents/jobs/${jobId}`);
             if (res.ok) {
                 const job = await res.json();
                 setActiveJob(job);
@@ -102,6 +103,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
         try {
             const xhr = new XMLHttpRequest();
             xhr.open('POST', '/api/documents/upload', true);
+            const authToken = getAuthHeader(); if (authToken) xhr.setRequestHeader('Authorization', authToken);
 
             xhr.upload.onprogress = (e) => {
                 if (e.lengthComputable) {
@@ -191,7 +193,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
 
     const resumeJob = async (jobId) => {
         try {
-            const res = await fetch(`/api/documents/jobs/${jobId}/resume`, { method: 'POST' });
+            const res = await apiFetch(`/api/documents/jobs/${jobId}/resume`, { method: 'POST' });
             const data = await res.json();
             if (res.ok) {
                 addToast('Import resumed', 'info');

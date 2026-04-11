@@ -4,15 +4,21 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import db from '../db.js';
+import { requireRole, requireInvestigationAccess } from '../middleware/auth.js';
+import { logAudit, ACTIONS } from '../lib/audit.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
 
 const router = express.Router();
 
-// List all investigations with document counts
+// List investigations — filtered by membership (admins see all)
 router.get('/', (req, res) => {
     try {
+        const isAdmin = req.user.role === 'admin';
+        const memberFilter = isAdmin ? '' : `WHERE i.id IN (SELECT investigation_id FROM investigation_members WHERE user_id = ?)`;
+        const memberParams = isAdmin ? [] : [req.user.id];
+
         const investigations = db.prepare(`
             SELECT i.*,
                 (SELECT COUNT(*) FROM documents d WHERE d.investigation_id = i.id) as document_count,
@@ -24,8 +30,9 @@ router.get('/', (req, res) => {
                     AND dr.id IN (SELECT MAX(id) FROM document_reviews GROUP BY document_id)
                 ) as reviewed_count
             FROM investigations i
+            ${memberFilter}
             ORDER BY i.created_at DESC
-        `).all();
+        `).all(...memberParams);
 
         // Attach import job summaries per investigation
         const jobStmt = db.prepare(`
@@ -45,7 +52,7 @@ router.get('/', (req, res) => {
 });
 
 // Get single investigation with full stats
-router.get('/:id', (req, res) => {
+router.get('/:id', requireInvestigationAccess, (req, res) => {
     try {
         const inv = db.prepare(`SELECT * FROM investigations WHERE id = ?`).get(req.params.id);
         if (!inv) return res.status(404).json({ error: 'Investigation not found' });
@@ -68,7 +75,7 @@ router.get('/:id', (req, res) => {
 });
 
 // List custodians for an investigation with document counts
-router.get('/:id/custodians', (req, res) => {
+router.get('/:id/custodians', requireInvestigationAccess, (req, res) => {
     try {
         const custodians = db.prepare(`
             SELECT custodian as name,
@@ -89,8 +96,8 @@ router.get('/:id/custodians', (req, res) => {
     }
 });
 
-// Create new investigation
-router.post('/', (req, res) => {
+// Create new investigation — admin or reviewer
+router.post('/', requireRole('admin', 'reviewer'), (req, res) => {
     try {
         const { name, description, allegation, key_parties, remarks, date_range_start, date_range_end, short_code } = req.body;
         if (!name?.trim()) return res.status(400).json({ error: 'Investigation name is required' });
@@ -104,6 +111,20 @@ router.post('/', (req, res) => {
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(id, name.trim(), description || null, allegation || null, key_parties || null, remarks || null, date_range_start || null, date_range_end || null, code);
 
+        // Auto-add creator as member
+        db.prepare(
+            'INSERT INTO investigation_members (id, investigation_id, user_id, added_by) VALUES (?, ?, ?, ?)'
+        ).run(crypto.randomUUID(), id, req.user.id, req.user.id);
+
+        logAudit(db, {
+            userId: req.user.id,
+            action: ACTIONS.INVESTIGATION_CREATE,
+            resourceType: 'investigation',
+            resourceId: id,
+            details: { name: name.trim() },
+            ipAddress: req.ip,
+        });
+
         const inv = db.prepare(`SELECT * FROM investigations WHERE id = ?`).get(id);
         res.status(201).json(inv);
     } catch (err) {
@@ -112,8 +133,8 @@ router.post('/', (req, res) => {
     }
 });
 
-// Update investigation
-router.put('/:id', (req, res) => {
+// Update investigation — admin only
+router.put('/:id', requireRole('admin'), requireInvestigationAccess, (req, res) => {
     try {
         const inv = db.prepare(`SELECT * FROM investigations WHERE id = ?`).get(req.params.id);
         if (!inv) return res.status(404).json({ error: 'Investigation not found' });
@@ -142,6 +163,15 @@ router.put('/:id', (req, res) => {
             req.params.id
         );
 
+        logAudit(db, {
+            userId: req.user.id,
+            action: ACTIONS.INVESTIGATION_UPDATE,
+            resourceType: 'investigation',
+            resourceId: req.params.id,
+            details: { name },
+            ipAddress: req.ip,
+        });
+
         const updated = db.prepare(`SELECT * FROM investigations WHERE id = ?`).get(req.params.id);
         res.json(updated);
     } catch (err) {
@@ -150,8 +180,8 @@ router.put('/:id', (req, res) => {
     }
 });
 
-// Delete investigation and all associated data
-router.delete('/:id', (req, res) => {
+// Delete investigation and all associated data — admin only
+router.delete('/:id', requireRole('admin'), (req, res) => {
     try {
         const invId = req.params.id;
         const inv = db.prepare(`SELECT * FROM investigations WHERE id = ?`).get(invId);
@@ -162,24 +192,19 @@ router.delete('/:id', (req, res) => {
 
         // Delete in correct order for foreign key constraints
         const tx = db.transaction(() => {
-            // Delete tags for these documents
             db.prepare(`DELETE FROM document_tags WHERE document_id IN (SELECT id FROM documents WHERE investigation_id = ?)`).run(invId);
-            // Delete reviews
             db.prepare(`DELETE FROM document_reviews WHERE document_id IN (SELECT id FROM documents WHERE investigation_id = ?)`).run(invId);
-            // Delete classifications
             db.prepare(`DELETE FROM classifications WHERE document_id IN (SELECT id FROM documents WHERE investigation_id = ?)`).run(invId);
-            // Delete documents
             const delResult = db.prepare('DELETE FROM documents WHERE investigation_id = ?').run(invId);
-            // Delete import jobs
             db.prepare('DELETE FROM import_jobs WHERE investigation_id = ?').run(invId);
-            // Delete investigation
+            db.prepare('DELETE FROM investigation_members WHERE investigation_id = ?').run(invId);
             db.prepare('DELETE FROM investigations WHERE id = ?').run(invId);
             return delResult.changes;
         });
 
         const deletedDocs = tx();
 
-        // Delete files from disk (best effort, don't fail the request)
+        // Delete files from disk (best effort)
         let filesDeleted = 0;
         for (const doc of docs) {
             try {
@@ -194,7 +219,98 @@ router.delete('/:id', (req, res) => {
         // Rebuild FTS index
         try { db.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')"); } catch (_) {}
 
+        logAudit(db, {
+            userId: req.user.id,
+            action: ACTIONS.INVESTIGATION_DELETE,
+            resourceType: 'investigation',
+            resourceId: invId,
+            details: { name: inv.name, deletedDocs, filesDeleted },
+            ipAddress: req.ip,
+        });
+
         res.json({ message: `Deleted ${inv.name}: ${deletedDocs} documents, ${filesDeleted} files removed from disk` });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ═══════════════════════════════════════════════════
+// Investigation member management
+// ═══════════════════════════════════════════════════
+
+// GET /:id/members — list members
+router.get('/:id/members', requireInvestigationAccess, (req, res) => {
+    try {
+        const members = db.prepare(`
+            SELECT im.id as membership_id, im.role_override, im.added_at,
+                   u.id, u.email, u.name, u.role as global_role
+            FROM investigation_members im
+            JOIN users u ON u.id = im.user_id
+            WHERE im.investigation_id = ?
+            ORDER BY im.added_at ASC
+        `).all(req.params.id);
+        res.json(members);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// POST /:id/members — add a member (admin only)
+router.post('/:id/members', requireRole('admin'), (req, res) => {
+    try {
+        const { user_id, role_override } = req.body;
+        if (!user_id) return res.status(400).json({ error: 'user_id is required' });
+
+        const user = db.prepare('SELECT id, name FROM users WHERE id = ?').get(user_id);
+        if (!user) return res.status(404).json({ error: 'User not found' });
+
+        const existing = db.prepare(
+            'SELECT id FROM investigation_members WHERE investigation_id = ? AND user_id = ?'
+        ).get(req.params.id, user_id);
+        if (existing) return res.status(409).json({ error: 'User is already a member' });
+
+        const id = crypto.randomUUID();
+        db.prepare(
+            'INSERT INTO investigation_members (id, investigation_id, user_id, role_override, added_by) VALUES (?, ?, ?, ?, ?)'
+        ).run(id, req.params.id, user_id, role_override || null, req.user.id);
+
+        logAudit(db, {
+            userId: req.user.id,
+            action: ACTIONS.MEMBER_ADD,
+            resourceType: 'investigation',
+            resourceId: req.params.id,
+            details: { added_user_id: user_id, added_user_name: user.name },
+            ipAddress: req.ip,
+        });
+
+        res.status(201).json({ message: 'Member added', membership_id: id });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// DELETE /:id/members/:userId — remove a member (admin only)
+router.delete('/:id/members/:userId', requireRole('admin'), (req, res) => {
+    try {
+        const result = db.prepare(
+            'DELETE FROM investigation_members WHERE investigation_id = ? AND user_id = ?'
+        ).run(req.params.id, req.params.userId);
+
+        if (result.changes === 0) return res.status(404).json({ error: 'Membership not found' });
+
+        logAudit(db, {
+            userId: req.user.id,
+            action: ACTIONS.MEMBER_REMOVE,
+            resourceType: 'investigation',
+            resourceId: req.params.id,
+            details: { removed_user_id: req.params.userId },
+            ipAddress: req.ip,
+        });
+
+        res.json({ message: 'Member removed' });
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Internal server error' });

@@ -1,9 +1,10 @@
 import { Router } from 'express';
+import { requireRole } from '../middleware/auth.js';
 
 const router = Router();
 
-// POST /api/playground — freeform LLM prompt
-router.post('/', async (req, res) => {
+// POST /api/playground — freeform LLM prompt (reviewer+)
+router.post('/', requireRole('admin', 'reviewer'), async (req, res) => {
     const { prompt, model, system_prompt, temperature, max_tokens } = req.body;
 
     if (!prompt?.trim()) {

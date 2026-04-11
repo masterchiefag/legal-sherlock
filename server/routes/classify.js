@@ -3,6 +3,8 @@ import { v4 as uuidv4 } from 'uuid';
 import db from '../db.js';
 import { getProvider, listProviders } from '../lib/llm-providers.js';
 import { LLM_LIMITS } from '../lib/config.js';
+import { requireRole } from '../middleware/auth.js';
+import { logAudit, ACTIONS } from '../lib/audit.js';
 
 const router = express.Router();
 
@@ -69,9 +71,9 @@ function buildDocumentContent(doc, thread, attachments) {
 }
 
 // ═══════════════════════════════════════════════════
-// POST /api/classify/:documentId — Classify a document
+// POST /api/classify/:documentId — Classify a document (reviewer+)
 // ═══════════════════════════════════════════════════
-router.post('/:documentId', async (req, res) => {
+router.post('/:documentId', requireRole('admin', 'reviewer'), async (req, res) => {
     try {
         const { documentId } = req.params;
         const { investigationPrompt, model } = req.body;
@@ -115,9 +117,18 @@ router.post('/:documentId', async (req, res) => {
         // Save to DB
         const classificationId = uuidv4();
         db.prepare(`
-      INSERT INTO classifications (id, document_id, investigation_prompt, score, reasoning, provider, model, elapsed_seconds)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(classificationId, documentId, investigationPrompt.trim(), result.score, result.reasoning, provider.name, activeModel, parseFloat(elapsed));
+      INSERT INTO classifications (id, document_id, investigation_prompt, score, reasoning, provider, model, elapsed_seconds, requested_by)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `).run(classificationId, documentId, investigationPrompt.trim(), result.score, result.reasoning, provider.name, activeModel, parseFloat(elapsed), req.user?.id || null);
+
+        logAudit(db, {
+            userId: req.user?.id,
+            action: ACTIONS.CLASSIFY_RUN,
+            resourceType: 'document',
+            resourceId: documentId,
+            details: { score: result.score, model: activeModel },
+            ipAddress: req.ip,
+        });
 
         res.json({
             id: classificationId,

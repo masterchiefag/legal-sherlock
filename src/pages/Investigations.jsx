@@ -1,12 +1,15 @@
 import { useState, useEffect } from 'react';
 import { createPortal } from 'react-dom';
+import { apiFetch, apiPost, apiDelete } from '../utils/api';
 
 const thStyle = { padding: '10px 14px', textAlign: 'left', fontSize: '11px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' };
 const tdStyle = { padding: '12px 14px', color: 'var(--text-secondary)' };
 
 const emptyForm = { name: '', description: '', allegation: '', key_parties: '', remarks: '', date_range_start: '', date_range_end: '', short_code: '' };
 
-function Investigations({ activeInvestigationId, onInvestigationChange, addToast }) {
+function Investigations({ activeInvestigationId, onInvestigationChange, addToast, user }) {
+    const isAdmin = user?.role === 'admin';
+    const canCreate = user?.role === 'admin' || user?.role === 'reviewer';
     const [investigations, setInvestigations] = useState([]);
     const [loading, setLoading] = useState(true);
     const [showModal, setShowModal] = useState(false);
@@ -15,9 +18,16 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
     const [deleteConfirm, setDeleteConfirm] = useState(null); // investigation id pending delete
     const [deleting, setDeleting] = useState(false);
 
+    // Members panel state
+    const [membersInvId, setMembersInvId] = useState(null);
+    const [members, setMembers] = useState([]);
+    const [allUsers, setAllUsers] = useState([]);
+    const [membersLoading, setMembersLoading] = useState(false);
+    const [addUserId, setAddUserId] = useState('');
+
     const loadInvestigations = async () => {
         try {
-            const res = await fetch('/api/investigations');
+            const res = await apiFetch('/api/investigations');
             if (res.ok) {
                 const data = await res.json();
                 setInvestigations(data);
@@ -63,7 +73,7 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
         try {
             const url = editingId ? `/api/investigations/${editingId}` : '/api/investigations';
             const method = editingId ? 'PUT' : 'POST';
-            const res = await fetch(url, {
+            const res = await apiFetch(url, {
                 method,
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(formData)
@@ -89,7 +99,7 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
     const handleDelete = async (invId) => {
         setDeleting(true);
         try {
-            const res = await fetch(`/api/investigations/${invId}`, { method: 'DELETE' });
+            const res = await apiFetch(`/api/investigations/${invId}`, { method: 'DELETE' });
             const data = await res.json();
             if (res.ok) {
                 addToast(data.message, 'success');
@@ -108,6 +118,45 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
         }
     };
 
+    const openMembers = async (invId) => {
+        setMembersInvId(invId);
+        setMembersLoading(true);
+        setAddUserId('');
+        try {
+            const [membersRes, usersRes] = await Promise.all([
+                apiFetch(`/api/investigations/${invId}/members`),
+                apiFetch('/api/users'),
+            ]);
+            if (membersRes.ok) setMembers(await membersRes.json());
+            if (usersRes.ok) setAllUsers(await usersRes.json());
+        } catch { /* ignore */ }
+        setMembersLoading(false);
+    };
+
+    const handleAddMember = async () => {
+        if (!addUserId || !membersInvId) return;
+        const res = await apiPost(`/api/investigations/${membersInvId}/members`, { user_id: addUserId });
+        if (res.ok) {
+            addToast('Member added', 'success');
+            setAddUserId('');
+            openMembers(membersInvId);
+        } else {
+            const data = await res.json();
+            addToast(data.error || 'Failed to add member', 'error');
+        }
+    };
+
+    const handleRemoveMember = async (userId) => {
+        const res = await apiDelete(`/api/investigations/${membersInvId}/members/${userId}`);
+        if (res.ok) {
+            addToast('Member removed', 'success');
+            openMembers(membersInvId);
+        } else {
+            const data = await res.json();
+            addToast(data.error || 'Failed to remove member', 'error');
+        }
+    };
+
     if (loading) {
         return <div className="loading-overlay"><div className="spinner"></div></div>;
     }
@@ -119,9 +168,11 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
                     <h2 className="text-xl fw-bold m-0" style={{ color: 'var(--text-primary)' }}>Manage Investigations</h2>
                     <p className="text-sm text-muted mt-4 mb-0">Switch between cases or create a new investigation to scope your workspace.</p>
                 </div>
-                <button className="btn btn-primary" onClick={openCreate}>
-                    + New Investigation
-                </button>
+                {canCreate && (
+                    <button className="btn btn-primary" onClick={openCreate}>
+                        + New Investigation
+                    </button>
+                )}
             </div>
 
             <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
@@ -199,13 +250,22 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
                                                     Switch
                                                 </button>
                                             )}
-                                            <button className="btn btn-ghost btn-sm" style={{ fontSize: '11px', padding: '4px 8px' }} onClick={() => openEdit(inv)} title="Edit">
-                                                Edit
-                                            </button>
-                                            <button className="btn btn-ghost btn-sm" style={{ fontSize: '11px', padding: '4px 8px', color: 'var(--error)' }}
-                                                onClick={() => setDeleteConfirm(inv.id)} title="Delete case and all data">
-                                                Delete
-                                            </button>
+                                            {isAdmin && (
+                                                <button className="btn btn-ghost btn-sm" style={{ fontSize: '11px', padding: '4px 8px' }} onClick={() => openMembers(inv.id)} title="Manage members">
+                                                    Members
+                                                </button>
+                                            )}
+                                            {isAdmin && (
+                                                <button className="btn btn-ghost btn-sm" style={{ fontSize: '11px', padding: '4px 8px' }} onClick={() => openEdit(inv)} title="Edit">
+                                                    Edit
+                                                </button>
+                                            )}
+                                            {isAdmin && (
+                                                <button className="btn btn-ghost btn-sm" style={{ fontSize: '11px', padding: '4px 8px', color: 'var(--error)' }}
+                                                    onClick={() => setDeleteConfirm(inv.id)} title="Delete case and all data">
+                                                    Delete
+                                                </button>
+                                            )}
                                         </div>
                                     </td>
                                 </tr>
@@ -303,6 +363,100 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
                                 </>
                             );
                         })()}
+                    </div>
+                </div>,
+                document.body
+            )}
+            {/* Members Modal */}
+            {membersInvId && createPortal(
+                <div className="modal-overlay" onClick={() => setMembersInvId(null)} style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', position: 'fixed', inset: 0, backgroundColor: 'rgba(0,0,0,0.5)', zIndex: 9999 }}>
+                    <div className="card fade-in" onClick={e => e.stopPropagation()} style={{ width: '100%', maxWidth: '500px', maxHeight: '80vh', overflowY: 'auto' }}>
+                        <div className="flex items-center justify-between mb-24">
+                            <h3 className="m-0 text-lg fw-bold text-primary">
+                                Members — {investigations.find(i => i.id === membersInvId)?.name}
+                            </h3>
+                            <button className="btn btn-ghost btn-sm" onClick={() => setMembersInvId(null)}>&#10005;</button>
+                        </div>
+
+                        {membersLoading ? (
+                            <div style={{ padding: '2rem', textAlign: 'center', color: 'var(--text-secondary)' }}>Loading...</div>
+                        ) : (
+                            <>
+                                {/* Add member */}
+                                <div style={{ display: 'flex', gap: '8px', marginBottom: '16px' }}>
+                                    <select
+                                        value={addUserId}
+                                        onChange={e => setAddUserId(e.target.value)}
+                                        className="input"
+                                        style={{ flex: 1, fontSize: '13px' }}
+                                    >
+                                        <option value="">Select user to add...</option>
+                                        {allUsers
+                                            .filter(u => u.is_active && !members.some(m => m.user_id === u.id))
+                                            .map(u => (
+                                                <option key={u.id} value={u.id}>{u.name} ({u.email}) — {u.role}</option>
+                                            ))
+                                        }
+                                    </select>
+                                    <button className="btn btn-primary btn-sm" onClick={handleAddMember} disabled={!addUserId}>
+                                        Add
+                                    </button>
+                                </div>
+
+                                {/* Member list */}
+                                {members.length === 0 ? (
+                                    <div style={{ padding: '1rem', textAlign: 'center', color: 'var(--text-muted)', fontSize: '13px' }}>
+                                        No members yet. Add users to grant them access to this investigation.
+                                    </div>
+                                ) : (
+                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+                                        <thead>
+                                            <tr style={{ borderBottom: '1px solid var(--border-secondary)' }}>
+                                                <th style={thStyle}>User</th>
+                                                <th style={thStyle}>Role</th>
+                                                <th style={thStyle}>Added</th>
+                                                <th style={{ ...thStyle, textAlign: 'center' }}></th>
+                                            </tr>
+                                        </thead>
+                                        <tbody>
+                                            {members.map(m => (
+                                                <tr key={m.user_id} style={{ borderBottom: '1px solid var(--border-secondary)' }}>
+                                                    <td style={tdStyle}>
+                                                        <div style={{ fontWeight: 600, color: 'var(--text-primary)' }}>{m.user_name}</div>
+                                                        <div className="text-xs text-muted">{m.user_email}</div>
+                                                    </td>
+                                                    <td style={tdStyle}>
+                                                        <span style={{
+                                                            padding: '2px 8px', borderRadius: 10, fontSize: '11px', fontWeight: 600,
+                                                            background: m.user_role === 'admin' ? 'rgba(99,102,241,0.15)' : m.user_role === 'reviewer' ? 'rgba(34,197,94,0.15)' : 'rgba(148,163,184,0.15)',
+                                                            color: m.user_role === 'admin' ? '#818cf8' : m.user_role === 'reviewer' ? '#22c55e' : '#94a3b8',
+                                                        }}>
+                                                            {m.user_role}
+                                                        </span>
+                                                    </td>
+                                                    <td style={tdStyle} className="text-xs">
+                                                        {new Date(m.added_at).toLocaleDateString()}
+                                                    </td>
+                                                    <td style={{ ...tdStyle, textAlign: 'center' }}>
+                                                        <button
+                                                            className="btn btn-ghost btn-sm"
+                                                            style={{ fontSize: '11px', color: 'var(--error)' }}
+                                                            onClick={() => handleRemoveMember(m.user_id)}
+                                                        >
+                                                            Remove
+                                                        </button>
+                                                    </td>
+                                                </tr>
+                                            ))}
+                                        </tbody>
+                                    </table>
+                                )}
+
+                                <div style={{ marginTop: '12px', padding: '8px 12px', background: 'var(--bg-tertiary)', borderRadius: 6, fontSize: '12px', color: 'var(--text-muted)' }}>
+                                    Admins always have access to all investigations. Only non-admin users need explicit membership.
+                                </div>
+                            </>
+                        )}
                     </div>
                 </div>,
                 document.body

@@ -9,6 +9,8 @@ import db from '../db.js';
 import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
 import { resolveThreadId, backfillThread } from '../lib/threading.js';
+import { requireRole, requireInvestigationAccess } from '../middleware/auth.js';
+import { logAudit, ACTIONS } from '../lib/audit.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
@@ -320,8 +322,8 @@ async function processRegularFile(file, investigation_id, custodian) {
 // Routes
 // ═══════════════════════════════════════════════════
 
-// Upload documents (supports multiple files)
-router.post('/upload', (req, res, next) => {
+// Upload documents (supports multiple files) — reviewer+ with investigation access
+router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
     multerUpload(req, res, function (err) {
         if (err instanceof multer.MulterError) {
             return res.status(400).json({ error: `File upload error: ${err.message}` });
@@ -336,6 +338,25 @@ router.post('/upload', (req, res, next) => {
         if (!investigation_id) {
             return res.status(400).json({ error: 'investigation_id is required' });
         }
+
+        // Verify investigation access
+        if (req.user.role !== 'admin') {
+            const membership = db.prepare(
+                'SELECT id FROM investigation_members WHERE investigation_id = ? AND user_id = ?'
+            ).get(investigation_id, req.user.id);
+            if (!membership) {
+                return res.status(403).json({ error: 'You do not have access to this investigation' });
+            }
+        }
+
+        logAudit(db, {
+            userId: req.user.id,
+            action: ACTIONS.DOC_UPLOAD,
+            resourceType: 'investigation',
+            resourceId: investigation_id,
+            details: { fileCount: req.files?.length },
+            ipAddress: req.ip,
+        });
 
         // Use provided custodian, or fall back to filename (minus extension) of the first file
         let custodian = req.body.custodian;
@@ -453,8 +474,8 @@ router.get('/jobs/:id', (req, res) => {
     }
 });
 
-// Resume a failed PST import job
-router.post('/jobs/:id/resume', (req, res) => {
+// Resume a failed PST import job — admin or reviewer
+router.post('/jobs/:id/resume', requireRole('admin', 'reviewer'), (req, res) => {
     try {
         const job = db.prepare('SELECT * FROM import_jobs WHERE id = ?').get(req.params.id);
         if (!job) return res.status(404).json({ error: 'Job not found' });
@@ -684,11 +705,21 @@ router.get('/:id', (req, res) => {
     }
 });
 
-// Delete document (and its children)
-router.delete('/:id', (req, res) => {
+// Delete document (and its children) — admin or reviewer with investigation access
+router.delete('/:id', requireRole('admin', 'reviewer'), (req, res) => {
     try {
-        const doc = db.prepare('SELECT filename FROM documents WHERE id = ?').get(req.params.id);
+        const doc = db.prepare('SELECT filename, investigation_id FROM documents WHERE id = ?').get(req.params.id);
         if (!doc) return res.status(404).json({ error: 'Document not found' });
+
+        // Verify investigation access for non-admins
+        if (req.user.role !== 'admin' && doc.investigation_id) {
+            const membership = db.prepare(
+                'SELECT id FROM investigation_members WHERE investigation_id = ? AND user_id = ?'
+            ).get(doc.investigation_id, req.user.id);
+            if (!membership) {
+                return res.status(403).json({ error: 'You do not have access to this investigation' });
+            }
+        }
 
         // Delete child attachment files
         const children = db.prepare('SELECT filename FROM documents WHERE parent_id = ?').all(req.params.id);
@@ -703,6 +734,14 @@ router.delete('/:id', (req, res) => {
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
         db.prepare('DELETE FROM documents WHERE id = ?').run(req.params.id);
+
+        logAudit(db, {
+            userId: req.user.id,
+            action: ACTIONS.DOC_DELETE,
+            resourceType: 'document',
+            resourceId: req.params.id,
+            ipAddress: req.ip,
+        });
 
         res.json({ deleted: true });
     } catch (err) {

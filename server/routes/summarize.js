@@ -3,6 +3,8 @@ import { v4 as uuidv4 } from 'uuid';
 import db from '../db.js';
 import { getProvider } from '../lib/llm-providers.js';
 import { LLM_LIMITS } from '../lib/config.js';
+import { requireRole } from '../middleware/auth.js';
+import { logAudit, ACTIONS } from '../lib/audit.js';
 
 const router = express.Router();
 
@@ -57,9 +59,9 @@ function buildDocumentContent(doc, thread, attachments) {
 }
 
 // ═══════════════════════════════════════════════════
-// POST /api/summarize/jobs — Create a new summarization job
+// POST /api/summarize/jobs — Create a new summarization job (reviewer+)
 // ═══════════════════════════════════════════════════
-router.post('/jobs', (req, res) => {
+router.post('/jobs', requireRole('admin', 'reviewer'), (req, res) => {
     try {
         const { investigationId, prompt, model, totalDocs } = req.body;
         if (!prompt || prompt.trim().length < 3) {
@@ -83,9 +85,9 @@ router.post('/jobs', (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════
-// PATCH /api/summarize/jobs/:jobId — Update job status
+// PATCH /api/summarize/jobs/:jobId — Update job status (reviewer+)
 // ═══════════════════════════════════════════════════
-router.patch('/jobs/:jobId', (req, res) => {
+router.patch('/jobs/:jobId', requireRole('admin', 'reviewer'), (req, res) => {
     try {
         const { status, processedDocs, elapsedSeconds } = req.body;
         const updates = [];
@@ -172,9 +174,9 @@ router.get('/jobs/:jobId/results', (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════
-// POST /api/summarize/:documentId — Summarize a single document
+// POST /api/summarize/:documentId — Summarize a single document (reviewer+)
 // ═══════════════════════════════════════════════════
-router.post('/:documentId', async (req, res) => {
+router.post('/:documentId', requireRole('admin', 'reviewer'), async (req, res) => {
     try {
         const { documentId } = req.params;
         const { prompt, model, jobId } = req.body;

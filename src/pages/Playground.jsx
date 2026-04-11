@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { apiFetch } from '../utils/api';
 
 function Playground({ addToast }) {
     const [prompt, setPrompt] = useState('');
@@ -15,7 +16,7 @@ function Playground({ addToast }) {
     const textareaRef = useRef(null);
 
     useEffect(() => {
-        fetch('/api/classify/models')
+        apiFetch('/api/classify/models')
             .then(r => r.json())
             .then(data => {
                 setModels(data.models || []);
@@ -32,7 +33,7 @@ function Playground({ addToast }) {
         setStats(null);
 
         try {
-            const res = await fetch('/api/playground', {
+            const res = await apiFetch('/api/playground', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({

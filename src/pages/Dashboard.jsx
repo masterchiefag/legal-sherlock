@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
 import { formatSize } from '../utils/format';
+import { apiFetch } from '../utils/api';
 
 function Dashboard({ activeInvestigationId, activeInvestigation, addToast }) {
     const [stats, setStats] = useState(null);
@@ -10,7 +11,7 @@ function Dashboard({ activeInvestigationId, activeInvestigation, addToast }) {
 
     useEffect(() => {
         if (!activeInvestigationId) return;
-        fetch(`/api/reviews/stats?investigation_id=${activeInvestigationId}`)
+        apiFetch(`/api/reviews/stats?investigation_id=${activeInvestigationId}`)
             .then(r => {
                 if (!r.ok) throw new Error('Failed to load dashboard');
                 return r.json();

@@ -1,5 +1,8 @@
 import { Routes, Route, NavLink, useLocation } from 'react-router-dom';
 import { useState, useCallback, useEffect } from 'react';
+import { useAuth } from './contexts/AuthContext';
+import { apiFetch } from './utils/api';
+import Login from './pages/Login';
 import Dashboard from './pages/Dashboard';
 import Upload from './pages/Upload';
 import Search from './pages/Search';
@@ -9,11 +12,14 @@ import Investigations from './pages/Investigations';
 import Playground from './pages/Playground';
 import ImageExtraction from './pages/ImageExtraction';
 import SummarizationJobs from './pages/SummarizationJobs';
+import UserManagement from './pages/UserManagement';
+import AuditLog from './pages/AuditLog';
 
 function App() {
     const location = useLocation();
+    const { user, isLoading, logout } = useAuth();
     const [toasts, setToasts] = useState([]);
-    
+
     // Global investigation state
     const [activeInvestigationId, setActiveInvestigationId] = useState(
         localStorage.getItem('sherlock_investigation_id') || null
@@ -22,18 +28,18 @@ function App() {
 
     // Fetch details for the active investigation
     useEffect(() => {
-        if (!activeInvestigationId) {
+        if (!activeInvestigationId || !user) {
             setActiveInvestigation(null);
             return;
         }
-        fetch(`/api/investigations/${activeInvestigationId}`)
+        apiFetch(`/api/investigations/${activeInvestigationId}`)
             .then(r => r.ok ? r.json() : null)
             .then(data => {
                 if (data && !data.error) setActiveInvestigation(data);
                 else setActiveInvestigation(null);
             })
             .catch(() => setActiveInvestigation(null));
-    }, [activeInvestigationId]);
+    }, [activeInvestigationId, user]);
 
     const handleInvestigationChange = (id) => {
         if (id) {
@@ -53,6 +59,23 @@ function App() {
         }, 4000);
     }, []);
 
+    // Show loading spinner while checking auth
+    if (isLoading) {
+        return (
+            <div style={{ minHeight: '100vh', display: 'flex', alignItems: 'center', justifyContent: 'center', background: 'var(--bg-primary)' }}>
+                <div style={{ color: 'var(--text-secondary)', fontSize: '0.9rem' }}>Loading...</div>
+            </div>
+        );
+    }
+
+    // Show login if not authenticated
+    if (!user) {
+        return <Login />;
+    }
+
+    const isAdmin = user.role === 'admin';
+    const isViewer = user.role === 'viewer';
+
     const pageTitle = {
         '/': 'Dashboard',
         '/investigations': 'Manage Cases',
@@ -62,6 +85,8 @@ function App() {
         '/summaries': 'Summarization Jobs',
         '/playground': 'LLM Playground',
         '/image-extraction': 'Image Extraction',
+        '/admin/users': 'User Management',
+        '/admin/audit': 'Audit Log',
     }[location.pathname] || (location.pathname.startsWith('/documents/') ? 'Document Review' : '');
 
     return (
@@ -83,14 +108,16 @@ function App() {
                         </svg>
                         Dashboard
                     </NavLink>
-<NavLink to="/upload" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-                        <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                            <polyline points="17 8 12 3 7 8" />
-                            <line x1="12" y1="3" x2="12" y2="15" />
-                        </svg>
-                        Upload
-                    </NavLink>
+                    {!isViewer && (
+                        <NavLink to="/upload" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+                            <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                <polyline points="17 8 12 3 7 8" />
+                                <line x1="12" y1="3" x2="12" y2="15" />
+                            </svg>
+                            Upload
+                        </NavLink>
+                    )}
                     <NavLink to="/search" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
                         <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <circle cx="11" cy="11" r="8" />
@@ -115,25 +142,78 @@ function App() {
                         </svg>
                         Summaries
                     </NavLink>
-                    <NavLink to="/playground" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-                        <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <polyline points="4 17 10 11 4 5"></polyline>
-                            <line x1="12" y1="19" x2="20" y2="19"></line>
-                        </svg>
-                        Playground
-                    </NavLink>
-                    <NavLink to="/image-extraction" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
-                        <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <rect x="2" y="2" width="20" height="8" rx="2" ry="2" /><rect x="2" y="14" width="20" height="8" rx="2" ry="2" />
-                            <line x1="6" y1="6" x2="6.01" y2="6" /><line x1="6" y1="18" x2="6.01" y2="18" />
-                        </svg>
-                        Image Extraction
-                    </NavLink>
+                    {!isViewer && (
+                        <NavLink to="/playground" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+                            <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <polyline points="4 17 10 11 4 5"></polyline>
+                                <line x1="12" y1="19" x2="20" y2="19"></line>
+                            </svg>
+                            Playground
+                        </NavLink>
+                    )}
+                    {isAdmin && (
+                        <NavLink to="/image-extraction" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+                            <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                <rect x="2" y="2" width="20" height="8" rx="2" ry="2" /><rect x="2" y="14" width="20" height="8" rx="2" ry="2" />
+                                <line x1="6" y1="6" x2="6.01" y2="6" /><line x1="6" y1="18" x2="6.01" y2="18" />
+                            </svg>
+                            Image Extraction
+                        </NavLink>
+                    )}
+
+                    {isAdmin && (
+                        <>
+                            <div style={{ padding: '12px 12px 4px', fontSize: '10px', fontWeight: 700, textTransform: 'uppercase', letterSpacing: '0.5px', color: 'var(--text-tertiary)' }}>
+                                Admin
+                            </div>
+                            <NavLink to="/admin/users" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+                                <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"></path>
+                                    <circle cx="9" cy="7" r="4"></circle>
+                                    <path d="M23 21v-2a4 4 0 0 0-3-3.87"></path>
+                                    <path d="M16 3.13a4 4 0 0 1 0 7.75"></path>
+                                </svg>
+                                Users
+                            </NavLink>
+                            <NavLink to="/admin/audit" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+                                <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"></path>
+                                </svg>
+                                Audit Log
+                            </NavLink>
+                        </>
+                    )}
                 </nav>
-                <div style={{ padding: '16px 12px', borderTop: '1px solid var(--border-secondary)' }}>
-                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textAlign: 'center' }}>
-                        v1.0 — Sherlock
+
+                {/* User info + logout */}
+                <div style={{ padding: '12px', borderTop: '1px solid var(--border-secondary)', marginTop: 'auto' }}>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginBottom: '8px' }}>
+                        <div style={{
+                            width: 28, height: 28, borderRadius: '50%',
+                            background: 'var(--accent-color)', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                            fontSize: '11px', fontWeight: 700, color: '#fff', flexShrink: 0,
+                        }}>
+                            {user.name?.charAt(0).toUpperCase()}
+                        </div>
+                        <div style={{ minWidth: 0 }}>
+                            <div style={{ fontSize: '12px', fontWeight: 600, color: 'var(--text-primary)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                                {user.name}
+                            </div>
+                            <div style={{ fontSize: '10px', color: 'var(--text-tertiary)', textTransform: 'capitalize' }}>
+                                {user.role}
+                            </div>
+                        </div>
                     </div>
+                    <button
+                        onClick={logout}
+                        style={{
+                            width: '100%', padding: '4px 8px', border: '1px solid var(--border-secondary)',
+                            borderRadius: 4, background: 'transparent', color: 'var(--text-secondary)',
+                            fontSize: '11px', cursor: 'pointer',
+                        }}
+                    >
+                        Sign Out
+                    </button>
                 </div>
             </aside>
 
@@ -163,14 +243,16 @@ function App() {
                     <div className="page-enter" key={location.pathname}>
                         <Routes>
                             <Route path="/" element={<Dashboard activeInvestigationId={activeInvestigationId} activeInvestigation={activeInvestigation} addToast={addToast} />} />
-                            <Route path="/investigations" element={<Investigations activeInvestigationId={activeInvestigationId} onInvestigationChange={handleInvestigationChange} addToast={addToast} />} />
+                            <Route path="/investigations" element={<Investigations activeInvestigationId={activeInvestigationId} onInvestigationChange={handleInvestigationChange} addToast={addToast} user={user} />} />
                             <Route path="/upload" element={<Upload activeInvestigationId={activeInvestigationId} activeInvestigation={activeInvestigation} addToast={addToast} />} />
-                            <Route path="/search" element={<Search activeInvestigationId={activeInvestigationId} activeInvestigation={activeInvestigation} addToast={addToast} />} />
+                            <Route path="/search" element={<Search activeInvestigationId={activeInvestigationId} activeInvestigation={activeInvestigation} addToast={addToast} user={user} />} />
                             <Route path="/ai-logs" element={<ClassificationLogs activeInvestigationId={activeInvestigationId} />} />
                             <Route path="/summaries" element={<SummarizationJobs activeInvestigationId={activeInvestigationId} addToast={addToast} />} />
                             <Route path="/playground" element={<Playground addToast={addToast} />} />
                             <Route path="/image-extraction" element={<ImageExtraction addToast={addToast} />} />
-                            <Route path="/documents/:id" element={<DocumentReview activeInvestigationId={activeInvestigationId} addToast={addToast} />} />
+                            <Route path="/documents/:id" element={<DocumentReview activeInvestigationId={activeInvestigationId} addToast={addToast} user={user} />} />
+                            {isAdmin && <Route path="/admin/users" element={<UserManagement addToast={addToast} />} />}
+                            {isAdmin && <Route path="/admin/audit" element={<AuditLog />} />}
                             <Route path="*" element={
                                 <div className="empty-state">
                                     <h3 className="empty-state-title">Page not found</h3>

@@ -89,10 +89,14 @@ router.get('/', (req, res) => {
             ))`;
         }
 
-        // Investigation scope
+        // Investigation scope — enforce membership for non-admins
         if (investigation_id) {
             filterWhere += ' AND d.investigation_id = ?';
             filterParams.push(investigation_id);
+        } else if (req.user && req.user.role !== 'admin') {
+            // Auto-scope to user's investigations
+            filterWhere += ' AND d.investigation_id IN (SELECT investigation_id FROM investigation_members WHERE user_id = ?)';
+            filterParams.push(req.user.id);
         }
 
         if (status) {
