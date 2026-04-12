@@ -875,9 +875,12 @@ async function main() {
                 fs.rmSync(mediaTempDir, { recursive: true, force: true });
                 console.log(`✦ Chat Import: cleaned up temp media directory`);
             }
-            if (filepath) {
-                fs.unlinkSync(filepath);
-                console.log(`✦ Chat Import: deleted source file to free disk space`);
+            // Delete source file (bare sqlite or ZIP)
+            const sourceFile = zipPath || filepath;
+            if (sourceFile && fs.existsSync(sourceFile)) {
+                fs.unlinkSync(sourceFile);
+                const sizeMB = Math.round(fs.existsSync(sourceFile) ? 0 : 0); // already deleted
+                console.log(`✦ Chat Import: deleted source file ${path.basename(sourceFile)} to free disk space`);
             }
         } catch (_) { /* Best effort */ }
     }
