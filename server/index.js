@@ -2,6 +2,7 @@ import express from 'express';
 import cors from 'cors';
 import path from 'path';
 import fs from 'fs';
+import os from 'os';
 import { fileURLToPath } from 'url';
 
 import db from './db.js';
@@ -24,6 +25,35 @@ const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
 
 // Ensure uploads directory exists
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+
+// ═══════════════════════════════════════════════════
+// Startup cleanup: remove stale temp directories left by killed workers
+// ═══════════════════════════════════════════════════
+// When workers get SIGKILL'd (e.g. extract-worker timeout), their finally blocks
+// never run, leaving behind large temp dirs. Safe to clean on startup since
+// stuck jobs are marked as failed and no workers should be running yet.
+const STALE_TEMP_PREFIXES = ['sherlock-ocr-', 'pst-import-', 'whatsapp-zip-', 'chat-import-'];
+try {
+    const tmpEntries = fs.readdirSync(os.tmpdir());
+    let cleaned = 0;
+    for (const entry of tmpEntries) {
+        if (STALE_TEMP_PREFIXES.some(prefix => entry.startsWith(prefix))) {
+            const fullPath = path.join(os.tmpdir(), entry);
+            try {
+                fs.rmSync(fullPath, { recursive: true, force: true });
+                console.log(`✦ Startup cleanup: removed stale temp ${entry}`);
+                cleaned++;
+            } catch (err) {
+                console.warn(`✦ Startup cleanup: failed to remove ${entry}:`, err.message);
+            }
+        }
+    }
+    if (cleaned > 0) {
+        console.log(`✦ Startup cleanup: removed ${cleaned} stale temp directories`);
+    }
+} catch (err) {
+    console.warn('✦ Startup cleanup: could not scan tmpdir:', err.message);
+}
 
 const app = express();
 const PORT = process.env.PORT || 3001;
