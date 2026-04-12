@@ -41,14 +41,17 @@ function Batches({ activeInvestigationId, activeInvestigation, addToast, user })
         loadBatches();
     }, [loadBatches]);
 
-    // Load investigation members for admin reassign dropdown
+    // Load all active users for admin reassign dropdown
     useEffect(() => {
-        if (!activeInvestigationId || !isAdmin) return;
-        apiFetch(`/api/investigations/${activeInvestigationId}/members`)
+        if (!isAdmin) return;
+        apiFetch('/api/users')
             .then(r => r.json())
-            .then(data => setMembers(data.members || []))
+            .then(data => {
+                const active = (Array.isArray(data) ? data : []).filter(u => u.is_active && u.role !== 'viewer');
+                setMembers(active.map(u => ({ user_id: u.id, name: u.name || u.email })));
+            })
             .catch(() => {});
-    }, [activeInvestigationId, isAdmin]);
+    }, [isAdmin]);
 
     const loadBatchDetail = async (batch) => {
         setSelectedBatch(batch);
