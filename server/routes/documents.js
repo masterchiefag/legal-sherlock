@@ -397,8 +397,8 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
                 const jobId = uuidv4();
 
                 db.prepare(`
-                    INSERT INTO import_jobs (id, filename, filepath, status, investigation_id, custodian)
-                    VALUES (?, ?, ?, 'pending', ?, ?)
+                    INSERT INTO import_jobs (id, filename, filepath, status, investigation_id, custodian, job_type)
+                    VALUES (?, ?, ?, 'pending', ?, ?, 'chat')
                 `).run(jobId, file.originalname, file.path, investigation_id, custodian || null);
 
                 spawnChatWorker(jobId, file.filename, file.path, file.originalname, investigation_id, custodian);
@@ -429,10 +429,11 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
 
                 const jobId = uuidv4();
 
+                const zipJobType = sqliteEntry ? 'chat' : 'zip';
                 db.prepare(`
-                    INSERT INTO import_jobs (id, filename, filepath, status, investigation_id, custodian)
-                    VALUES (?, ?, ?, 'pending', ?, ?)
-                `).run(jobId, file.originalname, file.path, investigation_id, custodian || null);
+                    INSERT INTO import_jobs (id, filename, filepath, status, investigation_id, custodian, job_type)
+                    VALUES (?, ?, ?, 'pending', ?, ?, ?)
+                `).run(jobId, file.originalname, file.path, investigation_id, custodian || null, zipJobType);
 
                 if (sqliteEntry) {
                     // WhatsApp chat+media ZIP — route to chat worker

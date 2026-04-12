@@ -211,6 +211,8 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
     const getFileExt = (name) => name.split('.').pop().toLowerCase();
 
     const getJobType = (job) => {
+        if (job?.job_type) return job.job_type;
+        // Fallback for older jobs without job_type
         const ext = job?.filename?.split('.').pop().toLowerCase() || '';
         if (ext === 'sqlite' || ext === 'db') return 'chat';
         if (ext === 'zip') return 'zip';
@@ -392,7 +394,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                                         ? 'Extracting text from files...'
                                         : activeJob.phase === 'importing' || activeJob.status === 'processing'
                                         ? getJobType(activeJob) === 'chat'
-                                            ? 'Importing chat messages...'
+                                            ? 'Importing chat messages & media...'
                                             : getJobType(activeJob) === 'zip'
                                             ? 'Importing files & emails from archive...'
                                             : 'Importing emails & attachments...'
@@ -483,12 +485,12 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                                     </p>
                                     <p className="text-lg fw-bold m-0">{activeJob.total_emails?.toLocaleString() || 0}</p>
                                 </div>
-                                {getJobType(activeJob) !== 'chat' && (
                                 <div>
-                                    <p className="text-xs text-muted m-0 uppercase tracking-wide">Attachments</p>
+                                    <p className="text-xs text-muted m-0 uppercase tracking-wide">
+                                        {getJobType(activeJob) === 'chat' ? 'Media' : 'Attachments'}
+                                    </p>
                                     <p className="text-lg fw-bold m-0">{activeJob.total_attachments?.toLocaleString() || 0}</p>
                                 </div>
-                                )}
                                 {elapsed && (
                                     <div>
                                         <p className="text-xs text-muted m-0 uppercase tracking-wide">Total Time</p>
