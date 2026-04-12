@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { formatSize, getScoreColor } from '../utils/format';
-import { apiFetch } from '../utils/api';
+import { apiFetch, apiPost } from '../utils/api';
 
 function Search({ activeInvestigationId, activeInvestigation, addToast }) {
     const [searchParams, setSearchParams] = useSearchParams();
@@ -46,6 +46,11 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
     const [summarizeProgress, setSummarizeProgress] = useState(0);
     const [summarizeTotal, setSummarizeTotal] = useState(0);
     const [summarizeTime, setSummarizeTime] = useState(0);
+
+    // Create Batches
+    const [showCreateBatchPanel, setShowCreateBatchPanel] = useState(false);
+    const [batchSizeInput, setBatchSizeInput] = useState(100);
+    const [creatingBatches, setCreatingBatches] = useState(false);
 
     // Table view
     const [viewMode, setViewMode] = useState('cards'); // 'cards' or 'table'
@@ -798,6 +803,14 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
                                 </svg>
                                 Batch AI Classify
                             </button>
+                            <button className="btn btn-secondary btn-sm" onClick={() => setShowCreateBatchPanel(p => !p)}>
+                                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: '14px', height: '14px', marginRight: '5px' }}>
+                                    <rect x="2" y="3" width="20" height="5" rx="1" />
+                                    <rect x="2" y="10" width="20" height="5" rx="1" />
+                                    <rect x="2" y="17" width="20" height="5" rx="1" />
+                                </svg>
+                                Create Batches
+                            </button>
                         </>
                     )}
                 </div>
@@ -823,6 +836,85 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
                             >&times;</span>
                         </span>
                     ))}
+                </div>
+            )}
+
+            {/* Create Batches Panel */}
+            {showCreateBatchPanel && pagination && (
+                <div className="card fade-in" style={{ marginBottom: '24px', border: '1px solid var(--primary)', background: 'var(--bg-tertiary)' }}>
+                    <h3 style={{ marginTop: 0, marginBottom: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: '18px', height: '18px', color: 'var(--primary)' }}>
+                            <rect x="2" y="3" width="20" height="5" rx="1" />
+                            <rect x="2" y="10" width="20" height="5" rx="1" />
+                            <rect x="2" y="17" width="20" height="5" rx="1" />
+                        </svg>
+                        Create Review Batches
+                    </h3>
+                    <div style={{ display: 'flex', gap: '20px', alignItems: 'flex-start' }}>
+                        <div style={{ flex: 1 }}>
+                            <p style={{ fontSize: '13px', color: 'var(--text-secondary)', margin: '0 0 12px' }}>
+                                <strong>{pagination.total}</strong> documents match the current search.
+                                Split into batches for reviewer assignment.
+                            </p>
+                            <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginBottom: '12px' }}>
+                                <strong>Filters:</strong>{' '}
+                                {[
+                                    query && `"${query}"`,
+                                    docType && `type: ${docType}`,
+                                    reviewStatus && `status: ${reviewStatus}`,
+                                    custodianFilter && `custodian: ${custodianFilter}`,
+                                    (dateFrom || dateTo) && `${dateFrom || '...'} – ${dateTo || '...'}`,
+                                    scoreFilter && `score: ${scoreFilter}`,
+                                ].filter(Boolean).join(', ') || 'None (all documents)'}
+                            </div>
+                        </div>
+                        <div style={{ width: '220px' }}>
+                            <label className="text-sm text-secondary block mb-8">Batch Size</label>
+                            <input type="number" min="1" max="10000" value={batchSizeInput}
+                                onChange={e => setBatchSizeInput(Math.max(1, parseInt(e.target.value) || 1))}
+                                style={{
+                                    width: '100%', padding: '8px', borderRadius: '6px', fontSize: '14px',
+                                    background: 'var(--bg-primary)', color: 'var(--text-primary)',
+                                    border: '1px solid var(--border-primary)', marginBottom: '8px',
+                                }}
+                            />
+                            <p style={{ fontSize: '12px', color: 'var(--text-muted)', margin: '0 0 12px' }}>
+                                Will create <strong>{Math.ceil(pagination.total / batchSizeInput)}</strong> batch{Math.ceil(pagination.total / batchSizeInput) !== 1 ? 'es' : ''} of {batchSizeInput} docs
+                                {pagination.total % batchSizeInput !== 0 && ` (last: ${pagination.total % batchSizeInput})`}
+                            </p>
+                            <button className="btn btn-primary" style={{ width: '100%' }}
+                                disabled={creatingBatches || pagination.total === 0}
+                                onClick={async () => {
+                                    setCreatingBatches(true);
+                                    try {
+                                        const searchCriteria = {
+                                            q: query, review_status: reviewStatus, doc_type: docType,
+                                            date_from: dateFrom, date_to: dateTo, custodian: custodianFilter,
+                                            score_min: scoreFilter === 'unscored' ? 'unscored' : (scoreFilter ? scoreFilter.replace('+', '') : ''),
+                                            hide_duplicates: hideDuplicates ? '1' : '0',
+                                            latest_thread_only: latestThreadOnly ? '1' : '0',
+                                            ocr_applied: ocrAppliedFilter || '',
+                                        };
+                                        const res = await apiPost('/api/batches', {
+                                            investigation_id: activeInvestigationId,
+                                            batch_size: batchSizeInput,
+                                            search_criteria: searchCriteria,
+                                        });
+                                        const data = await res.json();
+                                        if (!res.ok) { addToast(data.error || 'Failed to create batches', 'error'); return; }
+                                        addToast(`${data.batches_created} batch${data.batches_created !== 1 ? 'es' : ''} created with ${data.total_documents} documents`, 'success');
+                                        setShowCreateBatchPanel(false);
+                                    } catch (err) {
+                                        addToast('Failed to create batches', 'error');
+                                    } finally {
+                                        setCreatingBatches(false);
+                                    }
+                                }}
+                            >
+                                {creatingBatches ? 'Creating...' : 'Create Batches'}
+                            </button>
+                        </div>
+                    </div>
                 </div>
             )}
 
