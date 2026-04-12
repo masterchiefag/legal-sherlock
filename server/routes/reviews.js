@@ -1,6 +1,6 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import db from '../db.js';
+import db, { readDb } from '../db.js';
 import { requireRole } from '../middleware/auth.js';
 import { logAudit, ACTIONS } from '../lib/audit.js';
 
@@ -15,6 +15,19 @@ router.put('/documents/:docId/review', requireRole('admin', 'reviewer'), (req, r
         const valid = ['pending', 'relevant', 'not_relevant', 'privileged'];
         if (!valid.includes(status)) {
             return res.status(400).json({ error: `Status must be one of: ${valid.join(', ')}` });
+        }
+
+        // Reviewers can only review documents in a batch assigned to them
+        if (req.user.role !== 'admin') {
+            const assignedBatch = readDb.prepare(`
+                SELECT rb.id FROM review_batch_documents rbd
+                JOIN review_batches rb ON rbd.batch_id = rb.id
+                WHERE rbd.document_id = ? AND rb.assignee_id = ?
+                LIMIT 1
+            `).get(req.params.docId, req.user.id);
+            if (!assignedBatch) {
+                return res.status(403).json({ error: 'You can only review documents in batches assigned to you' });
+            }
         }
 
         const id = uuidv4();

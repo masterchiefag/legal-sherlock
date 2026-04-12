@@ -10,11 +10,12 @@ const REVIEW_OPTIONS = [
     { status: 'privileged', label: 'Privileged', color: '#f59e0b', key: 'p' },
 ];
 
-function DocumentReview({ addToast }) {
+function DocumentReview({ addToast, user }) {
     const { id } = useParams();
     const navigate = useNavigate();
     const [doc, setDoc] = useState(null);
     const [loading, setLoading] = useState(true);
+    const [canEdit, setCanEdit] = useState(true);
     const [allTags, setAllTags] = useState([]);
     const [reviewStatus, setReviewStatus] = useState('pending');
     const [notes, setNotes] = useState('');
@@ -61,6 +62,15 @@ function DocumentReview({ addToast }) {
 
     useEffect(() => { setLoading(true); loadDocument(); loadClassifications(); }, [loadDocument]);
 
+    // Check if reviewer can edit — must have doc in an assigned batch
+    useEffect(() => {
+        if (!user || user.role === 'admin') { setCanEdit(true); return; }
+        apiFetch(`/api/batches/check-access/${id}`)
+            .then(r => r.json())
+            .then(data => setCanEdit(data.can_edit))
+            .catch(() => setCanEdit(false));
+    }, [id, user]);
+
     const loadClassifications = useCallback(async () => {
         try {
             const res = await apiFetch(`/api/classify/${id}`);
@@ -82,6 +92,7 @@ function DocumentReview({ addToast }) {
     }, [id]);
 
     const handleClassify = async () => {
+        if (!canEdit) { addToast('Assign the batch to yourself first', 'error'); return; }
         if (!investigationPrompt.trim() || classifying) return;
         setClassifying(true);
         localStorage.setItem('sherlock_investigation_prompt', investigationPrompt);
@@ -108,15 +119,17 @@ function DocumentReview({ addToast }) {
     // Keyboard shortcuts
     useEffect(() => {
         const handler = (e) => {
+            if (!canEdit) return;
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
             const option = REVIEW_OPTIONS.find(o => o.key === e.key);
             if (option) handleReview(option.status);
         };
         window.addEventListener('keydown', handler);
         return () => window.removeEventListener('keydown', handler);
-    }, [id]);
+    }, [id, canEdit]);
 
     const handleReview = async (status) => {
+        if (!canEdit) { addToast('Assign the batch to yourself first', 'error'); return; }
         setSaving(true);
         try {
             const res = await apiFetch(`/api/reviews/documents/${id}/review`, {
@@ -136,6 +149,7 @@ function DocumentReview({ addToast }) {
     };
 
     const saveNotes = async () => {
+        if (!canEdit) { addToast('Assign the batch to yourself first', 'error'); return; }
         setSaving(true);
         try {
             await apiFetch(`/api/reviews/documents/${id}/review`, {
@@ -152,6 +166,7 @@ function DocumentReview({ addToast }) {
     };
 
     const toggleTag = async (tagId) => {
+        if (!canEdit) { addToast('Assign the batch to yourself first', 'error'); return; }
         const hasTag = doc.tags?.some(t => t.id === tagId);
         try {
             if (hasTag) {
@@ -170,6 +185,7 @@ function DocumentReview({ addToast }) {
     };
 
     const createTag = async () => {
+        if (!canEdit) { addToast('Assign the batch to yourself first', 'error'); return; }
         if (!newTagName.trim()) return;
         const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
         const color = colors[Math.floor(Math.random() * colors.length)];
@@ -195,6 +211,7 @@ function DocumentReview({ addToast }) {
     };
 
     const requestDelete = () => {
+        if (!canEdit) { addToast('Assign the batch to yourself first', 'error'); return; }
         setShowDeleteConfirm(true);
     };
 
@@ -563,6 +580,15 @@ function DocumentReview({ addToast }) {
 
             {/* Sidebar */}
             <div className="doc-sidebar-panel">
+                {!canEdit && (
+                    <div style={{
+                        padding: '10px 14px', marginBottom: '16px', borderRadius: '8px',
+                        background: 'rgba(245, 158, 11, 0.15)', border: '1px solid rgba(245, 158, 11, 0.3)',
+                        fontSize: '12px', color: '#f59e0b',
+                    }}>
+                        Read-only — assign the batch to yourself to make changes.
+                    </div>
+                )}
                 {/* Review Status */}
                 <div className="doc-sidebar-section">
                     <h3>Review Decision</h3>
@@ -572,7 +598,7 @@ function DocumentReview({ addToast }) {
                                 key={opt.status}
                                 className={`review-btn ${reviewStatus === opt.status ? `active-${opt.status}` : ''}`}
                                 onClick={() => handleReview(opt.status)}
-                                disabled={saving}
+                                disabled={saving || !canEdit}
                             >
                                 <span className="review-dot" style={{ background: opt.color }}></span>
                                 {opt.label}

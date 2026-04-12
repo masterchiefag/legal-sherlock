@@ -19,6 +19,7 @@ import playgroundRouter from './routes/playground.js';
 import imagesRouter from './routes/images.js';
 import summarizeRouter from './routes/summarize.js';
 import auditLogsRouter from './routes/audit-logs.js';
+import batchesRouter from './routes/batches.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', 'uploads');
@@ -103,6 +104,7 @@ app.use('/api/playground', playgroundRouter);
 app.use('/api/images', imagesRouter);
 app.use('/api/summarize', summarizeRouter);
 app.use('/api/audit-logs', auditLogsRouter);
+app.use('/api/batches', batchesRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {

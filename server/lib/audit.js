@@ -34,6 +34,10 @@ export const ACTIONS = {
   TAG_UNASSIGN: 'tag.unassign',
 
   IMPORT_RESUME: 'import.resume',
+
+  BATCH_CREATE: 'batch.create',
+  BATCH_ASSIGN: 'batch.assign',
+  BATCH_DELETE: 'batch.delete',
 };
 
 export function logAudit(db, { userId, action, resourceType, resourceId, details, ipAddress }) {

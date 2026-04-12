@@ -14,6 +14,7 @@ import ImageExtraction from './pages/ImageExtraction';
 import SummarizationJobs from './pages/SummarizationJobs';
 import UserManagement from './pages/UserManagement';
 import AuditLog from './pages/AuditLog';
+import Batches from './pages/Batches';
 
 function App() {
     const location = useLocation();
@@ -82,6 +83,7 @@ function App() {
         '/upload': 'Upload Documents',
         '/search': 'Analyze',
         '/ai-logs': 'AI Activity Logs',
+        '/batches': 'Review Batches',
         '/summaries': 'Summarization Jobs',
         '/playground': 'LLM Playground',
         '/image-extraction': 'Image Extraction',
@@ -125,6 +127,16 @@ function App() {
                         </svg>
                         Analyze
                     </NavLink>
+                    {!isViewer && (
+                    <NavLink to="/batches" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+                        <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <rect x="2" y="3" width="20" height="5" rx="1" />
+                            <rect x="2" y="10" width="20" height="5" rx="1" />
+                            <rect x="2" y="17" width="20" height="5" rx="1" />
+                        </svg>
+                        Batches
+                    </NavLink>
+                    )}
                     <NavLink to="/ai-logs" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
                         <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
                             <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
@@ -246,6 +258,7 @@ function App() {
                             <Route path="/investigations" element={<Investigations activeInvestigationId={activeInvestigationId} onInvestigationChange={handleInvestigationChange} addToast={addToast} user={user} />} />
                             <Route path="/upload" element={<Upload activeInvestigationId={activeInvestigationId} activeInvestigation={activeInvestigation} addToast={addToast} />} />
                             <Route path="/search" element={<Search activeInvestigationId={activeInvestigationId} activeInvestigation={activeInvestigation} addToast={addToast} user={user} />} />
+                            <Route path="/batches" element={<Batches activeInvestigationId={activeInvestigationId} activeInvestigation={activeInvestigation} addToast={addToast} user={user} />} />
                             <Route path="/ai-logs" element={<ClassificationLogs activeInvestigationId={activeInvestigationId} />} />
                             <Route path="/summaries" element={<SummarizationJobs activeInvestigationId={activeInvestigationId} addToast={addToast} />} />
                             <Route path="/playground" element={<Playground addToast={addToast} />} />
