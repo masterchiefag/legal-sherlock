@@ -355,7 +355,7 @@ async function main() {
                 const mediaRows = chatDb.prepare(`
                     SELECT m.Z_PK as msg_pk, mi.ZMEDIALOCALPATH as media_path,
                            mi.ZTITLE as media_title, mi.ZFILESIZE as media_size,
-                           m.ZMESSAGETYPE as msg_type
+                           m.ZMESSAGETYPE as msg_type, m.ZMESSAGEDATE as msg_date
                     FROM ZWAMESSAGE m
                     JOIN ZWAMEDIAITEM mi ON mi.ZMESSAGE = m.Z_PK
                     WHERE mi.ZMEDIALOCALPATH IS NOT NULL AND mi.ZMEDIALOCALPATH != ''
@@ -446,9 +446,9 @@ async function main() {
         const insertAttachment = db.prepare(`
             INSERT INTO documents (
                 id, filename, original_name, mime_type, size_bytes, text_content, status,
-                doc_type, parent_id, thread_id,
+                doc_type, parent_id, thread_id, email_date,
                 content_hash, is_duplicate, investigation_id, custodian, doc_identifier, recipient_count
-            ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
+            ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?, ?,
                 ?, ?, ?, ?, ?, 0)
         `);
 
@@ -502,10 +502,14 @@ async function main() {
                         const media = currentDayMedia[j];
                         try {
                             const attId = uuidv4();
-                            const originalName = media.media_title || path.basename(media.resolvedPath);
-                            const ext = path.extname(originalName) || path.extname(media.resolvedPath) ||
+                            const rawName = media.media_title || path.basename(media.resolvedPath);
+                            // Sanitize: media_title can be a full URL or message text (hundreds of chars)
+                            // Use it for original_name in DB but derive extension from the actual file path
+                            const ext = path.extname(media.resolvedPath) || path.extname(rawName) ||
                                 (media.msg_type === 1 ? '.jpg' : '');
-                            const attFilename = `${attId}${ext}`;
+                            const safeExt = ext.split(/[?#\s]/)[0].substring(0, 10); // strip query params, cap length
+                            const originalName = rawName.length > 200 ? rawName.substring(0, 200) : rawName;
+                            const attFilename = `${attId}${safeExt}`;
                             const attDiskPath = path.join(UPLOADS_DIR, attFilename);
 
                             // Extract file from ZIP
@@ -520,11 +524,13 @@ async function main() {
                             const mime = guessMimeType(originalName || media.resolvedPath, media.msg_type);
                             const attDocIdentifier = `${chatDocIdentifier}_${String(j + 1).padStart(3, '0')}`;
 
+                            const msgDate = convertCoreDataTimestamp(media.msg_date);
                             insertAttachment.run(
                                 attId, attFilename, originalName, mime,
                                 media.media_size || fileBuffer.length,
                                 docId,              // parent_id = chat document
                                 sessionThreadId,    // thread_id
+                                msgDate ? msgDate.toISOString() : currentDayDate.toISOString(),
                                 contentHash, isDuplicate,
                                 investigation_id, custodian || null, attDocIdentifier
                             );
@@ -637,6 +643,9 @@ async function main() {
 
         console.log(`✦ Chat Import: ingested ${totalChatDocs} daily chat transcripts, ${totalAttachments} media attachments.`);
 
+        // Record Phase 1 completion and attachment count
+        db.prepare("UPDATE import_jobs SET phase1_completed_at = datetime('now'), total_attachments = ? WHERE id = ?").run(totalAttachments, jobId);
+
         // ═══════════════════════════════════════════
         // Phase 2: Extract text from media attachments
         // ═══════════════════════════════════════════
@@ -645,7 +654,7 @@ async function main() {
 
             const EXTRACT_WORKER = path.join(__dirname, '..', 'lib', 'extract-worker.js');
             const EXTRACT_TIMEOUT = 15000;
-            const OCR_TIMEOUT = 180000;
+            const OCR_TIMEOUT = 120000;
             const NODE_BIN = process.execPath;
             const PHASE2_CONCURRENCY = 4;
 
@@ -664,6 +673,16 @@ async function main() {
                         resolve(stdout);
                     });
                 });
+            }
+
+            // Skip media types that can't yield useful text (images, video, audio)
+            const SKIP_MIME_PREFIXES = ['image/', 'video/', 'audio/'];
+            const EXTRACTABLE_IMAGE_MIMES = []; // could add image/pdf etc. in future
+            const skippedMedia = db.prepare(
+                "UPDATE documents SET status = 'ready', text_content = '' WHERE status = 'processing' AND doc_type = 'attachment' AND is_duplicate = 0 AND investigation_id = ? AND (mime_type LIKE 'image/%' OR mime_type LIKE 'video/%' OR mime_type LIKE 'audio/%')"
+            ).run(investigation_id);
+            if (skippedMedia.changes > 0) {
+                console.log(`✦ Phase 2: skipped ${skippedMedia.changes} image/video/audio attachments (no text to extract)`);
             }
 
             // Skip duplicates — backfill from originals later
@@ -778,13 +797,6 @@ async function main() {
             WHERE id = ?
         `).run(totalChatDocs, jobId);
 
-        // Clean up uploaded/temp files
-        try {
-            if (tempSqlitePath) fs.unlinkSync(tempSqlitePath);
-            if (!isZipMode && filepath) fs.unlinkSync(filepath);
-            // ZIP file is kept — may be re-processed or needed for debugging
-        } catch (_) { /* Best effort */ }
-
     } catch (err) {
         console.error("Chat worker fatal error:", err);
         db.prepare(`
@@ -794,6 +806,15 @@ async function main() {
                 completed_at = datetime('now')
             WHERE id = ?
         `).run(JSON.stringify([{ error: err.message, fatal: true }]), jobId);
+    } finally {
+        // Clean up uploaded/temp files
+        try {
+            if (tempSqlitePath) fs.unlinkSync(tempSqlitePath);
+            if (filepath) {
+                fs.unlinkSync(filepath);
+                console.log(`✦ Chat Import: deleted source file to free disk space`);
+            }
+        } catch (_) { /* Best effort */ }
     }
 }
 
