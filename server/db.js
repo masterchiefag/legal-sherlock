@@ -178,24 +178,6 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_investigation_id ON documents(
 db.exec(`CREATE INDEX IF NOT EXISTS idx_import_jobs_investigation_id ON import_jobs(investigation_id)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_thread_inv_date ON documents(thread_id, investigation_id, doc_type, email_date)`);
 
-// Backfill: create default investigation and assign orphan documents
-{
-  let defaultId;
-  const defaultInv = db.prepare(`SELECT id FROM investigations WHERE name = 'General Investigation'`).get();
-  if (!defaultInv) {
-    defaultId = crypto.randomUUID();
-    db.prepare(`INSERT INTO investigations (id, name, description) VALUES (?, 'General Investigation', 'Default investigation for pre-existing documents')`).run(defaultId);
-  } else {
-    defaultId = defaultInv.id;
-  }
-
-  const orphanCount = db.prepare(`SELECT COUNT(*) as c FROM documents WHERE investigation_id IS NULL`).get().c;
-  if (orphanCount > 0) {
-    db.prepare(`UPDATE documents SET investigation_id = ? WHERE investigation_id IS NULL`).run(defaultId);
-    db.prepare(`UPDATE import_jobs SET investigation_id = ? WHERE investigation_id IS NULL`).run(defaultId);
-    console.log(`✦ Migration: assigned ${orphanCount} orphan documents to 'General Investigation'`);
-  }
-}
 // ═══════════════════════════════════════════════════
 // Migration: Add elapsed_seconds to classifications
 // ═══════════════════════════════════════════════════
