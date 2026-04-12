@@ -32,8 +32,8 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
                 const data = await res.json();
                 setInvestigations(data);
                 if (data.length > 0 && (!activeInvestigationId || !data.some(i => i.id === activeInvestigationId))) {
-                    const defaultGeneral = data.find(i => i.name === 'General Investigation') || data[0];
-                    if (onInvestigationChange) onInvestigationChange(defaultGeneral.id);
+                    const defaultInv = data[0];
+                    if (onInvestigationChange) onInvestigationChange(defaultInv.id);
                 }
             } else {
                 throw new Error('Failed to load investigations');
@@ -162,7 +162,7 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
     }
 
     return (
-        <div className="fade-in" style={{ maxWidth: '1200px' }}>
+        <div className="fade-in">
             <div className="flex items-center justify-between mb-24">
                 <div>
                     <h2 className="text-xl fw-bold m-0" style={{ color: 'var(--text-primary)' }}>Manage Investigations</h2>
@@ -175,8 +175,8 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
                 )}
             </div>
 
-            <div className="card" style={{ padding: 0, overflow: 'hidden' }}>
-                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '13px' }}>
+            <div className="card" style={{ padding: 0, overflowX: 'auto' }}>
+                <table style={{ width: '100%', minWidth: '900px', borderCollapse: 'collapse', fontSize: '13px' }}>
                     <thead>
                         <tr style={{ background: 'var(--bg-tertiary)', borderBottom: '1px solid var(--border-secondary)' }}>
                             <th style={thStyle}>Case Name</th>
@@ -241,29 +241,29 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
                                         )}
                                     </td>
                                     <td style={{ ...tdStyle, textAlign: 'center' }}>
-                                        <div style={{ display: 'flex', gap: '4px', justifyContent: 'center' }}>
+                                        <div style={{ display: 'flex', gap: '2px', justifyContent: 'center' }}>
                                             {!isActive && (
-                                                <button className="btn btn-outline btn-sm" style={{ fontSize: '11px', padding: '4px 10px' }} onClick={() => {
+                                                <button className="btn btn-ghost btn-sm" style={{ padding: '5px 6px', lineHeight: 1 }} onClick={() => {
                                                     if (onInvestigationChange) onInvestigationChange(inv.id);
                                                     addToast(`Switched to ${inv.name}`, 'success');
-                                                }}>
-                                                    Switch
+                                                }} title="Switch to this case">
+                                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="15 3 21 3 21 9"/><path d="M21 3l-7 7"/><polyline points="9 21 3 21 3 15"/><path d="M3 21l7-7"/></svg>
                                                 </button>
                                             )}
                                             {isAdmin && (
-                                                <button className="btn btn-ghost btn-sm" style={{ fontSize: '11px', padding: '4px 8px' }} onClick={() => openMembers(inv.id)} title="Manage members">
-                                                    Members
+                                                <button className="btn btn-ghost btn-sm" style={{ padding: '5px 6px', lineHeight: 1 }} onClick={() => openMembers(inv.id)} title="Manage members">
+                                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
                                                 </button>
                                             )}
                                             {isAdmin && (
-                                                <button className="btn btn-ghost btn-sm" style={{ fontSize: '11px', padding: '4px 8px' }} onClick={() => openEdit(inv)} title="Edit">
-                                                    Edit
+                                                <button className="btn btn-ghost btn-sm" style={{ padding: '5px 6px', lineHeight: 1 }} onClick={() => openEdit(inv)} title="Edit">
+                                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><path d="M11 4H4a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 0 1 3 3L12 15l-4 1 1-4 9.5-9.5z"/></svg>
                                                 </button>
                                             )}
                                             {isAdmin && (
-                                                <button className="btn btn-ghost btn-sm" style={{ fontSize: '11px', padding: '4px 8px', color: 'var(--error)' }}
+                                                <button className="btn btn-ghost btn-sm" style={{ padding: '5px 6px', lineHeight: 1, color: 'var(--error)' }}
                                                     onClick={() => setDeleteConfirm(inv.id)} title="Delete case and all data">
-                                                    Delete
+                                                    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round"><polyline points="3 6 5 6 21 6"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6m3 0V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/></svg>
                                                 </button>
                                             )}
                                         </div>
