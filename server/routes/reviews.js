@@ -147,10 +147,10 @@ router.get('/stats', (req, res) => {
       WHERE 1=1${investigation_id ? ' AND d.investigation_id = ?' : ''}
     `).get(...invParams).count;
 
-        // Top senders (top 10)
+        // Top senders (top 10) — includes emails and chats
         const topSenders = db.prepare(`
       SELECT email_from, COUNT(*) as count
-      FROM documents WHERE doc_type = 'email' AND email_from IS NOT NULL${invFilter}
+      FROM documents WHERE doc_type IN ('email', 'chat') AND email_from IS NOT NULL${invFilter}
       GROUP BY email_from ORDER BY count DESC LIMIT 10
     `).all(...invParams);
 
