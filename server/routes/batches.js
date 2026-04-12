@@ -299,6 +299,25 @@ router.patch('/:id/status', requireRole('admin', 'reviewer'), (req, res) => {
     }
 });
 
+// GET /api/batches/check-access/:documentId — Check if current user can edit a document
+router.get('/check-access/:documentId', (req, res) => {
+    try {
+        if (req.user.role === 'admin') {
+            return res.json({ can_edit: true });
+        }
+        const assignedBatch = readDb.prepare(`
+            SELECT rb.id FROM review_batch_documents rbd
+            JOIN review_batches rb ON rbd.batch_id = rb.id
+            WHERE rbd.document_id = ? AND rb.assignee_id = ?
+            LIMIT 1
+        `).get(req.params.documentId, req.user.id);
+        res.json({ can_edit: !!assignedBatch });
+    } catch (err) {
+        console.error('Batch access check error:', err);
+        res.status(500).json({ error: 'Failed to check access' });
+    }
+});
+
 // DELETE /api/batches/:id — Delete a batch (admin only)
 router.delete('/:id', requireRole('admin'), (req, res) => {
     try {
