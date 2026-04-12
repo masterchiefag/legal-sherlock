@@ -260,7 +260,23 @@ async function main() {
             console.log(`✦ Chat Import: ZWAGROUPMEMBER not available (${e.message})`);
         }
 
-        // Source 2: Push names (user-set display names, often the best source)
+        // Source 2: Session partner names (device owner's contact book — most authoritative)
+        try {
+            const partners = chatDb.prepare(`
+                SELECT ZCONTACTJID as jid, ZPARTNERNAME as name
+                FROM ZWACHATSESSION
+                WHERE ZCONTACTJID IS NOT NULL AND ZPARTNERNAME IS NOT NULL AND ZPARTNERNAME != ''
+                  AND ZCONTACTJID NOT LIKE '%@status'
+            `).all();
+            for (const p of partners) {
+                if (!jidNameMap.has(p.jid)) {
+                    jidNameMap.set(p.jid, p.name);
+                }
+            }
+            console.log(`✦ Chat Import: loaded ${partners.length} session partner names`);
+        } catch (e) { /* non-fatal */ }
+
+        // Source 3: Push names (user-set display names — fallback when contact name unavailable)
         try {
             const pushNames = chatDb.prepare(`
                 SELECT ZJID as jid, ZPUSHNAME as name
@@ -276,20 +292,6 @@ async function main() {
         } catch (e) {
             console.log(`✦ Chat Import: ZWAPROFILEPUSHNAME not available (${e.message})`);
         }
-
-        // Source 3: Session partner names (covers 1:1 chats)
-        try {
-            const partners = chatDb.prepare(`
-                SELECT ZCONTACTJID as jid, ZPARTNERNAME as name
-                FROM ZWACHATSESSION
-                WHERE ZCONTACTJID IS NOT NULL AND ZPARTNERNAME IS NOT NULL AND ZPARTNERNAME != ''
-            `).all();
-            for (const p of partners) {
-                if (!jidNameMap.has(p.jid)) {
-                    jidNameMap.set(p.jid, p.name);
-                }
-            }
-        } catch (e) { /* non-fatal */ }
 
         console.log(`✦ Chat Import: JID name map has ${jidNameMap.size} entries`);
 
