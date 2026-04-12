@@ -358,7 +358,8 @@ async function main() {
                 const mediaRows = chatDb.prepare(`
                     SELECT m.Z_PK as msg_pk, mi.ZMEDIALOCALPATH as media_path,
                            mi.ZTITLE as media_title, mi.ZFILESIZE as media_size,
-                           m.ZMESSAGETYPE as msg_type, m.ZMESSAGEDATE as msg_date
+                           m.ZMESSAGETYPE as msg_type, m.ZMESSAGEDATE as msg_date,
+                           m.ZTEXT as msg_text
                     FROM ZWAMESSAGE m
                     JOIN ZWAMEDIAITEM mi ON mi.ZMESSAGE = m.Z_PK
                     WHERE mi.ZMEDIALOCALPATH IS NOT NULL AND mi.ZMEDIALOCALPATH != ''
@@ -547,10 +548,17 @@ async function main() {
                         const media = currentDayMedia[j];
                         try {
                             const attId = uuidv4();
-                            const rawName = media.media_title || path.basename(media.resolvedPath);
-                            // Sanitize: media_title can be a full URL or message text (hundreds of chars)
-                            // Use it for original_name in DB but derive extension from the actual file path
-                            const ext = path.extname(media.resolvedPath) || path.extname(rawName) ||
+                            // Resolve original filename:
+                            // - Type 8 (documents): ZTEXT has the real filename (e.g. "Report.pdf")
+                            // - Type 1 (images): no filename available, use ZIP path basename
+                            // - ZTITLE is a caption/message text, NOT a filename — never use it
+                            let rawName;
+                            if (media.msg_type === 8 && media.msg_text) {
+                                rawName = media.msg_text.trim();
+                            } else {
+                                rawName = path.basename(media.resolvedPath);
+                            }
+                            const ext = path.extname(rawName) || path.extname(media.resolvedPath) ||
                                 (media.msg_type === 1 ? '.jpg' : '');
                             const safeExt = ext.split(/[?#\s]/)[0].substring(0, 10); // strip query params, cap length
                             const originalName = rawName.length > 200 ? rawName.substring(0, 200) : rawName;
@@ -572,7 +580,10 @@ async function main() {
                             const isDuplicate = seenHashes.has(contentHash) ? 1 : 0;
                             if (!isDuplicate) seenHashes.set(contentHash, attFilename);
 
-                            const mime = guessMimeType(originalName || media.resolvedPath, media.msg_type);
+                            // Try original name first, fall back to ZIP path for extension detection
+                            const mime = guessMimeType(originalName, media.msg_type) !== 'application/octet-stream'
+                                ? guessMimeType(originalName, media.msg_type)
+                                : guessMimeType(media.resolvedPath, media.msg_type);
                             const attDocIdentifier = `${chatDocIdentifier}_${String(j + 1).padStart(3, '0')}`;
 
                             const msgDate = convertCoreDataTimestamp(media.msg_date);
@@ -664,7 +675,8 @@ async function main() {
             if (msg.msg_type === 14) {
                 displayText = '[This message was deleted]';
             } else if (mediaInfo) {
-                const mediaLabel = `[Attachment: ${mediaInfo.media_title || path.basename(mediaInfo.resolvedPath)}]`;
+                const mediaFilename = (mediaInfo.msg_type === 8 && mediaInfo.msg_text) ? mediaInfo.msg_text.trim() : path.basename(mediaInfo.resolvedPath);
+                const mediaLabel = `[Attachment: ${mediaFilename}]`;
                 if (msg.text) {
                     displayText = `${msg.text} ${mediaLabel}`;
                 } else {
