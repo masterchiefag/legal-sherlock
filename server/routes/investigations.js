@@ -187,6 +187,9 @@ router.delete('/:id', requireRole('admin'), (req, res) => {
         const inv = db.prepare(`SELECT * FROM investigations WHERE id = ?`).get(invId);
         if (!inv) return res.status(404).json({ error: 'Investigation not found' });
 
+        // Collect filenames BEFORE deleting from DB (needed for legacy flat file cleanup)
+        const docs = db.prepare('SELECT filename FROM documents WHERE investigation_id = ? AND filename IS NOT NULL').all(invId);
+
         // Delete in correct order for foreign key constraints
         const tx = db.transaction(() => {
             db.prepare(`DELETE FROM document_tags WHERE document_id IN (SELECT id FROM documents WHERE investigation_id = ?)`).run(invId);
@@ -201,16 +204,27 @@ router.delete('/:id', requireRole('admin'), (req, res) => {
 
         const deletedDocs = tx();
 
-        // Delete files from disk — try subdir first, then fall back to per-file
+        // Delete files from disk — try subdir first, then per-file for legacy flat uploads
         let filesDeleted = 0;
         const invSubdir = path.join(UPLOADS_DIR, invId);
         try {
             if (fs.existsSync(invSubdir)) {
                 fs.rmSync(invSubdir, { recursive: true, force: true });
                 console.log(`✦ Deleted investigation upload dir: ${invId}`);
-                filesDeleted = deletedDocs; // approximate
+                filesDeleted = deletedDocs;
             }
         } catch (_) { /* best effort */ }
+
+        // Per-file cleanup for legacy flat uploads (pre-subdir migration)
+        for (const doc of docs) {
+            try {
+                const filePath = path.join(UPLOADS_DIR, doc.filename);
+                if (fs.existsSync(filePath)) {
+                    fs.unlinkSync(filePath);
+                    filesDeleted++;
+                }
+            } catch (_) { /* best effort */ }
+        }
 
         // Rebuild FTS index
         try { db.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')"); } catch (_) {}
