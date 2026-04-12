@@ -486,12 +486,12 @@ async function ocrPdf(filePath) {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sherlock-ocr-'));
 
     try {
-        // Convert PDF pages to PNG images (300 DPI for good OCR quality)
+        // Convert PDF pages to PNG images (200 DPI — good balance of quality vs speed)
         const prefix = path.join(tmpDir, 'page');
         console.log(`[OCR] Converting PDF pages to images...`);
         await execFileAsync('pdftoppm', [
-            '-png', '-r', '300', filePath, prefix
-        ], { timeout: 120000 }); // 2 min timeout
+            '-png', '-r', '200', filePath, prefix
+        ], { timeout: 60000 }); // 1 min timeout
 
         // List generated page images, sorted
         const pageFiles = fs.readdirSync(tmpDir)

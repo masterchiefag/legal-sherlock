@@ -463,7 +463,7 @@ async function main() {
         // event loop, making Promise.race timeouts useless. execFile has a real OS timeout.
         const EXTRACT_WORKER = path.join(__dirname, '..', 'lib', 'extract-worker.js');
         const EXTRACT_TIMEOUT = 15000; // 15 seconds hard kill
-        const OCR_TIMEOUT = 180000; // 3 minutes for OCR (pdftoppm + tesseract)
+        const OCR_TIMEOUT = 120000; // 2 minutes for OCR (pdftoppm + tesseract)
         const NODE_BIN = process.execPath;
 
         function extractViaSubprocess(filePath, mimeType, mode = 'text') {
