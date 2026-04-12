@@ -90,6 +90,13 @@ router.get('/stats', (req, res) => {
         const totalDocs = db.prepare(`SELECT COUNT(*) as count FROM documents WHERE 1=1${invFilter}`).get(...invParams).count;
         const readyDocs = db.prepare(`SELECT COUNT(*) as count FROM documents WHERE status = 'ready'${invFilter}`).get(...invParams).count;
 
+        // Unique (non-duplicate) document count
+        const uniqueDocCount = db.prepare(`SELECT COUNT(*) as count FROM documents WHERE is_duplicate = 0${invFilter}`).get(...invParams).count;
+
+        // Total attachments & unique attachments
+        const totalAttachmentCount = db.prepare(`SELECT COUNT(*) as count FROM documents WHERE doc_type = 'attachment'${invFilter}`).get(...invParams).count;
+        const uniqueAttachmentCount = db.prepare(`SELECT COUNT(*) as count FROM documents WHERE doc_type = 'attachment' AND is_duplicate = 0${invFilter}`).get(...invParams).count;
+
         const reviewedDocs = db.prepare(`
       SELECT COUNT(DISTINCT dr.document_id) as count
       FROM document_reviews dr
@@ -155,19 +162,23 @@ router.get('/stats', (req, res) => {
       ORDER BY rowid DESC
     `).all(investigation_id) : [];
 
-        // Attachment file extension breakdown
+        // Attachment file extension breakdown (with unique counts)
         const rawAttachments = db.prepare(`
-      SELECT original_name FROM documents WHERE doc_type = 'attachment'${invFilter}
+      SELECT original_name, is_duplicate FROM documents WHERE doc_type = 'attachment'${invFilter}
     `).all(...invParams);
-        const extCounts = {};
+        const extCountsTotal = {};
+        const extCountsUnique = {};
         for (const row of rawAttachments) {
             const name = row.original_name || '';
             const lastDot = name.lastIndexOf('.');
             const ext = lastDot > 0 ? name.substring(lastDot).toLowerCase() : 'unknown';
-            extCounts[ext] = (extCounts[ext] || 0) + 1;
+            extCountsTotal[ext] = (extCountsTotal[ext] || 0) + 1;
+            if (!row.is_duplicate) {
+                extCountsUnique[ext] = (extCountsUnique[ext] || 0) + 1;
+            }
         }
-        const attachmentTypesCorrected = Object.entries(extCounts)
-            .map(([ext, count]) => ({ ext, count }))
+        const attachmentTypesCorrected = Object.entries(extCountsTotal)
+            .map(([ext, count]) => ({ ext, count, unique_count: extCountsUnique[ext] || 0 }))
             .sort((a, b) => b.count - a.count)
             .slice(0, 20);
 
@@ -177,22 +188,128 @@ router.get('/stats', (req, res) => {
       FROM documents WHERE ocr_applied = 1${invFilter}
     `).get(...invParams);
 
-        // Custodian breakdown
+        // Custodian breakdown (comprehensive)
         const custodians = investigation_id ? db.prepare(`
       SELECT custodian as name,
         COUNT(*) as document_count,
+        SUM(CASE WHEN is_duplicate = 0 THEN 1 ELSE 0 END) as unique_count,
         SUM(CASE WHEN doc_type = 'email' THEN 1 ELSE 0 END) as email_count,
         SUM(CASE WHEN doc_type = 'attachment' THEN 1 ELSE 0 END) as attachment_count,
+        SUM(CASE WHEN doc_type = 'attachment' AND is_duplicate = 0 THEN 1 ELSE 0 END) as unique_attachment_count,
         SUM(CASE WHEN doc_type = 'chat' THEN 1 ELSE 0 END) as chat_count,
-        SUM(CASE WHEN doc_type = 'file' THEN 1 ELSE 0 END) as file_count
+        SUM(CASE WHEN doc_type = 'file' THEN 1 ELSE 0 END) as file_count,
+        SUM(CASE WHEN is_duplicate = 1 THEN 1 ELSE 0 END) as duplicate_count,
+        COALESCE(SUM(size_bytes), 0) as total_size
       FROM documents WHERE investigation_id = ? AND custodian IS NOT NULL
       GROUP BY custodian ORDER BY document_count DESC
     `).all(investigation_id) : [];
+
+        // Per-custodian review and classification counts
+        if (investigation_id && custodians.length > 0) {
+            const reviewStmt = db.prepare(`
+          SELECT COUNT(DISTINCT dr.document_id) as count
+          FROM document_reviews dr JOIN documents d ON d.id = dr.document_id
+          WHERE dr.status != 'pending' AND d.investigation_id = ? AND d.custodian = ?
+        `);
+            const classifyStmt = db.prepare(`
+          SELECT COUNT(DISTINCT c.document_id) as count
+          FROM classifications c JOIN documents d ON d.id = c.document_id
+          WHERE d.investigation_id = ? AND d.custodian = ?
+        `);
+            for (const c of custodians) {
+                c.reviewed_count = reviewStmt.get(investigation_id, c.name).count;
+                c.classified_count = classifyStmt.get(investigation_id, c.name).count;
+            }
+        }
+
+        // Top communication pairs (email + chat)
+        const rawPairs = db.prepare(`
+      SELECT email_from, email_to, COUNT(*) as count
+      FROM documents WHERE doc_type IN ('email', 'chat')
+        AND email_from IS NOT NULL AND email_to IS NOT NULL${invFilter}
+      GROUP BY email_from, email_to
+    `).all(...invParams);
+        const pairMap = new Map();
+        for (const row of rawPairs) {
+            const sender = (row.email_from || '').trim();
+            const recipients = (row.email_to || '').split(',').map(r => r.trim()).filter(Boolean);
+            for (const receiver of recipients) {
+                const key = `${sender}|||${receiver}`;
+                pairMap.set(key, (pairMap.get(key) || 0) + row.count);
+            }
+        }
+        const topCommunicationPairs = [...pairMap.entries()]
+            .map(([key, count]) => {
+                const [sender, receiver] = key.split('|||');
+                return { sender, receiver, count };
+            })
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 20);
+
+        // Data time range
+        const dateRangeRow = db.prepare(`
+      SELECT MIN(email_date) as earliest, MAX(email_date) as latest
+      FROM documents WHERE email_date IS NOT NULL${invFilter}
+    `).get(...invParams);
+        let dateRange = null;
+        if (dateRangeRow && dateRangeRow.earliest && dateRangeRow.latest) {
+            const earliest = new Date(dateRangeRow.earliest);
+            const latest = new Date(dateRangeRow.latest);
+            const rangeDays = Math.round((latest - earliest) / 86400000);
+            dateRange = { earliest: dateRangeRow.earliest, latest: dateRangeRow.latest, range_days: rangeDays };
+        }
+
+        // Volume by month
+        const volumeByMonth = db.prepare(`
+      SELECT STRFTIME('%Y-%m', email_date) as month, COUNT(*) as count
+      FROM documents WHERE email_date IS NOT NULL${invFilter}
+      GROUP BY month ORDER BY month
+    `).all(...invParams);
+
+        // AI score distribution (latest classification per doc)
+        const scoreDistribution = db.prepare(`
+      SELECT c.score, COUNT(*) as count FROM classifications c
+      JOIN documents d ON d.id = c.document_id
+      WHERE c.id IN (SELECT MAX(id) FROM classifications GROUP BY document_id)
+      ${investigation_id ? 'AND d.investigation_id = ?' : ''}
+      GROUP BY c.score ORDER BY c.score
+    `).all(...invParams);
+
+        // Activity heatmap (day-of-week × hour)
+        const activityHeatmap = db.prepare(`
+      SELECT CAST(STRFTIME('%w', email_date) AS INTEGER) as day_of_week,
+             CAST(STRFTIME('%H', email_date) AS INTEGER) as hour,
+             COUNT(*) as count
+      FROM documents WHERE email_date IS NOT NULL AND doc_type IN ('email', 'chat')${invFilter}
+      GROUP BY day_of_week, hour
+    `).all(...invParams);
+
+        // Thread depth distribution
+        const threadDepth = db.prepare(`
+      SELECT thread_size as depth, COUNT(*) as count FROM (
+        SELECT thread_id, COUNT(*) as thread_size FROM documents
+        WHERE thread_id IS NOT NULL AND doc_type = 'email'${invFilter}
+        GROUP BY thread_id
+      ) GROUP BY thread_size ORDER BY thread_size
+    `).all(...invParams);
+
+        // Size distribution by doc type
+        const sizeByDocType = db.prepare(`
+      SELECT doc_type, COUNT(*) as count,
+        COALESCE(SUM(size_bytes), 0) as total_size,
+        COALESCE(AVG(size_bytes), 0) as avg_size,
+        COALESCE(MAX(size_bytes), 0) as max_size
+      FROM documents WHERE 1=1${invFilter}
+      GROUP BY doc_type
+    `).all(...invParams);
 
         res.json({
             total_documents: totalDocs,
             ready_documents: readyDocs,
             reviewed_documents: reviewedDocs,
+            unique_document_count: uniqueDocCount,
+            total_attachment_count: totalAttachmentCount,
+            unique_attachment_count: uniqueAttachmentCount,
             review_percentage: totalDocs > 0 ? Math.round((reviewedDocs / totalDocs) * 100) : 0,
             status_breakdown: statusCounts,
             tag_breakdown: tagCounts,
@@ -201,10 +318,17 @@ router.get('/stats', (req, res) => {
             duplicate_count: dupeCount,
             classified_count: classifiedCount,
             top_senders: topSenders,
+            top_communication_pairs: topCommunicationPairs,
             import_jobs: importJobs,
             custodians: custodians,
             attachment_types: attachmentTypesCorrected,
             ocr_doc_count: ocrStats?.ocr_doc_count || 0,
+            date_range: dateRange,
+            volume_by_month: volumeByMonth,
+            score_distribution: scoreDistribution,
+            activity_heatmap: activityHeatmap,
+            thread_depth: threadDepth,
+            size_by_doc_type: sizeByDocType,
         });
     } catch (err) {
         console.error(err);
