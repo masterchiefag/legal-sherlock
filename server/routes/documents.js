@@ -15,8 +15,25 @@ import { logAudit, ACTIONS } from '../lib/audit.js';
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
 
+// Helper: ensure investigation subdirectory exists and return subdir-prefixed filename
+function investigationFilename(investigationId, basename) {
+    const subdir = path.join(UPLOADS_DIR, investigationId);
+    fs.mkdirSync(subdir, { recursive: true });
+    return `${investigationId}/${basename}`;
+}
+
 const storage = multer.diskStorage({
-    destination: (req, file, cb) => cb(null, UPLOADS_DIR),
+    destination: (req, file, cb) => {
+        // Upload to investigation subdir if available, else root uploads/
+        const invId = req.body?.investigation_id;
+        if (invId) {
+            const subdir = path.join(UPLOADS_DIR, invId);
+            fs.mkdirSync(subdir, { recursive: true });
+            cb(null, subdir);
+        } else {
+            cb(null, UPLOADS_DIR);
+        }
+    },
     filename: (req, file, cb) => {
         const id = uuidv4();
         const ext = path.extname(file.originalname);
@@ -138,7 +155,8 @@ async function processEmailData(eml, emailId, filename, originalName, sizeBytes,
     for (const att of eml.attachments) {
         const attId = uuidv4();
         const attExt = path.extname(att.filename) || '.bin';
-        const attFilename = `${attId}${attExt}`;
+        const attBasename = `${attId}${attExt}`;
+        const attFilename = investigationFilename(investigation_id, attBasename);
         const attPath = path.join(UPLOADS_DIR, attFilename);
 
         fs.writeFileSync(attPath, att.content);
@@ -370,6 +388,11 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
         const allResults = [];
 
         for (const file of req.files) {
+            // Prefix filename with investigation subdir for DB storage
+            // Multer already wrote to uploads/{investigation_id}/, so file.path is correct
+            // but file.filename is just the basename — prefix it for DB references
+            file.filename = `${investigation_id}/${file.filename}`;
+
             const ext = path.extname(file.originalname).toLowerCase();
 
             if (ext === '.eml') {
@@ -538,13 +561,31 @@ router.post('/jobs/:id/resume', requireRole('admin', 'reviewer'), (req, res) => 
             for (const r of jobFiles) referencedFiles.add(path.basename(r.filepath));
 
             const uploadsDir = path.join(__dirname, '..', '..', 'uploads');
-            const diskFiles = fs.readdirSync(uploadsDir);
             let cleaned = 0;
             let freedBytes = 0;
-            for (const f of diskFiles) {
-                if (!referencedFiles.has(f)) {
-                    const fp = path.join(uploadsDir, f);
+            // Scan subdirectories (investigation folders) and root-level files
+            const entries = fs.readdirSync(uploadsDir, { withFileTypes: true });
+            for (const entry of entries) {
+                if (entry.isDirectory()) {
+                    // Scan investigation subdirectory
+                    const subdir = path.join(uploadsDir, entry.name);
+                    const subFiles = fs.readdirSync(subdir);
+                    for (const f of subFiles) {
+                        const relPath = `${entry.name}/${f}`;
+                        if (!referencedFiles.has(relPath) && !referencedFiles.has(f)) {
+                            try {
+                                const fp = path.join(subdir, f);
+                                const stat = fs.statSync(fp);
+                                freedBytes += stat.size;
+                                fs.unlinkSync(fp);
+                                cleaned++;
+                            } catch (_) {}
+                        }
+                    }
+                } else if (!referencedFiles.has(entry.name)) {
+                    // Legacy root-level file
                     try {
+                        const fp = path.join(uploadsDir, entry.name);
                         const stat = fs.statSync(fp);
                         freedBytes += stat.size;
                         fs.unlinkSync(fp);

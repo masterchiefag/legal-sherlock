@@ -29,6 +29,10 @@ const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
 
 const { jobId, filename, filepath, originalname, investigation_id, custodian } = workerData;
 
+// Ensure investigation subdirectory exists
+const INV_UPLOADS_DIR = path.join(UPLOADS_DIR, investigation_id);
+fs.mkdirSync(INV_UPLOADS_DIR, { recursive: true });
+
 // ═══════════════════════════════════════════════════
 // Doc identifier generation
 // ═══════════════════════════════════════════════════
@@ -254,7 +258,8 @@ async function processEmlEntry(zipPath, entry) {
             attIdx++;
             const attId = uuidv4();
             const attExt = path.extname(att.filename || '.bin') || '.bin';
-            const attFilename = `${attId}${attExt}`;
+            const attBasename = `${attId}${attExt}`;
+            const attFilename = `${investigation_id}/${attBasename}`;
             const attPath = path.join(UPLOADS_DIR, attFilename);
 
             // Hash for dedup
@@ -310,8 +315,8 @@ async function processFileEntry(zipPath, entry) {
 
         let diskFilename;
         if (!isDuplicate) {
-            seenHashes.set(contentHash, `${fileId}${ext}`);
-            diskFilename = `${fileId}${ext}`;
+            seenHashes.set(contentHash, `${investigation_id}/${fileId}${ext}`);
+            diskFilename = `${investigation_id}/${fileId}${ext}`;
             await fsp.writeFile(path.join(UPLOADS_DIR, diskFilename), fileBuffer);
         } else {
             diskFilename = seenHashes.get(contentHash);
