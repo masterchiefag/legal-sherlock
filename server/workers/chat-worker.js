@@ -205,6 +205,7 @@ const insertChat = db.prepare(`
 async function main() {
     try {
         db.prepare("UPDATE import_jobs SET status = 'processing', phase = 'reading' WHERE id = ?").run(jobId);
+        const timers = { start: Date.now() };
 
         // ── Resolve SQLite path (bare file or extract from ZIP) ──
         let sqlitePath = filepath;
@@ -421,6 +422,7 @@ async function main() {
         // Join ZGROUPMEMBER to resolve sender when ZFROMJID is NULL (common in group messages)
 
         let messages;
+        timers.preQuery = Date.now();
         console.log(`✦ Chat Import: querying messages...`);
         // Include media-only messages (no text) when in ZIP mode so they appear in transcript
         const mediaOnlyClause = isZipMode
@@ -690,6 +692,7 @@ async function main() {
 
         chatDb.close();
 
+        timers.phase1Done = Date.now();
         console.log(`✦ Chat Import: ingested ${totalChatDocs} daily chat transcripts, ${totalAttachments} media attachments.`);
 
         // Record Phase 1 completion and attachment count
@@ -835,6 +838,15 @@ async function main() {
             console.log(`✦ Phase 2 complete: extracted text from ${extracted} attachments` +
                 (ocrCount > 0 ? `, OCR: ${ocrSuccess}/${ocrCount} succeeded` : ''));
         }
+
+        timers.done = Date.now();
+        const sec = (a, b) => ((b - a) / 1000).toFixed(1);
+        console.log(`\n✦ ═══ TIMING SUMMARY ═══`);
+        console.log(`✦ Setup + metadata:  ${sec(timers.start, timers.preQuery)}s`);
+        console.log(`✦ Phase 1 (messages + media copy): ${sec(timers.preQuery, timers.phase1Done)}s`);
+        console.log(`✦ Phase 2 (text extraction):       ${sec(timers.phase1Done, timers.done)}s`);
+        console.log(`✦ Total:             ${sec(timers.start, timers.done)}s`);
+        console.log(`✦ Counts: ${totalChatDocs} chats, ${totalAttachments} attachments\n`);
 
         db.prepare(`
             UPDATE import_jobs
