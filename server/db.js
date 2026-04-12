@@ -507,6 +507,42 @@ if (!columnExists('import_jobs', 'job_type')) {
   console.log(`✦ Migration: added column import_jobs.job_type`);
 }
 
+// ═══════════════════════════════════════════════════
+// Review Batches tables
+// ═══════════════════════════════════════════════════
+db.exec(`
+  CREATE TABLE IF NOT EXISTS review_batches (
+    id TEXT PRIMARY KEY,
+    investigation_id TEXT NOT NULL,
+    batch_number INTEGER NOT NULL,
+    batch_size INTEGER NOT NULL,
+    total_docs INTEGER NOT NULL,
+    search_criteria TEXT NOT NULL,
+    assignee_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending' CHECK(status IN ('pending', 'in_progress', 'completed')),
+    created_by TEXT NOT NULL,
+    created_at TEXT DEFAULT (datetime('now')),
+    updated_at TEXT DEFAULT (datetime('now')),
+    UNIQUE(investigation_id, batch_number),
+    FOREIGN KEY (investigation_id) REFERENCES investigations(id) ON DELETE CASCADE,
+    FOREIGN KEY (assignee_id) REFERENCES users(id),
+    FOREIGN KEY (created_by) REFERENCES users(id)
+  );
+
+  CREATE TABLE IF NOT EXISTS review_batch_documents (
+    batch_id TEXT NOT NULL,
+    document_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    PRIMARY KEY (batch_id, document_id),
+    FOREIGN KEY (batch_id) REFERENCES review_batches(id) ON DELETE CASCADE,
+    FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+  );
+
+  CREATE INDEX IF NOT EXISTS idx_review_batches_investigation ON review_batches(investigation_id);
+  CREATE INDEX IF NOT EXISTS idx_review_batches_assignee ON review_batches(assignee_id);
+  CREATE INDEX IF NOT EXISTS idx_review_batch_documents_doc ON review_batch_documents(document_id);
+`);
+
 // Note: don't checkpoint WAL here — TRUNCATE requires exclusive lock and
 // blocks worker threads from opening DB connections, causing deadlocks.
 
