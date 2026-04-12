@@ -698,6 +698,18 @@ async function main() {
         // Record Phase 1 completion and attachment count
         db.prepare("UPDATE import_jobs SET phase1_completed_at = datetime('now'), total_attachments = ? WHERE id = ?").run(totalAttachments, jobId);
 
+        // Free disk immediately — Phase 2 only reads from uploads/, not the source ZIP/sqlite
+        try {
+            if (tempSqlitePath) { fs.unlinkSync(tempSqlitePath); tempSqlitePath = null; }
+            if (mediaTempDir) { fs.rmSync(mediaTempDir, { recursive: true, force: true }); mediaTempDir = null; console.log(`✦ Chat Import: cleaned up temp media directory`); }
+            const sourceFile = zipPath || filepath;
+            if (sourceFile && fs.existsSync(sourceFile)) {
+                const sizeMB = Math.round(fs.statSync(sourceFile).size / 1024 / 1024);
+                fs.unlinkSync(sourceFile);
+                console.log(`✦ Chat Import: deleted source file ${path.basename(sourceFile)} (${sizeMB}MB) after Phase 1`);
+            }
+        } catch (e) { console.warn(`✦ Chat Import: cleanup warning: ${e.message}`); }
+
         // ═══════════════════════════════════════════
         // Phase 2: Extract text from media attachments
         // ═══════════════════════════════════════════
@@ -868,19 +880,14 @@ async function main() {
             WHERE id = ?
         `).run(JSON.stringify([{ error: err.message, fatal: true }]), jobId);
     } finally {
-        // Clean up uploaded/temp files
+        // Safety net — clean up anything not already deleted after Phase 1
         try {
-            if (tempSqlitePath) fs.unlinkSync(tempSqlitePath);
-            if (mediaTempDir) {
-                fs.rmSync(mediaTempDir, { recursive: true, force: true });
-                console.log(`✦ Chat Import: cleaned up temp media directory`);
-            }
-            // Delete source file (bare sqlite or ZIP)
+            if (tempSqlitePath && fs.existsSync(tempSqlitePath)) fs.unlinkSync(tempSqlitePath);
+            if (mediaTempDir && fs.existsSync(mediaTempDir)) fs.rmSync(mediaTempDir, { recursive: true, force: true });
             const sourceFile = zipPath || filepath;
             if (sourceFile && fs.existsSync(sourceFile)) {
                 fs.unlinkSync(sourceFile);
-                const sizeMB = Math.round(fs.existsSync(sourceFile) ? 0 : 0); // already deleted
-                console.log(`✦ Chat Import: deleted source file ${path.basename(sourceFile)} to free disk space`);
+                console.log(`✦ Chat Import: deleted source file ${path.basename(sourceFile)} (finally block)`);
             }
         } catch (_) { /* Best effort */ }
     }
