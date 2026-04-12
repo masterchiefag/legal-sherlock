@@ -160,6 +160,7 @@ db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_thread_doctype ON documents(th
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_is_duplicate ON documents(is_duplicate)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_custodian ON documents(custodian)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_email_date ON documents(email_date)`);
 
 // ═══════════════════════════════════════════════════
 // Migration: Add investigation_id to documents and import_jobs
