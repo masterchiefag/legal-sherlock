@@ -22,6 +22,8 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
     const [custodianFilter, setCustodianFilter] = useState(searchParams.get('custodian') || '');
     const [custodianList, setCustodianList] = useState([]);
     const [ocrAppliedFilter, setOcrAppliedFilter] = useState(searchParams.get('ocr_applied') || '');
+    const [batchIdFilter, setBatchIdFilter] = useState(searchParams.get('batch_id') || '');
+    const [batchNumLabel, setBatchNumLabel] = useState(searchParams.get('batch_num') || '');
 
     // Batch Classification
     const [showBatchPanel, setShowBatchPanel] = useState(false);
@@ -130,6 +132,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
         if (custodianFilter) apiParams.set('custodian', custodianFilter);
         if (ocrAppliedFilter) apiParams.set('ocr_applied', ocrAppliedFilter);
         if (activeInvestigationId) apiParams.set('investigation_id', activeInvestigationId);
+        if (batchIdFilter) apiParams.set('batch_id', batchIdFilter);
 
         if (scoreFilter) {
             if (scoreFilter === 'unscored') {
@@ -156,6 +159,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
         if (latestThreadOnly) urlParams.latest_thread = '1';
         if (custodianFilter) urlParams.custodian = custodianFilter;
         if (ocrAppliedFilter) urlParams.ocr_applied = ocrAppliedFilter;
+        if (batchIdFilter) { urlParams.batch_id = batchIdFilter; urlParams.batch_num = batchNumLabel; }
         if (page > 1) urlParams.page = String(page);
         setSearchParams(urlParams, { replace: true });
 
@@ -170,7 +174,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
         }
 
         setLoading(false);
-    }, [query, reviewStatus, docType, scoreFilter, dateFrom, dateTo, hideDuplicates, latestThreadOnly, custodianFilter, ocrAppliedFilter, hasActiveFilters, setSearchParams]);
+    }, [query, reviewStatus, docType, scoreFilter, dateFrom, dateTo, hideDuplicates, latestThreadOnly, custodianFilter, ocrAppliedFilter, batchIdFilter, hasActiveFilters, setSearchParams]);
 
     const handleKeyDown = (e) => {
         if (e.key === 'Enter') doSearch();
@@ -781,6 +785,12 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
                                 &#9733;
                             </button>
                         </>
+                    )}
+                    {batchIdFilter && (
+                        <span className="status-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px', background: 'var(--accent-primary)', color: '#fff' }}>
+                            Batch #{batchNumLabel || '?'}
+                            <span style={{ cursor: 'pointer', fontWeight: 700 }} onClick={() => { setBatchIdFilter(''); setBatchNumLabel(''); setShouldRefresh(n => n + 1); }}>&times;</span>
+                        </span>
                     )}
                     {ocrAppliedFilter && (
                         <span className="status-badge" style={{ display: 'inline-flex', alignItems: 'center', gap: '4px', fontSize: '11px' }}>

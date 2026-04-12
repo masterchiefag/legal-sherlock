@@ -1,7 +1,6 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Link, useNavigate } from 'react-router-dom';
-import { apiFetch, apiPost, apiPatch, apiDelete } from '../utils/api';
-import { formatSize } from '../utils/format';
+import { apiFetch, apiPatch, apiDelete } from '../utils/api';
 
 function Batches({ activeInvestigationId, activeInvestigation, addToast, user }) {
     const navigate = useNavigate();
@@ -14,9 +13,6 @@ function Batches({ activeInvestigationId, activeInvestigation, addToast, user })
 
     // Detail view
     const [selectedBatch, setSelectedBatch] = useState(null);
-    const [batchDocs, setBatchDocs] = useState([]);
-    const [docsPagination, setDocsPagination] = useState(null);
-    const [docsLoading, setDocsLoading] = useState(false);
 
     // Members for admin reassign
     const [members, setMembers] = useState([]);
@@ -54,20 +50,15 @@ function Batches({ activeInvestigationId, activeInvestigation, addToast, user })
             .catch(() => {});
     }, [activeInvestigationId, isAdmin]);
 
-    const loadBatchDetail = async (batch, page = 1) => {
+    const loadBatchDetail = async (batch) => {
         setSelectedBatch(batch);
-        setDocsLoading(true);
         try {
-            const res = await apiFetch(`/api/batches/${batch.id}?page=${page}&limit=50`);
+            const res = await apiFetch(`/api/batches/${batch.id}`);
             const data = await res.json();
             setSelectedBatch(data.batch);
-            setBatchDocs(data.documents || []);
-            setDocsPagination(data.pagination);
         } catch (err) {
             console.error('Failed to load batch detail:', err);
             addToast('Failed to load batch detail', 'error');
-        } finally {
-            setDocsLoading(false);
         }
     };
 
@@ -232,68 +223,14 @@ function Batches({ activeInvestigationId, activeInvestigation, addToast, user })
                     )}
                 </div>
 
-                {docsLoading ? (
-                    <div className="loading-overlay"><div className="spinner"></div></div>
-                ) : (
-                    <>
-                        <table style={{ width: '100%', borderCollapse: 'collapse' }}>
-                            <thead>
-                                <tr style={{ borderBottom: '1px solid var(--border-primary)', fontSize: '12px', color: 'var(--text-muted)' }}>
-                                    <th style={{ padding: '8px', textAlign: 'left' }}>#</th>
-                                    <th style={{ padding: '8px', textAlign: 'left' }}>Doc ID</th>
-                                    <th style={{ padding: '8px', textAlign: 'left' }}>Name / Subject</th>
-                                    <th style={{ padding: '8px', textAlign: 'left' }}>Type</th>
-                                    <th style={{ padding: '8px', textAlign: 'left' }}>Review Status</th>
-                                </tr>
-                            </thead>
-                            <tbody>
-                                {batchDocs.map(doc => {
-                                    const reviewColors = {
-                                        pending: '#6b7280', relevant: '#22c55e',
-                                        not_relevant: '#ef4444', privileged: '#f59e0b',
-                                    };
-                                    const row = (
-                                        <tr key={doc.id} style={{
-                                            borderBottom: '1px solid var(--border-secondary)',
-                                            cursor: canAct ? 'pointer' : 'default',
-                                        }}
-                                            onClick={() => canAct && navigate(`/documents/${doc.id}`)}
-                                        >
-                                            <td style={{ padding: '8px', fontSize: '12px', color: 'var(--text-muted)' }}>{doc.position}</td>
-                                            <td style={{ padding: '8px', fontSize: '12px', fontFamily: 'monospace' }}>{doc.doc_identifier || '—'}</td>
-                                            <td style={{ padding: '8px', fontSize: '13px' }}>
-                                                {doc.email_subject || doc.original_name || '—'}
-                                            </td>
-                                            <td style={{ padding: '8px', fontSize: '12px' }}>{doc.doc_type || 'file'}</td>
-                                            <td style={{ padding: '8px' }}>
-                                                <span style={{
-                                                    display: 'inline-block', padding: '2px 8px', borderRadius: '12px',
-                                                    fontSize: '11px', fontWeight: 600, color: '#fff',
-                                                    background: reviewColors[doc.review_status] || '#6b7280',
-                                                }}>
-                                                    {doc.review_status.replace('_', ' ')}
-                                                </span>
-                                            </td>
-                                        </tr>
-                                    );
-                                    return row;
-                                })}
-                            </tbody>
-                        </table>
-
-                        {/* Pagination */}
-                        {docsPagination && docsPagination.pages > 1 && (
-                            <div style={{ display: 'flex', justifyContent: 'center', gap: '8px', marginTop: '16px' }}>
-                                {Array.from({ length: docsPagination.pages }, (_, i) => i + 1).map(p => (
-                                    <button key={p}
-                                        className={`btn btn-sm ${p === docsPagination.page ? 'btn-primary' : 'btn-secondary'}`}
-                                        onClick={() => loadBatchDetail(selectedBatch, p)}
-                                    >{p}</button>
-                                ))}
-                            </div>
-                        )}
-                    </>
-                )}
+                <button className="btn btn-primary" onClick={() => {
+                    navigate(`/search?batch_id=${selectedBatch.id}&batch_num=${selectedBatch.batch_number}`);
+                }} style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: '16px', height: '16px' }}>
+                        <circle cx="11" cy="11" r="8" /><line x1="21" y1="21" x2="16.65" y2="16.65" />
+                    </svg>
+                    View Documents in Analyze
+                </button>
             </div>
         );
     }

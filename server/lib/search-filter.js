@@ -50,6 +50,7 @@ export function buildSearchFilter(params, user) {
         investigation_id,
         custodian,
         ocr_applied,
+        batch_id,
     } = params;
 
     const hasQuery = q.trim().length > 0;
@@ -148,6 +149,11 @@ export function buildSearchFilter(params, user) {
 
     if (ocr_applied === '1') {
         filterWhere += ' AND d.ocr_applied = 1';
+    }
+
+    if (batch_id) {
+        filterWhere += ' AND d.id IN (SELECT document_id FROM review_batch_documents WHERE batch_id = ?)';
+        filterParams.push(batch_id);
     }
 
     return { filterWhere, filterParams };
