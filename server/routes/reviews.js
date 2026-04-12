@@ -148,11 +148,23 @@ router.get('/stats', (req, res) => {
     `).get(...invParams).count;
 
         // Top senders (top 10) — includes emails and chats
-        const topSenders = db.prepare(`
+        // Split comma-separated email_from (chats have multiple senders per day)
+        const rawSenders = db.prepare(`
       SELECT email_from, COUNT(*) as count
       FROM documents WHERE doc_type IN ('email', 'chat') AND email_from IS NOT NULL${invFilter}
-      GROUP BY email_from ORDER BY count DESC LIMIT 10
+      GROUP BY email_from
     `).all(...invParams);
+        const senderMap = new Map();
+        for (const row of rawSenders) {
+            const senders = (row.email_from || '').split(/,(?=\s)/).map(s => s.trim()).filter(Boolean);
+            for (const sender of senders) {
+                senderMap.set(sender, (senderMap.get(sender) || 0) + row.count);
+            }
+        }
+        const topSenders = [...senderMap.entries()]
+            .map(([email_from, count]) => ({ email_from, count }))
+            .sort((a, b) => b.count - a.count)
+            .slice(0, 10);
 
         // Import jobs for this investigation
         const importJobs = investigation_id ? db.prepare(`
@@ -231,11 +243,16 @@ router.get('/stats', (req, res) => {
     `).all(...invParams);
         const pairMap = new Map();
         for (const row of rawPairs) {
-            const sender = (row.email_from || '').trim();
-            const recipients = (row.email_to || '').split(',').map(r => r.trim()).filter(Boolean);
-            for (const receiver of recipients) {
-                const key = `${sender}|||${receiver}`;
-                pairMap.set(key, (pairMap.get(key) || 0) + row.count);
+            const senders = (row.email_from || '').split(/,(?=\s)/).map(s => s.trim()).filter(Boolean);
+            const recipients = (row.email_to || '').split(/,(?=\s)/).map(r => r.trim()).filter(Boolean);
+            for (const sender of senders) {
+                for (const receiver of recipients) {
+                    if (sender === receiver) continue; // skip self-pairs
+                    // Normalize pair direction so A→B and B→A merge
+                    const pair = [sender, receiver].sort();
+                    const key = `${pair[0]}|||${pair[1]}`;
+                    pairMap.set(key, (pairMap.get(key) || 0) + row.count);
+                }
             }
         }
         const topCommunicationPairs = [...pairMap.entries()]

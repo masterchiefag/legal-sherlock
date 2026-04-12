@@ -466,7 +466,7 @@ async function main() {
                 // email_from = all people who actually sent messages this day
                 const fromList = [...currentSenders].join(', ');
 
-                // email_to = all participants of the conversation
+                // email_to = other participants (excludes custodian — mirrors email To: field)
                 let toList;
                 if (isGroup) {
                     // Merge message-observed participants with pre-loaded group members
@@ -475,13 +475,13 @@ async function main() {
                     if (preloaded) {
                         for (const p of preloaded) allParticipants.add(p);
                     }
-                    allParticipants.add(custodianLabel); // custodian is always a participant
+                    // Remove custodian from participants list
+                    allParticipants.delete(custodianLabel);
                     toList = [...allParticipants].join(', ');
                 } else {
-                    // 1:1 chat: both parties are participants
+                    // 1:1 chat: other party only
                     const otherParty = resolveJid(meta?.jid) || currentSessionName;
-                    const participants = new Set([custodianLabel, otherParty]);
-                    toList = [...participants].join(', ');
+                    toList = otherParty;
                 }
 
                 const subject = `WhatsApp${isGroup ? ' Group' : ''}: ${currentSessionName} (${currentDayString})`;
