@@ -299,6 +299,31 @@ db.exec(`
   )
 `);
 
+// Migration: widen image_jobs.type CHECK to include 'whatsapp_zip'
+try {
+    const checkInfo = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='image_jobs'").get();
+    if (checkInfo?.sql && !checkInfo.sql.includes('whatsapp_zip')) {
+        db.exec(`
+            ALTER TABLE image_jobs RENAME TO image_jobs_old;
+            CREATE TABLE image_jobs (
+                id TEXT PRIMARY KEY,
+                type TEXT NOT NULL CHECK(type IN ('scan', 'extract', 'whatsapp_zip')),
+                status TEXT NOT NULL CHECK(status IN ('pending', 'processing', 'completed', 'failed')),
+                image_path TEXT NOT NULL,
+                output_dir TEXT,
+                phase TEXT,
+                progress_percent INTEGER DEFAULT 0,
+                result_data TEXT,
+                error_log TEXT,
+                started_at TEXT DEFAULT (datetime('now')),
+                completed_at TEXT
+            );
+            INSERT INTO image_jobs SELECT * FROM image_jobs_old;
+            DROP TABLE image_jobs_old;
+        `);
+    }
+} catch (_) { /* table already migrated or fresh */ }
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS summarization_jobs (
     id TEXT PRIMARY KEY,
@@ -476,6 +501,10 @@ if (!columnExists('import_jobs', 'ocr_failed')) {
 if (!columnExists('import_jobs', 'ocr_time_ms')) {
   db.exec(`ALTER TABLE import_jobs ADD COLUMN ocr_time_ms INTEGER DEFAULT 0`);
   console.log(`✦ Migration: added column import_jobs.ocr_time_ms`);
+}
+if (!columnExists('import_jobs', 'job_type')) {
+  db.exec(`ALTER TABLE import_jobs ADD COLUMN job_type TEXT DEFAULT 'pst'`);
+  console.log(`✦ Migration: added column import_jobs.job_type`);
 }
 
 // Note: don't checkpoint WAL here — TRUNCATE requires exclusive lock and
