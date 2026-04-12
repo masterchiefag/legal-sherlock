@@ -376,6 +376,47 @@ async function main() {
             }
         }
 
+        // ── Batch extract all media files from ZIP to temp directory ──
+        // Single `unzip` call instead of 14K+ individual `unzip -p` calls
+        let mediaTempDir = null;
+        if (isZipMode && mediaMap.size > 0) {
+            mediaTempDir = path.join(os.tmpdir(), `chat-media-${jobId}`);
+            fs.mkdirSync(mediaTempDir, { recursive: true });
+
+            // Collect unique resolved paths
+            const pathsToExtract = [...new Set([...mediaMap.values()].map(m => m.resolvedPath))];
+            console.log(`✦ Chat Import: batch extracting ${pathsToExtract.length} media files to ${mediaTempDir}...`);
+            const startMs = Date.now();
+
+            try {
+                // unzip with full paths preserved (no -j) to avoid basename collisions
+                // Process in chunks to avoid exceeding arg length limits
+                const CHUNK_SIZE = 500;
+                for (let c = 0; c < pathsToExtract.length; c += CHUNK_SIZE) {
+                    const chunk = pathsToExtract.slice(c, c + CHUNK_SIZE);
+                    await new Promise((resolve, reject) => {
+                        execFile('unzip', ['-o', '-d', mediaTempDir, zipPath, ...chunk], {
+                            timeout: 300000, // 5 min
+                            maxBuffer: 10 * 1024 * 1024,
+                        }, (err) => {
+                            // code 0 = success, code 1 = warnings (OK)
+                            if (err && err.code !== 1) reject(err);
+                            else resolve();
+                        });
+                    });
+                    if (c % 2000 === 0 && c > 0) {
+                        console.log(`✦ Chat Import: extracted ${c}/${pathsToExtract.length} media files...`);
+                    }
+                }
+                console.log(`✦ Chat Import: batch extraction complete in ${((Date.now() - startMs) / 1000).toFixed(1)}s`);
+            } catch (e) {
+                console.error(`✦ Chat Import: batch extraction failed (${e.message}), falling back to per-file extraction`);
+                // Clean up and fall back — mediaTempDir = null triggers per-file extraction
+                try { fs.rmSync(mediaTempDir, { recursive: true, force: true }); } catch (_) {}
+                mediaTempDir = null;
+            }
+        }
+
         // ── Query all messages ──
         // Join ZGROUPMEMBER to resolve sender when ZFROMJID is NULL (common in group messages)
 
@@ -514,8 +555,14 @@ async function main() {
                             const attFilename = `${attId}${safeExt}`;
                             const attDiskPath = path.join(UPLOADS_DIR, attFilename);
 
-                            // Extract file from ZIP
-                            const fileBuffer = await extractFileFromZip(zipPath, media.resolvedPath);
+                            // Read from pre-extracted temp dir or fall back to per-file extraction
+                            let fileBuffer;
+                            const preExtractedPath = mediaTempDir ? path.join(mediaTempDir, media.resolvedPath) : null;
+                            if (preExtractedPath && fs.existsSync(preExtractedPath)) {
+                                fileBuffer = fs.readFileSync(preExtractedPath);
+                            } else {
+                                fileBuffer = await extractFileFromZip(zipPath, media.resolvedPath);
+                            }
                             fs.writeFileSync(attDiskPath, fileBuffer);
 
                             // Content hash for dedup
@@ -812,6 +859,10 @@ async function main() {
         // Clean up uploaded/temp files
         try {
             if (tempSqlitePath) fs.unlinkSync(tempSqlitePath);
+            if (mediaTempDir) {
+                fs.rmSync(mediaTempDir, { recursive: true, force: true });
+                console.log(`✦ Chat Import: cleaned up temp media directory`);
+            }
             if (filepath) {
                 fs.unlinkSync(filepath);
                 console.log(`✦ Chat Import: deleted source file to free disk space`);
