@@ -23,6 +23,10 @@ console.log('✦ DEBUG: workerData destructured');
 const { jobId, filename, filepath, originalname, investigation_id, custodian, resume, extractionOnly } = workerData;
 console.log('✦ DEBUG: constants initializing');
 
+// Ensure investigation subdirectory exists
+const INV_UPLOADS_DIR = path.join(UPLOADS_DIR, investigation_id);
+fs.mkdirSync(INV_UPLOADS_DIR, { recursive: true });
+
 // ═══════════════════════════════════════════════════
 // Doc identifier generation: CASE_CUST_00001 for emails, CASE_CUST_00001_001 for attachments
 // ═══════════════════════════════════════════════════
@@ -767,7 +771,8 @@ async function processEmail(eml) {
         attIdx++;
         const attId = uuidv4();
         const attExt = path.extname(att.filename) || '.bin';
-        const attFilename = `${attId}${attExt}`;
+        const attBasename = `${attId}${attExt}`;
+        const attFilename = `${investigation_id}/${attBasename}`;
         const attPath = path.join(UPLOADS_DIR, attFilename);
 
         // Skip writing large attachments to disk (>100MB) — record in DB with note

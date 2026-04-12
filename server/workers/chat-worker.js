@@ -26,6 +26,10 @@ console.log('✦ Chat Worker: DB connection ready');
 const { jobId, filename, filepath, originalname, investigation_id, custodian, zipPath, sqliteEntry } = workerData;
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
 
+// Ensure investigation subdirectory exists
+const INV_UPLOADS_DIR = path.join(UPLOADS_DIR, investigation_id);
+fs.mkdirSync(INV_UPLOADS_DIR, { recursive: true });
+
 // ═══════════════════════════════════════════════════
 // Doc identifier generation: CASE_CUST_00001 for chats
 // ═══════════════════════════════════════════════════
@@ -562,7 +566,7 @@ async function main() {
                                 (media.msg_type === 1 ? '.jpg' : '');
                             const safeExt = ext.split(/[?#\s]/)[0].substring(0, 10); // strip query params, cap length
                             const originalName = rawName.length > 200 ? rawName.substring(0, 200) : rawName;
-                            const attFilename = `${attId}${safeExt}`;
+                            const attFilename = `${investigation_id}/${attId}${safeExt}`;
                             const attDiskPath = path.join(UPLOADS_DIR, attFilename);
 
                             // Read from pre-extracted temp dir or fall back to per-file extraction
