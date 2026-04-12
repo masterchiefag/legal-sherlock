@@ -463,7 +463,7 @@ async function main() {
         // event loop, making Promise.race timeouts useless. execFile has a real OS timeout.
         const EXTRACT_WORKER = path.join(__dirname, '..', 'lib', 'extract-worker.js');
         const EXTRACT_TIMEOUT = 15000; // 15 seconds hard kill
-        const OCR_TIMEOUT = 180000; // 3 minutes for OCR (pdftoppm + tesseract)
+        const OCR_TIMEOUT = 120000; // 2 minutes for OCR (pdftoppm + tesseract)
         const NODE_BIN = process.execPath;
 
         function extractViaSubprocess(filePath, mimeType, mode = 'text') {
@@ -621,13 +621,15 @@ async function main() {
         // ═══════════════════════════════════════════
         // Recreate FTS triggers + rebuild index
         // ═══════════════════════════════════════════
-        console.log('✦ Rebuilding FTS index...');
+        console.log('✦ Recreating FTS triggers...');
+        const ftsTriggersStart = Date.now();
         db.exec(`
             CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
                 INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
                 VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
             END;
         `);
+        console.log(`✦ FTS trigger documents_ai created (${((Date.now() - ftsTriggersStart) / 1000).toFixed(1)}s)`);
         db.exec(`
             CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
                 INSERT INTO documents_fts(documents_fts, rowid, original_name, text_content, email_subject, email_from, email_to)
@@ -636,8 +638,13 @@ async function main() {
                 VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
             END;
         `);
+        console.log(`✦ FTS trigger documents_au created (${((Date.now() - ftsTriggersStart) / 1000).toFixed(1)}s)`);
+
+        const totalDocsForFts = db.prepare('SELECT COUNT(*) as c FROM documents').get().c;
+        console.log(`✦ Starting FTS rebuild for ${totalDocsForFts} documents...`);
+        const ftsRebuildStart = Date.now();
         db.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')");
-        console.log('✦ FTS index rebuilt');
+        console.log(`✦ FTS index rebuilt in ${((Date.now() - ftsRebuildStart) / 1000).toFixed(1)}s`);
 
         db.prepare(`
             UPDATE import_jobs
@@ -654,6 +661,13 @@ async function main() {
                 completed_at = datetime('now')
             WHERE id = ?
         `).run(totalEmails, totalAttachments, JSON.stringify(errorLog), ocrCount, ocrSuccess, ocrFailed, ocrTotalTimeMs, jobId);
+        console.log('✦ Import job marked as completed');
+
+        // WAL checkpoint after FTS rebuild
+        try {
+            db.pragma('wal_checkpoint(PASSIVE)');
+            console.log('✦ WAL checkpointed after Phase 2');
+        } catch (_) {}
 
         // Auto-cleanup: delete source PST/OST file after successful import
         try {

@@ -301,7 +301,7 @@ function DocumentReview({ addToast }) {
                         <div className="flex gap-8">
                             <span style={{ color: 'var(--text-tertiary)', minWidth: '40px' }}>Date</span>
                             <span style={{ color: 'var(--text-secondary)' }}>
-                                {doc.email_date ? new Date(doc.email_date).toLocaleString() : '—'}
+                                {doc.email_date ? new Date(doc.email_date).toLocaleString('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'medium', hour12: true }) + ' UTC' : '—'}
                             </span>
                         </div>
                     </div>
@@ -338,8 +338,60 @@ function DocumentReview({ addToast }) {
                         <div className="flex gap-8">
                             <span style={{ color: 'var(--text-tertiary)', minWidth: '80px' }}>Date</span>
                             <span style={{ color: 'var(--text-secondary)' }}>
-                                {doc.email_date ? new Date(doc.email_date).toLocaleString() : '—'}
+                                {doc.email_date ? new Date(doc.email_date).toLocaleString('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'medium', hour12: true }) + ' UTC' : '—'}
                             </span>
+                        </div>
+                    </div>
+                )}
+
+                {/* Attachments — inline below header */}
+                {doc.attachments && doc.attachments.length > 0 && (
+                    <div style={{
+                        marginBottom: '16px',
+                        padding: '12px 16px',
+                        background: 'var(--bg-tertiary)',
+                        borderRadius: 'var(--radius-md)',
+                        border: '1px solid var(--border-secondary)',
+                    }}>
+                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>
+                            Attachments ({doc.attachments.length})
+                        </div>
+                        <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
+                            {doc.attachments.map(att => {
+                                const ext = att.original_name?.split('.').pop().toLowerCase() || '';
+                                return (
+                                    <div key={att.id} style={{
+                                        display: 'flex', alignItems: 'center', gap: '8px',
+                                        padding: '6px 10px', borderRadius: 'var(--radius-sm)',
+                                        background: 'var(--bg-secondary)', border: '1px solid var(--border-secondary)',
+                                        fontSize: '12px',
+                                    }}>
+                                        <div className={`file-icon ${ext}`} style={{ width: '24px', height: '24px', fontSize: '8px' }}>{ext || '?'}</div>
+                                        <Link
+                                            to={`/documents/${att.id}`}
+                                            style={{ color: 'var(--text-primary)', textDecoration: 'none', fontWeight: 500, maxWidth: '200px', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}
+                                            title={att.original_name}
+                                        >
+                                            {att.original_name}
+                                        </Link>
+                                        <span style={{ color: 'var(--text-tertiary)', fontSize: '11px', whiteSpace: 'nowrap' }}>{formatSize(att.size_bytes)}</span>
+                                        {att.filename && (
+                                            <a
+                                                href={`/uploads/${att.filename}`}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                title="Download"
+                                                onClick={(e) => e.stopPropagation()}
+                                                style={{ color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', flexShrink: 0 }}
+                                            >
+                                                <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+                                                </svg>
+                                            </a>
+                                        )}
+                                    </div>
+                                );
+                            })}
                         </div>
                     </div>
                 )}
@@ -487,7 +539,7 @@ function DocumentReview({ addToast }) {
                                     {doc.email_from && <p style={{ margin: '0 0 8px' }}><strong>From:</strong> {doc.email_from}</p>}
                                     {doc.email_to && <p style={{ margin: '0 0 8px' }}><strong>To:</strong> {doc.email_to}</p>}
                                     {doc.email_cc && <p style={{ margin: '0 0 8px' }}><strong>Cc:</strong> {doc.email_cc}</p>}
-                                    {doc.email_date && <p style={{ margin: '0' }}><strong>Date:</strong> {new Date(doc.email_date).toLocaleString()}</p>}
+                                    {doc.email_date && <p style={{ margin: '0' }}><strong>Date:</strong> {new Date(doc.email_date).toLocaleString('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'medium', hour12: true }) + ' UTC'}</p>}
                                 </div>
                             </div>
                         );
@@ -511,9 +563,88 @@ function DocumentReview({ addToast }) {
 
             {/* Sidebar */}
             <div className="doc-sidebar-panel">
+                {/* Review Status */}
+                <div className="doc-sidebar-section">
+                    <h3>Review Decision</h3>
+                    <div className="review-actions">
+                        {REVIEW_OPTIONS.map(opt => (
+                            <button
+                                key={opt.status}
+                                className={`review-btn ${reviewStatus === opt.status ? `active-${opt.status}` : ''}`}
+                                onClick={() => handleReview(opt.status)}
+                                disabled={saving}
+                            >
+                                <span className="review-dot" style={{ background: opt.color }}></span>
+                                {opt.label}
+                                <span style={{ marginLeft: 'auto', fontSize: '11px', opacity: 0.5, fontFamily: 'var(--font-mono)' }}>
+                                    {opt.key.toUpperCase()}
+                                </span>
+                            </button>
+                        ))}
+                    </div>
+                </div>
+
+                {/* Notes */}
+                <div className="doc-sidebar-section">
+                    <h3>Review Notes</h3>
+                    <textarea
+                        className="textarea"
+                        placeholder="Add review notes..."
+                        value={notes}
+                        onChange={(e) => setNotes(e.target.value)}
+                        rows="4"
+                    />
+                    <button className="btn btn-secondary btn-sm mt-16" onClick={saveNotes} disabled={saving} style={{ width: '100%' }}>
+                        {saving ? 'Saving...' : 'Save Notes'}
+                    </button>
+                </div>
+
+                {/* Tags */}
+                <div className="doc-sidebar-section">
+                    <div className="flex justify-between items-center mb-8">
+                        <h3 style={{ margin: 0 }}>Tags</h3>
+                        <button className="btn btn-ghost btn-sm" onClick={() => setShowNewTag(!showNewTag)}>+ New</button>
+                    </div>
+
+                    {showNewTag && (
+                        <div className="flex gap-8 mb-8">
+                            <input
+                                type="text"
+                                className="input"
+                                placeholder="Tag name"
+                                value={newTagName}
+                                onChange={(e) => setNewTagName(e.target.value)}
+                                onKeyDown={(e) => e.key === 'Enter' && createTag()}
+                                style={{ padding: '6px 12px', fontSize: '13px' }}
+                            />
+                            <button className="btn btn-primary btn-sm" onClick={createTag}>Add</button>
+                        </div>
+                    )}
+
+                    <div className="tag-selector">
+                        {allTags.map(tag => {
+                            const isSelected = doc.tags?.some(t => t.id === tag.id);
+                            return (
+                                <button
+                                    key={tag.id}
+                                    className={`tag-option ${isSelected ? 'selected' : ''}`}
+                                    style={isSelected ? { background: `${tag.color}20`, color: tag.color, borderColor: `${tag.color}40` } : {}}
+                                    onClick={() => toggleTag(tag.id)}
+                                >
+                                    {tag.name}
+                                </button>
+                            );
+                        })}
+                        {allTags.length === 0 && <span className="text-sm text-muted">No tags created yet</span>}
+                    </div>
+                </div>
+
                 {/* Document / Email Info */}
                 <div className="doc-sidebar-section">
-                    <h3>{isEmail ? 'Email Info' : isChat ? 'Chat Info' : 'Document Info'}</h3>
+                    <details>
+                    <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>
+                        {isEmail ? 'Email Info' : isChat ? 'Chat Info' : 'Document Info'}
+                    </summary>
                     <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', fontSize: '13px' }}>
                         {doc.doc_identifier && (
                             <div className="flex justify-between">
@@ -556,12 +687,16 @@ function DocumentReview({ addToast }) {
                             <span className={`status-badge ${doc.status}`}>{doc.status}</span>
                         </div>
                     </div>
+                    </details>
                 </div>
 
                 {/* Chat Participants Section */}
                 {isChat && doc.email_to && (
                     <div className="doc-sidebar-section">
-                        <h3>👥 Participants</h3>
+                        <details>
+                        <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>
+                            Participants
+                        </summary>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px', fontSize: '12px' }}>
                             {doc.email_to.split(',').map((p, i) => (
                                 <div key={i} style={{
@@ -575,13 +710,17 @@ function DocumentReview({ addToast }) {
                                 </div>
                             ))}
                         </div>
+                        </details>
                     </div>
                 )}
 
                 {/* File Details Section */}
                 {(doc.size_bytes || doc.text_content_size || doc.folder_path) && (
                     <div className="doc-sidebar-section">
-                        <h3>📁 File Details</h3>
+                        <details>
+                        <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>
+                            File Details
+                        </summary>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12px' }}>
                             {doc.folder_path && (
                                 <div className="flex justify-between">
@@ -608,13 +747,17 @@ function DocumentReview({ addToast }) {
                                 </div>
                             )}
                         </div>
+                        </details>
                     </div>
                 )}
 
                 {/* Metadata Section */}
                 {(isEmail || doc.doc_author || doc.doc_title || doc.doc_created_at || doc.doc_modified_at) && (
                     <div className="doc-sidebar-section">
-                        <h3>📋 Metadata</h3>
+                        <details>
+                        <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>
+                            Metadata
+                        </summary>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '8px', fontSize: '12px' }}>
                             {/* Email transport metadata */}
                             {isEmail && (
@@ -729,6 +872,7 @@ function DocumentReview({ addToast }) {
                                 </>
                             )}
                         </div>
+                        </details>
                     </div>
                 )}
 
@@ -818,8 +962,11 @@ function DocumentReview({ addToast }) {
 
                     return (
                         <div className="doc-sidebar-section">
-                            <h3>Thread ({doc.thread.length} messages)</h3>
-                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0px' }}>
+                            <details>
+                            <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>
+                                Thread ({doc.thread.length} messages)
+                            </summary>
+                            <div style={{ display: 'flex', flexDirection: 'column', gap: '0px', marginTop: '8px' }}>
                                 {items.map((t, i) => {
                                     // For each depth level, determine if a vertical line should continue
                                     const gutterCols = [];
@@ -927,56 +1074,17 @@ function DocumentReview({ addToast }) {
                                                     {t.email_subject || t.original_name}
                                                 </div>
                                                 <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                                    {t.email_from?.split('<')[0].trim()} • {t.email_date ? new Date(t.email_date).toLocaleString() : ''}
+                                                    {t.email_from?.split('<')[0].trim()} • {t.email_date ? new Date(t.email_date).toLocaleString('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'medium', hour12: true }) + ' UTC' : ''}
                                                 </div>
                                             </Link>
                                         </div>
                                     );
                                 })}
                             </div>
+                            </details>
                         </div>
                     );
                 })()}
-
-                {/* Attachments */}
-                {doc.attachments && doc.attachments.length > 0 && (
-                    <div className="doc-sidebar-section">
-                        <h3>Attachments ({doc.attachments.length})</h3>
-                        <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
-                            {doc.attachments.map(att => {
-                                const ext = att.original_name?.split('.').pop().toLowerCase() || '';
-                                return (
-                                    <div key={att.id} className="file-item" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
-                                        <Link
-                                            to={`/documents/${att.id}`}
-                                            style={{ display: 'flex', alignItems: 'center', gap: '12px', flex: 1, textDecoration: 'none', color: 'inherit', minWidth: 0 }}
-                                        >
-                                            <div className={`file-icon ${ext}`}>{ext || '?'}</div>
-                                            <div className="file-info" style={{ minWidth: 0 }}>
-                                                <div className="file-name">{att.original_name}</div>
-                                                <div className="file-meta">{formatSize(att.size_bytes)}</div>
-                                            </div>
-                                        </Link>
-                                        <a
-                                            href={`/uploads/${att.filename}`}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            title="Download file"
-                                            onClick={(e) => e.stopPropagation()}
-                                            style={{ padding: '6px', color: 'var(--text-tertiary)', display: 'flex', alignItems: 'center', flexShrink: 0 }}
-                                        >
-                                            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                                                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                                <polyline points="7 10 12 15 17 10" />
-                                                <line x1="12" y1="15" x2="12" y2="3" />
-                                            </svg>
-                                        </a>
-                                    </div>
-                                );
-                            })}
-                        </div>
-                    </div>
-                )}
 
                 {/* Parent email (if this is an attachment) */}
                 {doc.parent && (
@@ -1008,7 +1116,10 @@ function DocumentReview({ addToast }) {
                 {/* Sibling Attachments (when viewing an attachment) */}
                 {doc.siblings && doc.siblings.length > 0 && (
                     <div className="doc-sidebar-section">
-                        <h3>Other Attachments ({doc.siblings.length})</h3>
+                        <details>
+                        <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>
+                            Other Attachments ({doc.siblings.length})
+                        </summary>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                             {doc.siblings.map(att => {
                                 const ext = att.original_name?.split('.').pop().toLowerCase() || '';
@@ -1044,6 +1155,7 @@ function DocumentReview({ addToast }) {
                                 );
                             })}
                         </div>
+                        </details>
                     </div>
                 )}
 
@@ -1147,82 +1259,6 @@ function DocumentReview({ addToast }) {
                             </div>
                         </details>
                     )}
-                </div>
-
-                {/* Review Status */}
-                <div className="doc-sidebar-section">
-                    <h3>Review Decision</h3>
-                    <div className="review-actions">
-                        {REVIEW_OPTIONS.map(opt => (
-                            <button
-                                key={opt.status}
-                                className={`review-btn ${reviewStatus === opt.status ? `active-${opt.status}` : ''}`}
-                                onClick={() => handleReview(opt.status)}
-                                disabled={saving}
-                            >
-                                <span className="review-dot" style={{ background: opt.color }}></span>
-                                {opt.label}
-                                <span style={{ marginLeft: 'auto', fontSize: '11px', opacity: 0.5, fontFamily: 'var(--font-mono)' }}>
-                                    {opt.key.toUpperCase()}
-                                </span>
-                            </button>
-                        ))}
-                    </div>
-                </div>
-
-                {/* Notes */}
-                <div className="doc-sidebar-section">
-                    <h3>Review Notes</h3>
-                    <textarea
-                        className="textarea"
-                        placeholder="Add review notes…"
-                        value={notes}
-                        onChange={(e) => setNotes(e.target.value)}
-                        rows="4"
-                    />
-                    <button className="btn btn-secondary btn-sm mt-16" onClick={saveNotes} disabled={saving} style={{ width: '100%' }}>
-                        {saving ? 'Saving…' : 'Save Notes'}
-                    </button>
-                </div>
-
-                {/* Tags */}
-                <div className="doc-sidebar-section">
-                    <div className="flex justify-between items-center mb-8">
-                        <h3 style={{ margin: 0 }}>Tags</h3>
-                        <button className="btn btn-ghost btn-sm" onClick={() => setShowNewTag(!showNewTag)}>+ New</button>
-                    </div>
-
-                    {showNewTag && (
-                        <div className="flex gap-8 mb-8">
-                            <input
-                                type="text"
-                                className="input"
-                                placeholder="Tag name"
-                                value={newTagName}
-                                onChange={(e) => setNewTagName(e.target.value)}
-                                onKeyDown={(e) => e.key === 'Enter' && createTag()}
-                                style={{ padding: '6px 12px', fontSize: '13px' }}
-                            />
-                            <button className="btn btn-primary btn-sm" onClick={createTag}>Add</button>
-                        </div>
-                    )}
-
-                    <div className="tag-selector">
-                        {allTags.map(tag => {
-                            const isSelected = doc.tags?.some(t => t.id === tag.id);
-                            return (
-                                <button
-                                    key={tag.id}
-                                    className={`tag-option ${isSelected ? 'selected' : ''}`}
-                                    style={isSelected ? { background: `${tag.color}20`, color: tag.color, borderColor: `${tag.color}40` } : {}}
-                                    onClick={() => toggleTag(tag.id)}
-                                >
-                                    {tag.name}
-                                </button>
-                            );
-                        })}
-                        {allTags.length === 0 && <span className="text-sm text-muted">No tags created yet</span>}
-                    </div>
                 </div>
 
                 {/* Actions */}

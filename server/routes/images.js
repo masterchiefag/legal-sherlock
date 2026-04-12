@@ -164,6 +164,96 @@ router.post('/extract', (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════
+// POST /api/images/extract-whatsapp — Extract WhatsApp data from UFDR into ZIP
+// ═══════════════════════════════════════════════════
+router.post('/extract-whatsapp', async (req, res) => {
+    try {
+        const { imagePath, outputPath } = req.body;
+
+        if (!imagePath || !outputPath) {
+            return res.status(400).json({ error: 'imagePath and outputPath are required' });
+        }
+
+        if (!path.isAbsolute(imagePath) || !path.isAbsolute(outputPath)) {
+            return res.status(400).json({ error: 'Paths must be absolute' });
+        }
+
+        const ext = path.extname(imagePath).toLowerCase();
+        if (!VALID_EXTENSIONS.includes(ext)) {
+            return res.status(400).json({ error: `Invalid file type. Supported: ${VALID_EXTENSIONS.join(', ')}` });
+        }
+
+        if (!fs.existsSync(imagePath)) {
+            return res.status(400).json({ error: 'Archive file not found at the specified path' });
+        }
+
+        // Validate output directory exists
+        const outputDir = path.dirname(outputPath);
+        if (!fs.existsSync(outputDir)) {
+            return res.status(400).json({ error: 'Output directory does not exist' });
+        }
+
+        if (!outputPath.toLowerCase().endsWith('.zip')) {
+            return res.status(400).json({ error: 'Output path must end with .zip' });
+        }
+
+        // Scan archive for ChatStorage.sqlite
+        let chatStoragePath = null;
+        try {
+            const { stdout } = await execFileAsync('unzip', ['-l', imagePath], {
+                timeout: 120000,
+                maxBuffer: 100 * 1024 * 1024,
+            });
+            const lines = stdout.split('\n');
+            for (const line of lines) {
+                const match = line.match(/\s(\S*ChatStorage\.sqlite)\s*$/i);
+                if (match) {
+                    chatStoragePath = match[1];
+                    break;
+                }
+            }
+        } catch (e) {
+            return res.status(400).json({ error: `Could not read archive: ${e.message}` });
+        }
+
+        if (!chatStoragePath) {
+            return res.status(400).json({ error: 'No ChatStorage.sqlite found in this archive. This may not be a WhatsApp extraction.' });
+        }
+
+        // Create job
+        const jobId = uuidv4();
+        db.prepare(
+            "INSERT INTO image_jobs (id, type, status, image_path, output_dir, phase) VALUES (?, 'whatsapp_zip', 'pending', ?, ?, 'queued')"
+        ).run(jobId, imagePath, outputDir);
+
+        // Spawn worker
+        const workerPath = path.join(__dirname, '..', 'workers', 'whatsapp-zip-worker.js');
+        const worker = new Worker(workerPath, {
+            workerData: { jobId, imagePath, chatStoragePath, outputPath },
+        });
+
+        worker.on('error', (err) => {
+            console.error(`\u26a0 WhatsApp ZIP Worker error for job ${jobId}:`, err);
+            db.prepare(
+                "UPDATE image_jobs SET status = 'failed', error_log = ?, completed_at = datetime('now') WHERE id = ?"
+            ).run(JSON.stringify([{ error: `Worker crashed: ${err.message}` }]), jobId);
+        });
+
+        worker.on('exit', (code) => {
+            if (code !== 0) {
+                console.error(`\u26a0 WhatsApp ZIP Worker exited with code ${code} for job ${jobId}`);
+            }
+        });
+
+        res.status(202).json({ jobId, chatStoragePath, message: 'WhatsApp extraction started' });
+
+    } catch (err) {
+        console.error('WhatsApp extract error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ═══════════════════════════════════════════════════
 // GET /api/images/jobs/:id — Poll job status
 // ═══════════════════════════════════════════════════
 router.get('/jobs/:id', (req, res) => {

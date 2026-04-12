@@ -3,7 +3,13 @@ import Database from 'better-sqlite3';
 import { v4 as uuidv4 } from 'uuid';
 import path from 'path';
 import fs from 'fs';
+import crypto from 'crypto';
+import os from 'os';
 import { fileURLToPath } from 'url';
+import { execFile, spawn } from 'child_process';
+import { promisify } from 'util';
+
+const execFileAsync = promisify(execFile);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -17,7 +23,8 @@ db.pragma('foreign_keys = ON');
 db.pragma('busy_timeout = 10000');
 console.log('✦ Chat Worker: DB connection ready');
 
-const { jobId, filename, filepath, originalname, investigation_id, custodian } = workerData;
+const { jobId, filename, filepath, originalname, investigation_id, custodian, zipPath, sqliteEntry } = workerData;
+const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
 
 // ═══════════════════════════════════════════════════
 // Doc identifier generation: CASE_CUST_00001 for chats
@@ -46,10 +53,111 @@ function nextDocIdentifier() {
     return `${docIdPrefix}_${String(docSeq).padStart(5, '0')}`;
 }
 
-// TODO (Feature Request): Add support for WhatsApp media attachments.
-// This requires a mechanism to upload a ZIP containing both ChatStorage.sqlite
-// and the Message/Media folder. The worker would then extract images to the
-// uploads directory and link them via parent_id to the created chat document.
+// ═══════════════════════════════════════════════════
+// ZIP helpers for WhatsApp media extraction
+// ═══════════════════════════════════════════════════
+
+/**
+ * Extract a single file from a ZIP via `unzip -p` (pipe to stdout).
+ * Returns file content as a Buffer.
+ */
+function extractFileFromZip(zipFilePath, internalPath) {
+    return new Promise((resolve, reject) => {
+        const chunks = [];
+        const child = spawn('unzip', ['-p', zipFilePath, internalPath]);
+        child.stdout.on('data', (chunk) => chunks.push(chunk));
+        child.stderr.on('data', () => {}); // ignore warnings
+        child.on('close', (code) => {
+            if (code === 0 || code === 1) { // code 1 = minor warnings
+                resolve(Buffer.concat(chunks));
+            } else {
+                reject(new Error(`unzip exited with code ${code} for ${internalPath}`));
+            }
+        });
+        child.on('error', reject);
+    });
+}
+
+/**
+ * List all media file paths inside a ZIP.
+ * Returns a Map<lowercase_basename, full_path> and a Set<full_path>.
+ */
+async function listZipMedia(zipFilePath) {
+    const { stdout } = await execFileAsync('unzip', ['-l', zipFilePath], {
+        timeout: 120000,
+        maxBuffer: 50 * 1024 * 1024,
+    });
+    const mediaPathSet = new Set();
+    const mediaByBasename = new Map();
+    const lines = stdout.split('\n');
+    for (const line of lines) {
+        // unzip -l format: "  length  date  time  name"
+        const match = line.match(/\s(\S+\/Media\/\S+)$/);
+        if (match) {
+            const p = match[1];
+            if (!p.endsWith('/')) { // skip directories
+                mediaPathSet.add(p);
+                mediaByBasename.set(path.basename(p).toLowerCase(), p);
+            }
+        }
+        // Also match bare Media/ paths (no parent)
+        const match2 = line.match(/\s(Media\/\S+)$/);
+        if (match2) {
+            const p = match2[1];
+            if (!p.endsWith('/')) {
+                mediaPathSet.add(p);
+                mediaByBasename.set(path.basename(p).toLowerCase(), p);
+            }
+        }
+    }
+    return { mediaPathSet, mediaByBasename };
+}
+
+/**
+ * Resolve a ZMEDIALOCALPATH from the DB to an actual ZIP entry path.
+ * Tries exact match, prefix variations, and basename fallback.
+ */
+function resolveMediaInZip(dbPath, mediaPathSet, mediaByBasename) {
+    if (!dbPath) return null;
+    // Try exact match
+    if (mediaPathSet.has(dbPath)) return dbPath;
+    // Try with common prefixes
+    const variants = [
+        `Message/${dbPath}`,
+        dbPath.replace(/^Message\//, ''),
+        dbPath.replace(/^Media\//, 'Message/Media/'),
+    ];
+    for (const v of variants) {
+        if (mediaPathSet.has(v)) return v;
+    }
+    // Basename fallback (least reliable)
+    const basename = path.basename(dbPath).toLowerCase();
+    if (basename && mediaByBasename.has(basename)) return mediaByBasename.get(basename);
+    return null;
+}
+
+/**
+ * Guess MIME type from file extension and WhatsApp message type.
+ */
+function guessMimeType(filePath, msgType) {
+    const ext = path.extname(filePath).toLowerCase();
+    const mimeMap = {
+        '.pdf': 'application/pdf', '.doc': 'application/msword',
+        '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        '.xls': 'application/vnd.ms-excel',
+        '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        '.ppt': 'application/vnd.ms-powerpoint',
+        '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+        '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.png': 'image/png',
+        '.gif': 'image/gif', '.webp': 'image/webp', '.heic': 'image/heic',
+        '.txt': 'text/plain', '.csv': 'text/csv',
+    };
+    if (mimeMap[ext]) return mimeMap[ext];
+    // Fallback by message type
+    if (msgType === 1) return 'image/jpeg';
+    if (msgType === 8) return 'application/octet-stream';
+    return 'application/octet-stream';
+}
 
 // CoreData epoch offset (seconds between Jan 1 1970 and Jan 1 2001)
 const CORE_DATA_OFFSET = 978307200;
@@ -98,9 +206,33 @@ async function main() {
     try {
         db.prepare("UPDATE import_jobs SET status = 'processing', phase = 'reading' WHERE id = ?").run(jobId);
 
-        console.log(`✦ Chat Import: opening ${filepath} for investigation ${investigation_id}`);
-        // Open the uploaded WhatsApp DB (read-only)
-        const chatDb = new Database(filepath, { readonly: true });
+        // ── Resolve SQLite path (bare file or extract from ZIP) ──
+        let sqlitePath = filepath;
+        let tempSqlitePath = null;
+        let mediaPathSet = null;
+        let mediaByBasename = null;
+        const isZipMode = !!zipPath;
+
+        if (isZipMode) {
+            console.log(`✦ Chat Import: ZIP mode — extracting ${sqliteEntry} from ${zipPath}`);
+            // Extract ChatStorage.sqlite to temp file
+            tempSqlitePath = path.join(os.tmpdir(), `chat-import-${jobId}.sqlite`);
+            const sqliteBuffer = await extractFileFromZip(zipPath, sqliteEntry);
+            fs.writeFileSync(tempSqlitePath, sqliteBuffer);
+            sqlitePath = tempSqlitePath;
+            console.log(`✦ Chat Import: extracted SQLite to ${tempSqlitePath} (${Math.round(sqliteBuffer.length / 1024 / 1024)}MB)`);
+
+            // List all media files in ZIP
+            const mediaIndex = await listZipMedia(zipPath);
+            mediaPathSet = mediaIndex.mediaPathSet;
+            mediaByBasename = mediaIndex.mediaByBasename;
+            console.log(`✦ Chat Import: found ${mediaPathSet.size} media files in ZIP`);
+        } else {
+            console.log(`✦ Chat Import: opening ${filepath} for investigation ${investigation_id}`);
+        }
+
+        // Open the uploaded/extracted WhatsApp DB (read-only)
+        const chatDb = new Database(sqlitePath, { readonly: true });
 
         try {
             // Verify it's an iOS WhatsApp ChatStorage.sqlite
@@ -128,7 +260,24 @@ async function main() {
             console.log(`✦ Chat Import: ZWAGROUPMEMBER not available (${e.message})`);
         }
 
-        // Source 2: Session partner names (covers 1:1 chats)
+        // Source 2: Push names (user-set display names, often the best source)
+        try {
+            const pushNames = chatDb.prepare(`
+                SELECT ZJID as jid, ZPUSHNAME as name
+                FROM ZWAPROFILEPUSHNAME
+                WHERE ZJID IS NOT NULL AND ZPUSHNAME IS NOT NULL AND ZPUSHNAME != ''
+            `).all();
+            for (const pn of pushNames) {
+                if (!jidNameMap.has(pn.jid)) {
+                    jidNameMap.set(pn.jid, pn.name);
+                }
+            }
+            console.log(`✦ Chat Import: loaded ${pushNames.length} push names`);
+        } catch (e) {
+            console.log(`✦ Chat Import: ZWAPROFILEPUSHNAME not available (${e.message})`);
+        }
+
+        // Source 3: Session partner names (covers 1:1 chats)
         try {
             const partners = chatDb.prepare(`
                 SELECT ZCONTACTJID as jid, ZPARTNERNAME as name
@@ -196,36 +345,114 @@ async function main() {
             console.log(`✦ Chat Import: Could not load group participants (${e.message})`);
         }
 
+        // ── Query media metadata (ZIP mode only) ──
+        // Build a map of message PK → media info for attachment creation
+        const mediaMap = new Map(); // msg_pk → { media_path, media_title, media_size, msg_type }
+        const seenHashes = new Map(); // content_hash → filename (for dedup)
+
+        if (isZipMode) {
+            try {
+                const mediaRows = chatDb.prepare(`
+                    SELECT m.Z_PK as msg_pk, mi.ZMEDIALOCALPATH as media_path,
+                           mi.ZTITLE as media_title, mi.ZFILESIZE as media_size,
+                           m.ZMESSAGETYPE as msg_type, m.ZMESSAGEDATE as msg_date
+                    FROM ZWAMESSAGE m
+                    JOIN ZWAMEDIAITEM mi ON mi.ZMESSAGE = m.Z_PK
+                    WHERE mi.ZMEDIALOCALPATH IS NOT NULL AND mi.ZMEDIALOCALPATH != ''
+                      AND m.ZMESSAGETYPE IN (1, 8)
+                `).all();
+                for (const row of mediaRows) {
+                    // Only include if the file actually exists in the ZIP
+                    const resolved = resolveMediaInZip(row.media_path, mediaPathSet, mediaByBasename);
+                    if (resolved) {
+                        mediaMap.set(row.msg_pk, { ...row, resolvedPath: resolved });
+                    }
+                }
+                console.log(`✦ Chat Import: found ${mediaMap.size} media items with matching files in ZIP (of ${mediaRows.length} total)`);
+            } catch (e) {
+                console.log(`✦ Chat Import: media query failed (${e.message}), skipping media`);
+            }
+        }
+
         // ── Query all messages ──
+        // Join ZGROUPMEMBER to resolve sender when ZFROMJID is NULL (common in group messages)
 
-        const stmt = chatDb.prepare(`
-            SELECT
-                s.Z_PK as session_id,
-                COALESCE(s.ZPARTNERNAME, s.ZCONTACTJID, 'Unknown Chat') as session_name,
-                m.ZTEXT as text,
-                m.ZMESSAGEDATE as date_ts,
-                m.ZISFROMME as is_from_me,
-                m.ZFROMJID as from_jid
-            FROM ZWACHATSESSION s
-            JOIN ZWAMESSAGE m ON m.ZCHATSESSION = s.Z_PK
-            WHERE m.ZTEXT IS NOT NULL AND m.ZTEXT != ''
-            ORDER BY s.Z_PK, m.ZMESSAGEDATE ASC
-        `);
-
+        let messages;
         console.log(`✦ Chat Import: querying messages...`);
-        const messages = stmt.all();
+        // Include media-only messages (no text) when in ZIP mode so they appear in transcript
+        const mediaOnlyClause = isZipMode
+            ? 'OR (m.ZMEDIAITEM IS NOT NULL AND m.ZMESSAGETYPE IN (1, 8))'
+            : '';
+
+        try {
+            const stmt = chatDb.prepare(`
+                SELECT
+                    m.Z_PK as msg_pk,
+                    s.Z_PK as session_id,
+                    COALESCE(s.ZPARTNERNAME, s.ZCONTACTJID, 'Unknown Chat') as session_name,
+                    s.ZCONTACTJID as session_jid,
+                    m.ZTEXT as text,
+                    m.ZMESSAGEDATE as date_ts,
+                    m.ZISFROMME as is_from_me,
+                    m.ZFROMJID as from_jid,
+                    m.ZMESSAGETYPE as msg_type,
+                    m.ZFLAGS as flags,
+                    gm.ZMEMBERJID as member_jid,
+                    gm.ZCONTACTNAME as member_name
+                FROM ZWACHATSESSION s
+                JOIN ZWAMESSAGE m ON m.ZCHATSESSION = s.Z_PK
+                LEFT JOIN ZWAGROUPMEMBER gm ON m.ZGROUPMEMBER = gm.Z_PK
+                WHERE (m.ZTEXT IS NOT NULL AND m.ZTEXT != '') OR m.ZMESSAGETYPE = 14 ${mediaOnlyClause}
+                ORDER BY s.Z_PK, m.ZMESSAGEDATE ASC
+            `);
+            messages = stmt.all();
+        } catch (e) {
+            // Fallback if ZGROUPMEMBER column doesn't exist on ZWAMESSAGE
+            console.log(`✦ Chat Import: ZGROUPMEMBER join failed (${e.message}), falling back`);
+            const stmt = chatDb.prepare(`
+                SELECT
+                    m.Z_PK as msg_pk,
+                    s.Z_PK as session_id,
+                    COALESCE(s.ZPARTNERNAME, s.ZCONTACTJID, 'Unknown Chat') as session_name,
+                    s.ZCONTACTJID as session_jid,
+                    m.ZTEXT as text,
+                    m.ZMESSAGEDATE as date_ts,
+                    m.ZISFROMME as is_from_me,
+                    m.ZFROMJID as from_jid,
+                    m.ZMESSAGETYPE as msg_type,
+                    m.ZFLAGS as flags,
+                    NULL as member_jid,
+                    NULL as member_name
+                FROM ZWACHATSESSION s
+                JOIN ZWAMESSAGE m ON m.ZCHATSESSION = s.Z_PK
+                WHERE (m.ZTEXT IS NOT NULL AND m.ZTEXT != '') OR m.ZMESSAGETYPE = 14 ${mediaOnlyClause}
+                ORDER BY s.Z_PK, m.ZMESSAGEDATE ASC
+            `);
+            messages = stmt.all();
+        }
         console.log(`✦ Chat Import: found ${messages.length} text messages`);
 
         let currentSessionId = null;
         let currentDayString = null;
         let currentDayTranscript = [];
+        let currentDayMedia = [];             // media items for this day (for attachment creation)
         let totalChatDocs = 0;
+        let totalAttachments = 0;
         let currentSessionName = "Unknown";
         let currentDayDate = null;
         let currentSenders = new Set();       // who sent messages this day (for email_from)
         let currentParticipants = new Set();  // all participants in current session (for email_to)
 
-        const flushTranscript = () => {
+        const insertAttachment = db.prepare(`
+            INSERT INTO documents (
+                id, filename, original_name, mime_type, size_bytes, text_content, status,
+                doc_type, parent_id, thread_id, email_date,
+                content_hash, is_duplicate, investigation_id, custodian, doc_identifier, recipient_count
+            ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?, ?,
+                ?, ?, ?, ?, ?, 0)
+        `);
+
+        const flushTranscript = async () => {
             if (currentDayTranscript.length > 0) {
                 const docId = uuidv4();
                 const sessionThreadId = `wa-chat-${currentSessionId}`;
@@ -268,7 +495,54 @@ async function main() {
                 );
 
                 totalChatDocs++;
+
+                // ── Create attachment documents for media in this day's messages ──
+                if (isZipMode && currentDayMedia.length > 0) {
+                    for (let j = 0; j < currentDayMedia.length; j++) {
+                        const media = currentDayMedia[j];
+                        try {
+                            const attId = uuidv4();
+                            const rawName = media.media_title || path.basename(media.resolvedPath);
+                            // Sanitize: media_title can be a full URL or message text (hundreds of chars)
+                            // Use it for original_name in DB but derive extension from the actual file path
+                            const ext = path.extname(media.resolvedPath) || path.extname(rawName) ||
+                                (media.msg_type === 1 ? '.jpg' : '');
+                            const safeExt = ext.split(/[?#\s]/)[0].substring(0, 10); // strip query params, cap length
+                            const originalName = rawName.length > 200 ? rawName.substring(0, 200) : rawName;
+                            const attFilename = `${attId}${safeExt}`;
+                            const attDiskPath = path.join(UPLOADS_DIR, attFilename);
+
+                            // Extract file from ZIP
+                            const fileBuffer = await extractFileFromZip(zipPath, media.resolvedPath);
+                            fs.writeFileSync(attDiskPath, fileBuffer);
+
+                            // Content hash for dedup
+                            const contentHash = crypto.createHash('md5').update(fileBuffer).digest('hex');
+                            const isDuplicate = seenHashes.has(contentHash) ? 1 : 0;
+                            if (!isDuplicate) seenHashes.set(contentHash, attFilename);
+
+                            const mime = guessMimeType(originalName || media.resolvedPath, media.msg_type);
+                            const attDocIdentifier = `${chatDocIdentifier}_${String(j + 1).padStart(3, '0')}`;
+
+                            const msgDate = convertCoreDataTimestamp(media.msg_date);
+                            insertAttachment.run(
+                                attId, attFilename, originalName, mime,
+                                media.media_size || fileBuffer.length,
+                                docId,              // parent_id = chat document
+                                sessionThreadId,    // thread_id
+                                msgDate ? msgDate.toISOString() : currentDayDate.toISOString(),
+                                contentHash, isDuplicate,
+                                investigation_id, custodian || null, attDocIdentifier
+                            );
+                            totalAttachments++;
+                        } catch (e) {
+                            console.warn(`✦ Chat Import: failed to extract media ${media.resolvedPath}: ${e.message}`);
+                        }
+                    }
+                }
+
                 currentDayTranscript = [];
+                currentDayMedia = [];
                 currentSenders = new Set();
                 // Don't reset currentParticipants — accumulate across days within a session
             }
@@ -281,15 +555,20 @@ async function main() {
             if (!msgDate) continue;
 
             const dayString = msgDate.toISOString().split('T')[0]; // YYYY-MM-DD
-            const timeString = msgDate.toISOString().split('T')[1].substring(0, 5); // HH:MM
+            // Format time as 12-hour with AM/PM and UTC indicator
+            const hours = msgDate.getUTCHours();
+            const minutes = msgDate.getUTCMinutes();
+            const ampm = hours >= 12 ? 'PM' : 'AM';
+            const hour12 = hours % 12 || 12;
+            const timeString = `${hour12}:${String(minutes).padStart(2, '0')} ${ampm} UTC`;
 
             // If session changed, flush and reset participants
             if (currentSessionId !== null && currentSessionId !== msg.session_id) {
-                flushTranscript();
+                await flushTranscript();
                 currentParticipants = new Set(); // Reset for new session
             } else if (currentSessionId !== null && currentDayString !== dayString) {
                 // Day changed within same session — flush but keep participants
-                flushTranscript();
+                await flushTranscript();
             }
 
             currentSessionId = msg.session_id;
@@ -301,16 +580,54 @@ async function main() {
 
             // Resolve sender identity
             let sender;
+            const meta = sessionMeta.get(msg.session_id);
+            const isGroup = meta?.isGroup || false;
+
             if (msg.is_from_me) {
                 sender = custodianLabel;
-            } else {
-                sender = resolveJid(msg.from_jid) || currentSessionName;
+            } else if (msg.member_jid) {
+                // ZGROUPMEMBER FK resolved — most reliable for group chats
+                const phone = extractPhone(msg.member_jid);
+                const name = msg.member_name || jidNameMap.get(msg.member_jid);
+                sender = formatParticipant(name, phone);
+            } else if (msg.from_jid && !msg.from_jid.endsWith('@g.us')) {
+                // Individual JID (1:1 chats have sender JID here; skip group JIDs)
+                sender = resolveJid(msg.from_jid);
+            } else if (!isGroup && meta?.jid) {
+                // 1:1 chat with no from_jid: sender is the chat partner
+                sender = resolveJid(meta.jid);
             }
+            if (!sender) sender = currentSessionName;
 
             currentSenders.add(sender);
             currentParticipants.add(sender);
 
-            currentDayTranscript.push(`[${timeString}] ${sender}: ${msg.text}`);
+            // Check for media attachment on this message
+            const mediaInfo = mediaMap.get(msg.msg_pk);
+            if (mediaInfo) {
+                currentDayMedia.push(mediaInfo);
+            }
+
+            // Build transcript line with deleted/forwarded/media annotations
+            let displayText;
+            if (msg.msg_type === 14) {
+                displayText = '[This message was deleted]';
+            } else if (mediaInfo) {
+                const mediaLabel = `[Attachment: ${mediaInfo.media_title || path.basename(mediaInfo.resolvedPath)}]`;
+                if (msg.text) {
+                    displayText = `${msg.text} ${mediaLabel}`;
+                } else {
+                    displayText = mediaLabel;
+                }
+            } else if (msg.flags && (msg.flags & 256) !== 0) {
+                displayText = `[Forwarded] ${msg.text}`;
+            } else {
+                displayText = msg.text || '';
+            }
+
+            if (displayText) {
+                currentDayTranscript.push(`[${timeString}] ${sender}: ${displayText}`);
+            }
 
             // Periodically update progress
             if (i % 10000 === 0) {
@@ -320,9 +637,155 @@ async function main() {
         }
 
         // Flush last transcript
-        flushTranscript();
+        await flushTranscript();
 
         chatDb.close();
+
+        console.log(`✦ Chat Import: ingested ${totalChatDocs} daily chat transcripts, ${totalAttachments} media attachments.`);
+
+        // Record Phase 1 completion and attachment count
+        db.prepare("UPDATE import_jobs SET phase1_completed_at = datetime('now'), total_attachments = ? WHERE id = ?").run(totalAttachments, jobId);
+
+        // ═══════════════════════════════════════════
+        // Phase 2: Extract text from media attachments
+        // ═══════════════════════════════════════════
+        if (totalAttachments > 0) {
+            updateProgress.run(totalChatDocs, 50, 'extracting', jobId);
+
+            const EXTRACT_WORKER = path.join(__dirname, '..', 'lib', 'extract-worker.js');
+            const EXTRACT_TIMEOUT = 15000;
+            const OCR_TIMEOUT = 120000;
+            const NODE_BIN = process.execPath;
+            const PHASE2_CONCURRENCY = 4;
+
+            function extractViaSubprocess(filePath, mimeType, mode = 'text') {
+                const timeout = mode === 'textocr' ? OCR_TIMEOUT : EXTRACT_TIMEOUT;
+                return new Promise((resolve, reject) => {
+                    const child = execFile(NODE_BIN, [EXTRACT_WORKER, filePath, mimeType, mode], {
+                        timeout,
+                        maxBuffer: 50 * 1024 * 1024,
+                        killSignal: 'SIGKILL',
+                    }, (err, stdout, stderr) => {
+                        if (err) {
+                            if (err.killed) return reject(new Error('Extraction timed out (killed)'));
+                            return reject(new Error(stderr || err.message));
+                        }
+                        resolve(stdout);
+                    });
+                });
+            }
+
+            // Skip media types that can't yield useful text (images, video, audio)
+            const SKIP_MIME_PREFIXES = ['image/', 'video/', 'audio/'];
+            const EXTRACTABLE_IMAGE_MIMES = []; // could add image/pdf etc. in future
+            const skippedMedia = db.prepare(
+                "UPDATE documents SET status = 'ready', text_content = '' WHERE status = 'processing' AND doc_type = 'attachment' AND is_duplicate = 0 AND investigation_id = ? AND (mime_type LIKE 'image/%' OR mime_type LIKE 'video/%' OR mime_type LIKE 'audio/%')"
+            ).run(investigation_id);
+            if (skippedMedia.changes > 0) {
+                console.log(`✦ Phase 2: skipped ${skippedMedia.changes} image/video/audio attachments (no text to extract)`);
+            }
+
+            // Skip duplicates — backfill from originals later
+            const pendingDocs = db.prepare(
+                "SELECT id, filename, original_name, mime_type FROM documents WHERE status = 'processing' AND doc_type = 'attachment' AND is_duplicate = 0 AND investigation_id = ?"
+            ).all(investigation_id);
+
+            const dupeCount = db.prepare(
+                "UPDATE documents SET status = 'ready' WHERE status = 'processing' AND doc_type = 'attachment' AND is_duplicate = 1 AND investigation_id = ?"
+            ).run(investigation_id);
+            if (dupeCount.changes > 0) {
+                console.log(`✦ Phase 2: skipped ${dupeCount.changes} duplicate attachments`);
+            }
+
+            const updateDocText = db.prepare(
+                "UPDATE documents SET text_content = ?, text_content_size = ?, status = 'ready', ocr_applied = ?, ocr_time_ms = ? WHERE id = ?"
+            );
+            const updateDocMeta = db.prepare(
+                "UPDATE documents SET doc_author = ?, doc_title = ?, doc_created_at = ?, doc_modified_at = ?, doc_creator_tool = ?, doc_keywords = ? WHERE id = ?"
+            );
+
+            console.log(`✦ Phase 2: extracting text from ${pendingDocs.length} attachments (concurrency=${PHASE2_CONCURRENCY})...`);
+            let extracted = 0;
+            let ocrCount = 0, ocrSuccess = 0;
+
+            // Simple concurrency limiter
+            const queue = [...pendingDocs];
+            async function processNext() {
+                while (queue.length > 0) {
+                    const doc = queue.shift();
+                    const filePath = path.join(UPLOADS_DIR, doc.filename);
+                    const isPdf = path.extname(doc.filename).toLowerCase() === '.pdf';
+                    let text = '';
+                    let ocrApplied = 0;
+                    let docOcrTimeMs = null;
+
+                    try {
+                        if (isPdf) {
+                            const raw = await extractViaSubprocess(filePath, doc.mime_type, 'textocr');
+                            try {
+                                const jsonStart = raw.indexOf('{"text":');
+                                const jsonStr = jsonStart >= 0 ? raw.substring(jsonStart) : raw;
+                                const result = JSON.parse(jsonStr);
+                                text = result.text || '';
+                                if (result.ocr && result.ocr.attempted) {
+                                    ocrCount++;
+                                    docOcrTimeMs = result.ocr.timeMs || null;
+                                    if (result.ocr.succeeded) {
+                                        ocrSuccess++;
+                                        ocrApplied = 1;
+                                    }
+                                }
+                            } catch (_) {
+                                text = raw || '';
+                            }
+                        } else {
+                            text = await extractViaSubprocess(filePath, doc.mime_type, 'text');
+                        }
+                    } catch (e) {
+                        text = `[Could not extract text: ${e.message}]`;
+                        console.warn(`✦ Phase 2 FAILED: ${doc.original_name || doc.filename} — ${e.message}`);
+                    }
+
+                    updateDocText.run(text, text ? text.length : 0, ocrApplied, docOcrTimeMs, doc.id);
+
+                    // Extract metadata (best effort)
+                    try {
+                        const metaJson = await extractViaSubprocess(filePath, doc.mime_type, 'meta');
+                        if (metaJson) {
+                            const meta = JSON.parse(metaJson);
+                            updateDocMeta.run(meta.author, meta.title, meta.createdAt, meta.modifiedAt, meta.creatorTool, meta.keywords, doc.id);
+                        }
+                    } catch (_) { /* best effort */ }
+
+                    extracted++;
+                    if (extracted % 20 === 0 || extracted === pendingDocs.length) {
+                        const pct = Math.round((extracted / pendingDocs.length) * 100);
+                        console.log(`✦ Phase 2: ${extracted}/${pendingDocs.length} (${pct}%)`);
+                        updateProgress.run(totalChatDocs, pct, 'extracting', jobId);
+                    }
+                }
+            }
+
+            // Run concurrent workers
+            const workers = [];
+            for (let w = 0; w < Math.min(PHASE2_CONCURRENCY, pendingDocs.length); w++) {
+                workers.push(processNext());
+            }
+            await Promise.all(workers);
+
+            // Backfill text from originals into duplicates
+            if (dupeCount.changes > 0) {
+                db.prepare(`
+                    UPDATE documents SET
+                        text_content = (SELECT d2.text_content FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 AND d2.text_content IS NOT NULL LIMIT 1),
+                        text_content_size = (SELECT d2.text_content_size FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 AND d2.text_content IS NOT NULL LIMIT 1)
+                    WHERE is_duplicate = 1 AND doc_type = 'attachment' AND investigation_id = ? AND text_content IS NULL
+                `).run(investigation_id);
+            }
+
+            console.log(`✦ Phase 2 complete: extracted text from ${extracted} attachments` +
+                (ocrCount > 0 ? `, OCR: ${ocrSuccess}/${ocrCount} succeeded` : ''));
+        }
 
         db.prepare(`
             UPDATE import_jobs
@@ -334,12 +797,6 @@ async function main() {
             WHERE id = ?
         `).run(totalChatDocs, jobId);
 
-        console.log(`✦ Chat Import: complete. Ingested ${totalChatDocs} daily chat transcripts.`);
-
-        try {
-            fs.unlinkSync(filepath);
-        } catch (_) { /* Best effort */ }
-
     } catch (err) {
         console.error("Chat worker fatal error:", err);
         db.prepare(`
@@ -349,6 +806,15 @@ async function main() {
                 completed_at = datetime('now')
             WHERE id = ?
         `).run(JSON.stringify([{ error: err.message, fatal: true }]), jobId);
+    } finally {
+        // Clean up uploaded/temp files
+        try {
+            if (tempSqlitePath) fs.unlinkSync(tempSqlitePath);
+            if (filepath) {
+                fs.unlinkSync(filepath);
+                console.log(`✦ Chat Import: deleted source file to free disk space`);
+            }
+        } catch (_) { /* Best effort */ }
     }
 }
 
