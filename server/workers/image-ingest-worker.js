@@ -195,11 +195,11 @@ const insertFile = db.prepare(`
 
 const insertCloudOnlyFile = db.prepare(`
     INSERT INTO documents (
-        id, original_name, mime_type, size_bytes, text_content, text_content_size, status,
+        id, filename, original_name, mime_type, size_bytes, text_content, text_content_size, status,
         doc_type, investigation_id, custodian, doc_identifier,
         source_path, source_created_at, source_modified_at, source_accessed_at, source_job_id,
         is_cloud_only
-    ) VALUES (?, ?, ?, ?, '', 0, 'ready', 'file', ?, ?, ?,
+    ) VALUES (?, ?, ?, ?, ?, '', 0, 'ready', 'file', ?, ?, ?,
         ?, ?, ?, ?, ?,
         1)
 `);
@@ -343,7 +343,7 @@ async function main() {
                     const mime = getMime(basename);
 
                     insertCloudOnlyFile.run(
-                        docId, basename, mime, file.size || 0,
+                        docId, `cloud-only/${docId}/${basename}`, basename, mime, file.size || 0,
                         investigationId, custodian, docIdentifier,
                         file.path,
                         normalizeTimestamp(file.created),
