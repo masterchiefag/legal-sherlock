@@ -181,7 +181,7 @@ function Dashboard({ activeInvestigationId, activeInvestigation, addToast }) {
                             border: '1px solid var(--border)'
                         }}>
                             <h3 style={{ margin: '0 0 12px', fontSize: '14px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                                Attachment Types
+                                File Types
                             </h3>
                             {/* Header row */}
                             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 10px', marginBottom: '4px', fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
