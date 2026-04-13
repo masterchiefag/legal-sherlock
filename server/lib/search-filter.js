@@ -64,10 +64,6 @@ export function buildSearchFilter(params, user) {
         filterParams.push(`%${q.trim()}%`);
     }
 
-    if (doc_type !== 'attachment') {
-        filterWhere += " AND (d.doc_type != 'attachment' OR d.doc_type IS NULL)";
-    }
-
     if (hide_duplicates === '1') {
         filterWhere += ' AND d.is_duplicate = 0';
     }
