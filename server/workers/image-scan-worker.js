@@ -76,7 +76,7 @@ function parseFls(output, regex) {
 }
 
 function parseIstat(output) {
-    const meta = { size: 0, created: null, modified: null, accessed: null };
+    const meta = { size: 0, created: null, modified: null, accessed: null, flags: null, is_cloud_only: false };
 
     // Size: works for ext/FAT; for NTFS, size is in the $DATA attribute line
     const sizeMatch = output.match(/^Size:\s+(\d+)/m);
@@ -112,10 +112,21 @@ function parseIstat(output) {
         if (atimeMatch) meta.accessed = atimeMatch[1].trim();
     }
 
+    // NTFS flags: detect cloud-only (OneDrive) files
+    const flagsMatch = output.match(/^\$STANDARD_INFORMATION[\s\S]*?^Flags:\s+(.+)$/m);
+    if (flagsMatch) {
+        meta.flags = flagsMatch[1].trim();
+        // OneDrive cloud-only files have Sparse + Offline + Reparse Point
+        if (/Sparse/i.test(meta.flags) && /Offline/i.test(meta.flags)) {
+            meta.is_cloud_only = true;
+        }
+    }
+
     return meta;
 }
 
 async function scanDiskImage(regex) {
+    const scanStart = Date.now();
     console.log(`\u2726 Image Scan: starting E01 scan for ${imagePath}`);
     update('processing', 'partitions', 0, null, null);
 
@@ -135,7 +146,9 @@ async function scanDiskImage(regex) {
         return [];
     }
 
-    update('processing', 'scanning', 10, null, null);
+    update('processing', 'scanning', 10, JSON.stringify({
+        phase_detail: 'scanning', partitions: partitions.length, files_found: 0,
+    }), null);
     const allFiles = [];
 
     for (let i = 0; i < partitions.length; i++) {
@@ -143,7 +156,8 @@ async function scanDiskImage(regex) {
         const pct = 10 + Math.round((i / partitions.length) * 60);
         update('processing', 'scanning', pct, null, null);
 
-        console.log(`\u2726 Image Scan: scanning partition at offset ${part.offset} (${part.description})`);
+        console.log(`\u2726 Image Scan: scanning partition ${i + 1}/${partitions.length} at offset ${part.offset} (${part.description})`);
+        const flsStart = Date.now();
         try {
             const args = ['-r', '-p'];
             if (!singlePartition) args.push('-o', String(part.offset));
@@ -151,40 +165,83 @@ async function scanDiskImage(regex) {
 
             const { stdout } = await execFileAsync('fls', args, { timeout: 300000, maxBuffer: 100 * 1024 * 1024 });
             const found = parseFls(stdout, regex);
-            console.log(`\u2726 Image Scan: found ${found.length} matching files in partition`);
+            const flsTime = ((Date.now() - flsStart) / 1000).toFixed(1);
+            console.log(`\u2726 Image Scan: found ${found.length} matching files in partition (${flsTime}s)`);
 
             for (const f of found) {
                 f.partition_offset = part.offset;
                 f.partition_desc = part.description;
                 allFiles.push(f);
             }
+
+            update('processing', 'scanning', pct, JSON.stringify({
+                phase_detail: 'scanning', partitions: partitions.length,
+                partition_current: i + 1, files_found: allFiles.length,
+            }), null);
         } catch (e) {
-            console.log(`\u2726 Image Scan: fls failed for partition at offset ${part.offset}: ${e.message}`);
+            const flsTime = ((Date.now() - flsStart) / 1000).toFixed(1);
+            console.log(`\u2726 Image Scan: fls failed for partition at offset ${part.offset} (${flsTime}s): ${e.message}`);
         }
     }
 
-    update('processing', 'metadata', 70, null, null);
-    for (let i = 0; i < allFiles.length; i++) {
-        const f = allFiles[i];
-        const pct = 70 + Math.round((i / allFiles.length) * 25);
-        update('processing', 'metadata', pct, null, null);
+    // Metadata phase: run istat in concurrent batches for performance
+    const CONCURRENCY = 10;
+    const metaStart = Date.now();
+    let metaCompleted = 0;
+    let metaFailed = 0;
+    let lastLogTime = Date.now();
+    const LOG_INTERVAL = 5000; // log every 5s
 
-        try {
-            const args = ['-o', String(f.partition_offset), imagePath, f.inode.split('-')[0]];
-            const { stdout } = await execFileAsync('istat', args, { timeout: 30000 });
-            const meta = parseIstat(stdout);
-            f.size = meta.size;
-            f.created = meta.created;
-            f.modified = meta.modified;
-            f.accessed = meta.accessed;
-        } catch (e) {
-            console.log(`\u2726 Image Scan: istat failed for ${f.path}: ${e.message}`);
-            f.size = 0;
-            f.created = null;
-            f.modified = null;
-            f.accessed = null;
+    update('processing', 'metadata', 70, JSON.stringify({
+        phase_detail: 'metadata', processed: 0, total: allFiles.length, rate: 0, eta_seconds: null,
+    }), null);
+
+    console.log(`\u2726 Image Scan: starting metadata for ${allFiles.length} files (concurrency: ${CONCURRENCY})`);
+
+    for (let i = 0; i < allFiles.length; i += CONCURRENCY) {
+        const batch = allFiles.slice(i, i + CONCURRENCY);
+        await Promise.all(batch.map(async (f) => {
+            try {
+                const args = ['-o', String(f.partition_offset), imagePath, f.inode.split('-')[0]];
+                const { stdout } = await execFileAsync('istat', args, { timeout: 30000, maxBuffer: 5 * 1024 * 1024 });
+                const meta = parseIstat(stdout);
+                f.size = meta.size;
+                f.created = meta.created;
+                f.modified = meta.modified;
+                f.accessed = meta.accessed;
+                if (meta.is_cloud_only) f.is_cloud_only = true;
+                if (meta.flags) f.flags = meta.flags;
+            } catch (e) {
+                f.size = 0;
+                f.created = null;
+                f.modified = null;
+                f.accessed = null;
+                metaFailed++;
+            }
+        }));
+
+        metaCompleted = Math.min(i + CONCURRENCY, allFiles.length);
+        const pct = 70 + Math.round((metaCompleted / allFiles.length) * 25);
+        const elapsed = (Date.now() - metaStart) / 1000;
+        const rate = metaCompleted / elapsed;
+        const remaining = allFiles.length - metaCompleted;
+        const etaSeconds = rate > 0 ? Math.round(remaining / rate) : null;
+
+        update('processing', 'metadata', pct, JSON.stringify({
+            phase_detail: 'metadata', processed: metaCompleted, total: allFiles.length,
+            rate: Math.round(rate * 10) / 10, eta_seconds: etaSeconds, failed: metaFailed,
+        }), null);
+
+        // Periodic console logging
+        if (Date.now() - lastLogTime >= LOG_INTERVAL) {
+            const etaMin = etaSeconds != null ? `${Math.floor(etaSeconds / 60)}m${etaSeconds % 60}s` : '?';
+            console.log(`\u2726 Image Scan: metadata ${metaCompleted}/${allFiles.length} (${Math.round(rate)}/s, ETA ${etaMin}, ${metaFailed} failed)`);
+            lastLogTime = Date.now();
         }
     }
+
+    const totalMetaTime = ((Date.now() - metaStart) / 1000).toFixed(1);
+    console.log(`\u2726 Image Scan: metadata complete — ${allFiles.length} files in ${totalMetaTime}s (${metaFailed} failed)`);
 
     return allFiles;
 }
@@ -235,17 +292,19 @@ async function scanArchive(regex) {
 // ═══════════════════════════════════════════════════
 async function main() {
     try {
+        const t0 = Date.now();
         const regex = new RegExp(searchPattern, 'i');
-        
+
         // Route to specific scanner
-        const allFiles = IS_ARCHIVE 
+        const allFiles = IS_ARCHIVE
             ? await scanArchive(regex)
             : await scanDiskImage(regex);
 
         // Done
+        const totalTime = ((Date.now() - t0) / 1000).toFixed(1);
         const resultJson = JSON.stringify(allFiles);
         update('completed', 'done', 100, resultJson, null);
-        console.log(`\u2726 Image Scan: complete — found ${allFiles.length} files`);
+        console.log(`\u2726 Image Scan: complete — found ${allFiles.length} files in ${totalTime}s`);
 
     } catch (err) {
         console.error('\u2726 Image Scan: fatal error:', err);
