@@ -469,6 +469,18 @@ async function main() {
 
         console.log(`✦ ZIP Import complete: ${totalEmails} emails, ${totalFiles} files, ${totalAttachments} attachments`);
 
+        // Refresh precomputed investigation counts
+        db.prepare(`
+            UPDATE investigations SET
+                document_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1),
+                email_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'email'),
+                attachment_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'attachment'),
+                chat_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'chat'),
+                file_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'file')
+            WHERE id = ?1
+        `).run(investigation_id);
+        console.log('✦ Investigation counts refreshed');
+
         // Cleanup source ZIP
         try {
             fs.unlinkSync(filepath);

@@ -5,7 +5,7 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
-import db from '../db.js';
+import db, { refreshInvestigationCounts } from '../db.js';
 import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
 import { resolveThreadId, backfillThread } from '../lib/threading.js';
@@ -483,6 +483,9 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
             }
         }
 
+        // Refresh precomputed investigation counts
+        refreshInvestigationCounts(investigation_id);
+
         // Only returns here for non-PST files
         res.json({ uploaded: allResults.length, documents: allResults });
     } catch (err) {
@@ -809,6 +812,9 @@ router.delete('/:id', requireRole('admin', 'reviewer'), (req, res) => {
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
         db.prepare('DELETE FROM documents WHERE id = ?').run(req.params.id);
+
+        // Refresh precomputed investigation counts
+        if (doc.investigation_id) refreshInvestigationCounts(doc.investigation_id);
 
         logAudit(db, {
             userId: req.user.id,
