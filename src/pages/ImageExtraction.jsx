@@ -76,8 +76,34 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
     const [scanJob, setScanJob] = useState(null);
     const [foundFiles, setFoundFiles] = useState([]);
 
-    // Selection state
-    const [selectedFiles, setSelectedFiles] = useState(new Set());
+    // Selection state — extension-based
+    const [excludedExts, setExcludedExts] = useState(new Set());
+    const [excludeCloudOnly, setExcludeCloudOnly] = useState(true);
+
+    // Compute extension summary from found files
+    const extSummary = (() => {
+        const map = {};
+        for (let i = 0; i < foundFiles.length; i++) {
+            const f = foundFiles[i];
+            const ext = (f.path.match(/\.([^./\\]+)$/)?.[1] || 'unknown').toLowerCase();
+            if (!map[ext]) map[ext] = { ext, count: 0, totalSize: 0, cloudOnly: 0, local: 0 };
+            map[ext].count++;
+            map[ext].totalSize += f.size || 0;
+            if (f.is_cloud_only) map[ext].cloudOnly++;
+            else map[ext].local++;
+        }
+        return Object.values(map).sort((a, b) => b.count - a.count);
+    })();
+
+    // Derive selectedFiles from excluded extensions + cloud-only filter
+    const selectedFiles = new Set(
+        foundFiles.map((f, i) => {
+            const ext = (f.path.match(/\.([^./\\]+)$/)?.[1] || 'unknown').toLowerCase();
+            if (excludedExts.has(ext)) return null;
+            if (excludeCloudOnly && f.is_cloud_only) return null;
+            return i;
+        }).filter(i => i !== null)
+    );
 
     // Extract state
     const [outputDir, setOutputDir] = useState('');
@@ -143,7 +169,8 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
 
         setScanning(true);
         setFoundFiles([]);
-        setSelectedFiles(new Set());
+        setExcludedExts(new Set());
+        setExcludeCloudOnly(true);
         setExtractResults([]);
         setExtractJob(null);
         setExtractJobId(null);
@@ -191,21 +218,26 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
     // ═══════════════════════════════════════
     // Selection
     // ═══════════════════════════════════════
-    const toggleSelect = (idx) => {
-        setSelectedFiles(prev => {
+    const toggleExt = (ext) => {
+        setExcludedExts(prev => {
             const next = new Set(prev);
-            if (next.has(idx)) next.delete(idx);
-            else next.add(idx);
+            if (next.has(ext)) next.delete(ext);
+            else next.add(ext);
             return next;
         });
     };
 
     const selectAll = () => {
-        setSelectedFiles(new Set(foundFiles.map((_, i) => i)));
+        setExcludedExts(new Set());
     };
 
     const deselectAll = () => {
-        setSelectedFiles(new Set());
+        setExcludedExts(new Set(extSummary.map(e => e.ext)));
+    };
+
+    // Legacy toggleSelect for individual file selection (kept for extract table)
+    const toggleSelect = (idx) => {
+        // no-op in extension mode
     };
 
     // ═══════════════════════════════════════
@@ -514,19 +546,25 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                         )}
                     </div>
 
-                    {/* Found Files */}
+                    {/* Found Files — Extension Summary */}
                     {foundFiles.length > 0 && !scanning && (
                         <div className="card" style={{ padding: '24px', marginBottom: '24px' }}>
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                                 <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>
-                                    Found {foundFiles.length} Matching File{foundFiles.length > 1 ? 's' : ''}
-                                    {foundFiles.some(f => f.is_cloud_only) && (
-                                        <span style={{ fontSize: '12px', fontWeight: 400, color: 'var(--text-tertiary)', marginLeft: '8px' }}>
-                                            ({foundFiles.filter(f => f.is_cloud_only).length} cloud-only)
-                                        </span>
-                                    )}
+                                    Found {foundFiles.length.toLocaleString()} Files
+                                    <span style={{ fontSize: '12px', fontWeight: 400, color: 'var(--text-tertiary)', marginLeft: '8px' }}>
+                                        ({selectedFiles.size.toLocaleString()} selected)
+                                    </span>
                                 </h3>
-                                <div style={{ display: 'flex', gap: '8px' }}>
+                                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                                        <input
+                                            type="checkbox"
+                                            checked={excludeCloudOnly}
+                                            onChange={e => setExcludeCloudOnly(e.target.checked)}
+                                        />
+                                        Exclude cloud-only
+                                    </label>
                                     <button className="btn btn-ghost btn-sm" onClick={selectAll}>Select All</button>
                                     <button className="btn btn-ghost btn-sm" onClick={deselectAll}>Deselect All</button>
                                 </div>
@@ -539,60 +577,75 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                                             <th style={{ padding: '8px 12px', textAlign: 'left', width: '40px' }}>
                                                 <input
                                                     type="checkbox"
-                                                    checked={selectedFiles.size === foundFiles.length}
+                                                    checked={excludedExts.size === 0}
                                                     onChange={e => e.target.checked ? selectAll() : deselectAll()}
                                                 />
                                             </th>
-                                            <th style={{ padding: '8px 12px', textAlign: 'left' }}>File Path</th>
-                                            <th style={{ padding: '8px 12px', textAlign: 'right' }}>Size</th>
-                                            <th style={{ padding: '8px 12px', textAlign: 'left' }}>Modified</th>
-                                            <th style={{ padding: '8px 12px', textAlign: 'left' }}>Status</th>
-                                            <th style={{ padding: '8px 12px', textAlign: 'left' }}>Partition</th>
+                                            <th style={{ padding: '8px 12px', textAlign: 'left' }}>Extension</th>
+                                            <th style={{ padding: '8px 12px', textAlign: 'right' }}>Files</th>
+                                            <th style={{ padding: '8px 12px', textAlign: 'right' }}>Total Size</th>
+                                            <th style={{ padding: '8px 12px', textAlign: 'right' }}>Local</th>
+                                            <th style={{ padding: '8px 12px', textAlign: 'right' }}>Cloud Only</th>
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {foundFiles.map((f, idx) => (
-                                            <tr
-                                                key={idx}
-                                                onClick={() => toggleSelect(idx)}
-                                                style={{
-                                                    borderBottom: '1px solid var(--border-secondary)',
-                                                    cursor: 'pointer',
-                                                    background: selectedFiles.has(idx) ? 'var(--bg-primary-subtle, rgba(59,130,246,0.08))' : 'transparent',
-                                                }}
-                                            >
-                                                <td style={{ padding: '10px 12px' }}>
-                                                    <input
-                                                        type="checkbox"
-                                                        checked={selectedFiles.has(idx)}
-                                                        onChange={() => toggleSelect(idx)}
-                                                        onClick={e => e.stopPropagation()}
-                                                    />
-                                                </td>
-                                                <td style={{ padding: '10px 12px', fontFamily: 'var(--font-mono, monospace)', fontSize: '12px', wordBreak: 'break-all', opacity: f.is_cloud_only ? 0.5 : 1 }}>
-                                                    {f.path}
-                                                </td>
-                                                <td style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                                                    {f.size ? formatSize(f.size) : '\u2014'}
-                                                </td>
-                                                <td style={{ padding: '10px 12px', whiteSpace: 'nowrap', color: 'var(--text-secondary)' }}>
-                                                    {f.modified || '\u2014'}
-                                                </td>
-                                                <td style={{ padding: '10px 12px', whiteSpace: 'nowrap', fontSize: '11px' }}>
-                                                    {f.is_cloud_only ? (
-                                                        <span style={{ color: 'var(--warning, #f59e0b)', background: 'rgba(245,158,11,0.1)', padding: '2px 6px', borderRadius: '4px' }} title="OneDrive cloud-only file — data not on disk">
-                                                            Cloud Only
-                                                        </span>
-                                                    ) : (
-                                                        <span style={{ color: 'var(--accent-success, #22c55e)' }}>Local</span>
-                                                    )}
-                                                </td>
-                                                <td style={{ padding: '10px 12px', whiteSpace: 'nowrap', color: 'var(--text-secondary)', fontSize: '12px' }}>
-                                                    {f.partition_desc || '\u2014'}
-                                                </td>
-                                            </tr>
-                                        ))}
+                                        {extSummary.map(e => {
+                                            const isSelected = !excludedExts.has(e.ext);
+                                            return (
+                                                <tr
+                                                    key={e.ext}
+                                                    onClick={() => toggleExt(e.ext)}
+                                                    style={{
+                                                        borderBottom: '1px solid var(--border-secondary)',
+                                                        cursor: 'pointer',
+                                                        background: isSelected ? 'var(--bg-primary-subtle, rgba(59,130,246,0.08))' : 'transparent',
+                                                        opacity: isSelected ? 1 : 0.5,
+                                                    }}
+                                                >
+                                                    <td style={{ padding: '10px 12px' }}>
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={isSelected}
+                                                            onChange={() => toggleExt(e.ext)}
+                                                            onClick={ev => ev.stopPropagation()}
+                                                        />
+                                                    </td>
+                                                    <td style={{ padding: '10px 12px', fontFamily: 'var(--font-mono, monospace)', fontWeight: 600 }}>
+                                                        .{e.ext}
+                                                    </td>
+                                                    <td style={{ padding: '10px 12px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                                                        {e.count.toLocaleString()}
+                                                    </td>
+                                                    <td style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                                        {formatSize(e.totalSize)}
+                                                    </td>
+                                                    <td style={{ padding: '10px 12px', textAlign: 'right', color: 'var(--accent-success, #22c55e)', fontVariantNumeric: 'tabular-nums' }}>
+                                                        {e.local.toLocaleString()}
+                                                    </td>
+                                                    <td style={{ padding: '10px 12px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                                                        {e.cloudOnly > 0 ? (
+                                                            <span style={{ color: 'var(--warning, #f59e0b)' }}>{e.cloudOnly.toLocaleString()}</span>
+                                                        ) : (
+                                                            <span style={{ color: 'var(--text-tertiary)' }}>0</span>
+                                                        )}
+                                                    </td>
+                                                </tr>
+                                            );
+                                        })}
                                     </tbody>
+                                    <tfoot>
+                                        <tr style={{ borderTop: '2px solid var(--border-secondary)', fontWeight: 600, fontSize: '12px' }}>
+                                            <td style={{ padding: '10px 12px' }}></td>
+                                            <td style={{ padding: '10px 12px' }}>Total Selected</td>
+                                            <td style={{ padding: '10px 12px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                                                {selectedFiles.size.toLocaleString()}
+                                            </td>
+                                            <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                                                {formatSize(Array.from(selectedFiles).reduce((sum, i) => sum + (foundFiles[i]?.size || 0), 0))}
+                                            </td>
+                                            <td style={{ padding: '10px 12px' }} colSpan={2}></td>
+                                        </tr>
+                                    </tfoot>
                                 </table>
                             </div>
 
