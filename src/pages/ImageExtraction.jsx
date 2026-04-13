@@ -336,7 +336,7 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
         setExtracting(true);
         setExtractResults([]);
 
-        const filesToExtract = [...selectedFiles].map(idx => activeFiles[idx]);
+        const indices = [...selectedFiles];
 
         try {
             const res = await apiFetch('/api/images/extract', {
@@ -344,7 +344,8 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     scanJobId,
-                    selectedFiles: filesToExtract,
+                    metadataJobId: metadataJobId || null,
+                    selectedIndices: indices,
                     outputDir: outputDir.trim(),
                 }),
             });
@@ -398,7 +399,7 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
         setIngesting(true);
         setIngestResults(null);
 
-        const filesToIngest = [...selectedFiles].map(idx => activeFiles[idx]);
+        const indices = [...selectedFiles];
 
         try {
             const res = await apiFetch('/api/images/ingest', {
@@ -406,7 +407,8 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     scanJobId,
-                    selectedFiles: filesToIngest,
+                    metadataJobId: metadataJobId || null,
+                    selectedIndices: indices,
                     investigationId: activeInvestigationId,
                     custodian: ingestCustodian.trim(),
                 }),

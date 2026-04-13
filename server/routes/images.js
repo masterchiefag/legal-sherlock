@@ -170,14 +170,14 @@ router.post('/metadata', (req, res) => {
 // ═══════════════════════════════════════════════════
 router.post('/extract', (req, res) => {
     try {
-        const { scanJobId, selectedFiles, outputDir } = req.body;
+        const { scanJobId, metadataJobId, selectedIndices, outputDir } = req.body;
 
-        if (!scanJobId || !selectedFiles || !outputDir) {
-            return res.status(400).json({ error: 'scanJobId, selectedFiles, and outputDir are required' });
+        if (!scanJobId || !selectedIndices || !outputDir) {
+            return res.status(400).json({ error: 'scanJobId, selectedIndices, and outputDir are required' });
         }
 
-        if (!Array.isArray(selectedFiles) || selectedFiles.length === 0) {
-            return res.status(400).json({ error: 'selectedFiles must be a non-empty array' });
+        if (!Array.isArray(selectedIndices) || selectedIndices.length === 0) {
+            return res.status(400).json({ error: 'selectedIndices must be a non-empty array' });
         }
 
         // Validate output directory
@@ -202,6 +202,28 @@ router.post('/extract', (req, res) => {
         }
         if (scanJob.status !== 'completed') {
             return res.status(400).json({ error: 'Scan job has not completed yet' });
+        }
+
+        // Resolve files from metadata job if available, else scan job
+        let sourceFiles;
+        if (metadataJobId) {
+            const metaJob = db.prepare("SELECT * FROM image_jobs WHERE id = ? AND type = 'metadata'").get(metadataJobId);
+            if (metaJob?.status === 'completed' && metaJob.result_data) {
+                try { sourceFiles = JSON.parse(metaJob.result_data); } catch (_) {}
+            }
+        }
+        if (!sourceFiles) {
+            try { sourceFiles = JSON.parse(scanJob.result_data); } catch (_) {
+                return res.status(400).json({ error: 'No valid file data found' });
+            }
+        }
+
+        const selectedFiles = selectedIndices
+            .filter(i => i >= 0 && i < sourceFiles.length)
+            .map(i => sourceFiles[i]);
+
+        if (selectedFiles.length === 0) {
+            return res.status(400).json({ error: 'No valid files selected' });
         }
 
         // Create extraction job
@@ -247,14 +269,14 @@ router.post('/extract', (req, res) => {
 // ═══════════════════════════════════════════════════
 router.post('/ingest', (req, res) => {
     try {
-        const { scanJobId, selectedFiles, investigationId, custodian } = req.body;
+        const { scanJobId, metadataJobId, selectedIndices, investigationId, custodian } = req.body;
 
-        if (!scanJobId || !selectedFiles || !investigationId || !custodian) {
-            return res.status(400).json({ error: 'scanJobId, selectedFiles, investigationId, and custodian are required' });
+        if (!scanJobId || !selectedIndices || !investigationId || !custodian) {
+            return res.status(400).json({ error: 'scanJobId, selectedIndices, investigationId, and custodian are required' });
         }
 
-        if (!Array.isArray(selectedFiles) || selectedFiles.length === 0) {
-            return res.status(400).json({ error: 'selectedFiles must be a non-empty array' });
+        if (!Array.isArray(selectedIndices) || selectedIndices.length === 0) {
+            return res.status(400).json({ error: 'selectedIndices must be a non-empty array' });
         }
 
         // Validate scan job
@@ -265,6 +287,30 @@ router.post('/ingest', (req, res) => {
         if (scanJob.status !== 'completed') {
             return res.status(400).json({ error: 'Scan job has not completed yet' });
         }
+
+        // Resolve files from metadata job (enriched) if available, else scan job
+        let sourceFiles;
+        if (metadataJobId) {
+            const metaJob = db.prepare("SELECT * FROM image_jobs WHERE id = ? AND type = 'metadata'").get(metadataJobId);
+            if (metaJob?.status === 'completed' && metaJob.result_data) {
+                try { sourceFiles = JSON.parse(metaJob.result_data); } catch (_) {}
+            }
+        }
+        if (!sourceFiles) {
+            try { sourceFiles = JSON.parse(scanJob.result_data); } catch (_) {
+                return res.status(400).json({ error: 'No valid file data found' });
+            }
+        }
+
+        const selectedFiles = selectedIndices
+            .filter(i => i >= 0 && i < sourceFiles.length)
+            .map(i => sourceFiles[i]);
+
+        if (selectedFiles.length === 0) {
+            return res.status(400).json({ error: 'No valid files selected' });
+        }
+
+        console.log(`✦ Ingest: ${selectedFiles.length} files selected (${sourceFiles.length} total), investigation=${investigationId}`);
 
         // Validate investigation exists
         const inv = db.prepare('SELECT id FROM investigations WHERE id = ?').get(investigationId);
