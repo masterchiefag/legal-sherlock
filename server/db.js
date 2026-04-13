@@ -317,6 +317,82 @@ try {
     }
 } catch (_) { /* table already migrated or fresh */ }
 
+// Migration: widen image_jobs.type CHECK to include 'ingest'
+try {
+    const checkInfo2 = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='image_jobs'").get();
+    if (checkInfo2?.sql && !checkInfo2.sql.includes('ingest')) {
+        db.exec(`
+            ALTER TABLE image_jobs RENAME TO image_jobs_old2;
+            CREATE TABLE image_jobs (
+                id TEXT PRIMARY KEY,
+                type TEXT NOT NULL CHECK(type IN ('scan', 'extract', 'whatsapp_zip', 'ingest')),
+                status TEXT NOT NULL CHECK(status IN ('pending', 'processing', 'completed', 'failed')),
+                image_path TEXT NOT NULL,
+                output_dir TEXT,
+                phase TEXT,
+                progress_percent INTEGER DEFAULT 0,
+                result_data TEXT,
+                error_log TEXT,
+                started_at TEXT DEFAULT (datetime('now')),
+                completed_at TEXT
+            );
+            INSERT INTO image_jobs SELECT * FROM image_jobs_old2;
+            DROP TABLE image_jobs_old2;
+        `);
+    }
+} catch (_) { /* table already migrated or fresh */ }
+
+// Migration: widen image_jobs.type CHECK to include 'metadata'
+try {
+    const checkInfo3 = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='image_jobs'").get();
+    if (checkInfo3?.sql && !checkInfo3.sql.includes('metadata')) {
+        db.exec(`
+            ALTER TABLE image_jobs RENAME TO image_jobs_old3;
+            CREATE TABLE image_jobs (
+                id TEXT PRIMARY KEY,
+                type TEXT NOT NULL CHECK(type IN ('scan', 'extract', 'whatsapp_zip', 'ingest', 'metadata')),
+                status TEXT NOT NULL CHECK(status IN ('pending', 'processing', 'completed', 'failed')),
+                image_path TEXT NOT NULL,
+                output_dir TEXT,
+                phase TEXT,
+                progress_percent INTEGER DEFAULT 0,
+                result_data TEXT,
+                error_log TEXT,
+                started_at TEXT DEFAULT (datetime('now')),
+                completed_at TEXT
+            );
+            INSERT INTO image_jobs SELECT * FROM image_jobs_old3;
+            DROP TABLE image_jobs_old3;
+        `);
+    }
+} catch (_) { /* table already migrated or fresh */ }
+
+// Migration: Add investigation_id and custodian to image_jobs
+if (!columnExists('image_jobs', 'investigation_id')) {
+    db.exec(`ALTER TABLE image_jobs ADD COLUMN investigation_id TEXT`);
+    console.log(`✦ Migration: added column image_jobs.investigation_id`);
+}
+if (!columnExists('image_jobs', 'custodian')) {
+    db.exec(`ALTER TABLE image_jobs ADD COLUMN custodian TEXT`);
+    console.log(`✦ Migration: added column image_jobs.custodian`);
+}
+
+// Migration: Add forensic source metadata columns to documents
+const sourceColumns = [
+    { col: 'source_path', type: 'TEXT' },
+    { col: 'source_created_at', type: 'TEXT' },
+    { col: 'source_modified_at', type: 'TEXT' },
+    { col: 'source_accessed_at', type: 'TEXT' },
+    { col: 'source_job_id', type: 'TEXT' },
+    { col: 'is_cloud_only', type: 'INTEGER DEFAULT 0' },
+];
+for (const { col, type } of sourceColumns) {
+    if (!columnExists('documents', col)) {
+        db.exec(`ALTER TABLE documents ADD COLUMN ${col} ${type}`);
+        console.log(`✦ Migration: added column documents.${col}`);
+    }
+}
+
 db.exec(`
   CREATE TABLE IF NOT EXISTS summarization_jobs (
     id TEXT PRIMARY KEY,

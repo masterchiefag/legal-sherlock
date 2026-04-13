@@ -181,7 +181,7 @@ function Dashboard({ activeInvestigationId, activeInvestigation, addToast }) {
                             border: '1px solid var(--border)'
                         }}>
                             <h3 style={{ margin: '0 0 12px', fontSize: '14px', fontWeight: 600, color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '1px' }}>
-                                Attachment Types
+                                File Types
                             </h3>
                             {/* Header row */}
                             <div style={{ display: 'flex', justifyContent: 'space-between', padding: '4px 10px', marginBottom: '4px', fontSize: '11px', color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '0.5px' }}>
@@ -198,7 +198,7 @@ function Dashboard({ activeInvestigationId, activeInvestigation, addToast }) {
                                         padding: '6px 10px', borderRadius: '6px',
                                         background: 'var(--bg-tertiary)', border: '1px solid var(--border-secondary)',
                                         cursor: 'pointer', fontSize: '13px'
-                                    }} onClick={() => navigate(`/search?type=attachment&q=${encodeURIComponent(`original_name:"${t.ext.replace('.', '')}"`)}`)}>
+                                    }} onClick={() => navigate(`/search?q=${encodeURIComponent(`original_name:"${t.ext.replace('.', '')}"`)}`)}>
                                         <span style={{ fontWeight: 500, color: 'var(--text-primary)', fontFamily: 'var(--font-mono, monospace)' }}>
                                             {t.ext}
                                         </span>

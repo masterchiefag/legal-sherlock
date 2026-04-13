@@ -55,9 +55,25 @@ router.get('/', (req, res) => {
             }
         }
 
+        // Batch fetch image ingest jobs for all investigations
+        const ingestMap = new Map();
+        if (invIds.length > 0) {
+            const placeholders = invIds.map(() => '?').join(',');
+            const allIngestJobs = db.prepare(`
+                SELECT investigation_id, image_path, status, result_data, started_at, completed_at
+                FROM image_jobs WHERE type = 'ingest' AND investigation_id IN (${placeholders})
+                ORDER BY rowid DESC
+            `).all(...invIds);
+            for (const job of allIngestJobs) {
+                if (!ingestMap.has(job.investigation_id)) ingestMap.set(job.investigation_id, []);
+                ingestMap.get(job.investigation_id).push(job);
+            }
+        }
+
         for (const inv of investigations) {
             inv.reviewed_count = reviewedMap.get(inv.id) || 0;
             inv.import_jobs = jobMap.get(inv.id) || [];
+            inv.ingest_jobs = ingestMap.get(inv.id) || [];
         }
 
         console.log(`[investigations] list: main=${tMain - t0}ms, total=${Date.now() - t0}ms, count=${investigations.length}`);

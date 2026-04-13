@@ -18,6 +18,10 @@ import fsp from 'fs/promises';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import db from '../db.js';
+import {
+    disableFtsTriggers, enableFtsTriggers, rebuildFtsIndex,
+    refreshInvestigationCounts, walCheckpoint
+} from '../lib/worker-helpers.js';
 import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
 import { resolveThreadId, backfillThread } from '../lib/threading.js';
@@ -366,9 +370,7 @@ async function main() {
         db.prepare("UPDATE import_jobs SET status = 'processing', phase = 'reading' WHERE id = ?").run(jobId);
 
         // Disable FTS triggers for bulk import
-        db.exec('DROP TRIGGER IF EXISTS documents_ai');
-        db.exec('DROP TRIGGER IF EXISTS documents_au');
-        console.log('✦ ZIP Import: disabled FTS triggers for bulk import');
+        disableFtsTriggers(db);
 
         // List ZIP contents
         console.log(`✦ ZIP Import: listing archive contents...`);
@@ -436,23 +438,8 @@ async function main() {
         flushPendingOps();
 
         // Rebuild FTS
-        console.log('✦ ZIP Import: rebuilding FTS index...');
-        db.exec(`
-            CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
-                INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
-                VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
-            END;
-        `);
-        db.exec(`
-            CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
-                INSERT INTO documents_fts(documents_fts, rowid, original_name, text_content, email_subject, email_from, email_to)
-                VALUES ('delete', old.rowid, old.original_name, COALESCE(old.text_content,''), COALESCE(old.email_subject,''), COALESCE(old.email_from,''), COALESCE(old.email_to,''));
-                INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
-                VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
-            END;
-        `);
-        db.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')");
-        console.log('✦ ZIP Import: FTS index rebuilt');
+        enableFtsTriggers(db);
+        rebuildFtsIndex(db);
 
         // Mark complete
         db.prepare(`
@@ -470,16 +457,7 @@ async function main() {
         console.log(`✦ ZIP Import complete: ${totalEmails} emails, ${totalFiles} files, ${totalAttachments} attachments`);
 
         // Refresh precomputed investigation counts
-        db.prepare(`
-            UPDATE investigations SET
-                document_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1),
-                email_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'email'),
-                attachment_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'attachment'),
-                chat_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'chat'),
-                file_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'file')
-            WHERE id = ?1
-        `).run(investigation_id);
-        console.log('✦ Investigation counts refreshed');
+        refreshInvestigationCounts(db, investigation_id);
 
         // Cleanup source ZIP
         try {
@@ -492,24 +470,9 @@ async function main() {
     } catch (err) {
         console.error("ZIP Worker fatal error:", err);
 
-        // Restore FTS triggers
-        try {
-            db.exec(`
-                CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
-                    INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
-                    VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
-                END;
-            `);
-            db.exec(`
-                CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
-                    INSERT INTO documents_fts(documents_fts, rowid, original_name, text_content, email_subject, email_from, email_to)
-                    VALUES ('delete', old.rowid, old.original_name, COALESCE(old.text_content,''), COALESCE(old.email_subject,''), COALESCE(old.email_from,''), COALESCE(old.email_to,''));
-                    INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
-                    VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
-                END;
-            `);
-            db.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')");
-        } catch (_) { /* best effort */ }
+        // Restore FTS triggers (best effort)
+        enableFtsTriggers(db);
+        rebuildFtsIndex(db);
 
         db.prepare(`
             UPDATE import_jobs SET status = 'failed',

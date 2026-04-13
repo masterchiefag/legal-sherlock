@@ -37,13 +37,20 @@ function parsePartitions(output) {
     const lines = output.split('\n');
     const partitions = [];
     for (const line of lines) {
-        const match = line.match(/^\d+:\s+(\d+)\s+\d+\s+(\d+)\s+(.+)$/);
+        // mmls output: "Slot  Start  End  Length  Description"
+        // e.g. "004:  000       0000002048   0000411647   0000409600   Basic data partition"
+        // or   "001:  -------   0000000000   0000002047   0000002048   Unallocated"
+        const match = line.match(/^\d+:\s+(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/);
         if (match) {
-            const desc = match[3].trim();
+            const slot = match[1];
+            const start = parseInt(match[2]);
+            const length = parseInt(match[4]);
+            const desc = match[5].trim();
             if (/unalloc|meta|safety|primary table|gpt/i.test(desc)) continue;
+            if (slot === '-------') continue; // skip unallocated slots
             partitions.push({
-                offset: parseInt(match[1]),
-                length: parseInt(match[2]),
+                offset: start,
+                length,
                 description: desc,
             });
         }
@@ -68,25 +75,8 @@ function parseFls(output, regex) {
     return files;
 }
 
-function parseIstat(output) {
-    const meta = { size: 0, created: null, modified: null, accessed: null };
-
-    const sizeMatch = output.match(/^Size:\s+(\d+)/m);
-    if (sizeMatch) meta.size = parseInt(sizeMatch[1]);
-
-    const createdMatch = output.match(/(?:Created|crtime):\s+(.+?)(?:\s+\(|$)/m);
-    if (createdMatch) meta.created = createdMatch[1].trim();
-
-    const modifiedMatch = output.match(/(?:Written|mtime|Modified):\s+(.+?)(?:\s+\(|$)/m);
-    if (modifiedMatch) meta.modified = modifiedMatch[1].trim();
-
-    const accessedMatch = output.match(/(?:Accessed|atime):\s+(.+?)(?:\s+\(|$)/m);
-    if (accessedMatch) meta.accessed = accessedMatch[1].trim();
-
-    return meta;
-}
-
 async function scanDiskImage(regex) {
+    const scanStart = Date.now();
     console.log(`\u2726 Image Scan: starting E01 scan for ${imagePath}`);
     update('processing', 'partitions', 0, null, null);
 
@@ -106,15 +96,18 @@ async function scanDiskImage(regex) {
         return [];
     }
 
-    update('processing', 'scanning', 10, null, null);
+    update('processing', 'scanning', 5, JSON.stringify({
+        phase_detail: 'scanning', partitions: partitions.length, files_found: 0,
+    }), null);
     const allFiles = [];
 
     for (let i = 0; i < partitions.length; i++) {
         const part = partitions[i];
-        const pct = 10 + Math.round((i / partitions.length) * 60);
+        const pct = 5 + Math.round((i / partitions.length) * 90);
         update('processing', 'scanning', pct, null, null);
 
-        console.log(`\u2726 Image Scan: scanning partition at offset ${part.offset} (${part.description})`);
+        console.log(`\u2726 Image Scan: scanning partition ${i + 1}/${partitions.length} at offset ${part.offset} (${part.description})`);
+        const flsStart = Date.now();
         try {
             const args = ['-r', '-p'];
             if (!singlePartition) args.push('-o', String(part.offset));
@@ -122,38 +115,22 @@ async function scanDiskImage(regex) {
 
             const { stdout } = await execFileAsync('fls', args, { timeout: 300000, maxBuffer: 100 * 1024 * 1024 });
             const found = parseFls(stdout, regex);
-            console.log(`\u2726 Image Scan: found ${found.length} matching files in partition`);
+            const flsTime = ((Date.now() - flsStart) / 1000).toFixed(1);
+            console.log(`\u2726 Image Scan: found ${found.length} matching files in partition (${flsTime}s)`);
 
             for (const f of found) {
                 f.partition_offset = part.offset;
                 f.partition_desc = part.description;
                 allFiles.push(f);
             }
-        } catch (e) {
-            console.log(`\u2726 Image Scan: fls failed for partition at offset ${part.offset}: ${e.message}`);
-        }
-    }
 
-    update('processing', 'metadata', 70, null, null);
-    for (let i = 0; i < allFiles.length; i++) {
-        const f = allFiles[i];
-        const pct = 70 + Math.round((i / allFiles.length) * 25);
-        update('processing', 'metadata', pct, null, null);
-
-        try {
-            const args = ['-o', String(f.partition_offset), imagePath, f.inode.split('-')[0]];
-            const { stdout } = await execFileAsync('istat', args, { timeout: 30000 });
-            const meta = parseIstat(stdout);
-            f.size = meta.size;
-            f.created = meta.created;
-            f.modified = meta.modified;
-            f.accessed = meta.accessed;
+            update('processing', 'scanning', pct, JSON.stringify({
+                phase_detail: 'scanning', partitions: partitions.length,
+                partition_current: i + 1, files_found: allFiles.length,
+            }), null);
         } catch (e) {
-            console.log(`\u2726 Image Scan: istat failed for ${f.path}: ${e.message}`);
-            f.size = 0;
-            f.created = null;
-            f.modified = null;
-            f.accessed = null;
+            const flsTime = ((Date.now() - flsStart) / 1000).toFixed(1);
+            console.log(`\u2726 Image Scan: fls failed for partition at offset ${part.offset} (${flsTime}s): ${e.message}`);
         }
     }
 
@@ -206,17 +183,20 @@ async function scanArchive(regex) {
 // ═══════════════════════════════════════════════════
 async function main() {
     try {
+        const t0 = Date.now();
+        console.log(`\u2726 Image Scan: pattern="${searchPattern}", image="${imagePath}"`);
         const regex = new RegExp(searchPattern, 'i');
-        
+
         // Route to specific scanner
-        const allFiles = IS_ARCHIVE 
+        const allFiles = IS_ARCHIVE
             ? await scanArchive(regex)
             : await scanDiskImage(regex);
 
         // Done
+        const totalTime = ((Date.now() - t0) / 1000).toFixed(1);
         const resultJson = JSON.stringify(allFiles);
         update('completed', 'done', 100, resultJson, null);
-        console.log(`\u2726 Image Scan: complete — found ${allFiles.length} files`);
+        console.log(`\u2726 Image Scan: complete — found ${allFiles.length} files in ${totalTime}s`);
 
     } catch (err) {
         console.error('\u2726 Image Scan: fatal error:', err);

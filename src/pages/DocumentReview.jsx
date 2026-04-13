@@ -25,6 +25,7 @@ function DocumentReview({ addToast, user }) {
     const [searchParams] = useSearchParams();
     const [textSearch, setTextSearch] = useState(() => searchParams.get('q') || '');
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+    const [showSourceInfo, setShowSourceInfo] = useState(false);
 
     // AI Classification state
     const [investigationPrompt, setInvestigationPrompt] = useState(
@@ -778,7 +779,7 @@ function DocumentReview({ addToast, user }) {
                 )}
 
                 {/* Metadata Section */}
-                {(isEmail || doc.doc_author || doc.doc_title || doc.doc_created_at || doc.doc_modified_at) && (
+                {(isEmail || doc.doc_author || doc.doc_title || doc.doc_created_at || doc.doc_modified_at || doc.source_path || doc.source_created_at) && (
                     <div className="doc-sidebar-section">
                         <details>
                         <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>
@@ -896,6 +897,85 @@ function DocumentReview({ addToast, user }) {
                                         </div>
                                     )}
                                 </>
+                            )}
+
+                            {/* Forensic Source subsection */}
+                            {(doc.source_path || doc.source_created_at || doc.source_modified_at || doc.is_cloud_only) && (
+                                <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--border-secondary)' }}>
+                                    <div style={{ position: 'relative', marginBottom: '8px' }}>
+                                        <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+                                            <span style={{ fontWeight: 600, fontSize: '12px', color: 'var(--text-secondary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                                Forensic Source
+                                            </span>
+                                            <span
+                                                onClick={() => setShowSourceInfo(!showSourceInfo)}
+                                                style={{
+                                                    display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
+                                                    width: '15px', height: '15px', borderRadius: '50%',
+                                                    background: showSourceInfo ? 'var(--accent-primary)' : 'var(--bg-tertiary)',
+                                                    color: showSourceInfo ? '#fff' : 'var(--text-tertiary)',
+                                                    fontSize: '10px', fontWeight: 700, cursor: 'pointer', flexShrink: 0,
+                                                    transition: 'all 0.15s ease',
+                                                }}
+                                            >i</span>
+                                        </div>
+                                        {showSourceInfo && (
+                                            <div style={{
+                                                marginTop: '6px', padding: '8px 10px',
+                                                background: 'var(--bg-primary)',
+                                                border: '1px solid var(--border-secondary)',
+                                                borderRadius: '6px',
+                                                fontSize: '11px', lineHeight: '1.5',
+                                                color: 'var(--text-secondary)',
+                                            }}>
+                                                Filesystem metadata extracted from the original disk image using The Sleuth Kit (istat). These timestamps reflect when the file was created, modified, and last accessed on the source device — independent of any document-internal metadata shown above.
+                                            </div>
+                                        )}
+                                    </div>
+                                    {doc.is_cloud_only ? (
+                                        <div style={{
+                                            marginBottom: '10px', padding: '8px 10px',
+                                            background: 'rgba(234,179,8,0.08)',
+                                            border: '1px solid rgba(234,179,8,0.2)',
+                                            borderRadius: '6px',
+                                            fontSize: '12px', lineHeight: '1.5',
+                                        }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                                                <span style={{ fontSize: '13px' }}>&#9729;</span>
+                                                <span style={{ fontWeight: 600, color: 'var(--warning, #f59e0b)' }}>Cloud-Only File</span>
+                                            </div>
+                                            <div style={{ color: 'var(--text-secondary)' }}>
+                                                This file was synced to a cloud service (e.g. OneDrive) and only a placeholder existed on the source device.
+                                                The NTFS flags indicate Sparse + Offline + Reparse Point — no local content was available for extraction.
+                                                File metadata (path, dates, size) was preserved from the disk image.
+                                            </div>
+                                        </div>
+                                    ) : null}
+                                    {doc.source_path && (
+                                        <div style={{ marginBottom: '8px' }}>
+                                            <span className="text-muted" style={{ display: 'block', marginBottom: '2px' }}>Source Path</span>
+                                            <span style={{ color: 'var(--text-primary)', fontSize: '11px', fontFamily: 'var(--font-mono, monospace)', wordBreak: 'break-all', lineHeight: '1.4' }}>{doc.source_path}</span>
+                                        </div>
+                                    )}
+                                    {doc.source_created_at && (
+                                        <div className="flex justify-between">
+                                            <span className="text-muted">Created</span>
+                                            <span style={{ color: 'var(--text-primary)' }}>{new Date(doc.source_created_at).toLocaleString()}</span>
+                                        </div>
+                                    )}
+                                    {doc.source_modified_at && (
+                                        <div className="flex justify-between">
+                                            <span className="text-muted">Modified</span>
+                                            <span style={{ color: 'var(--text-primary)' }}>{new Date(doc.source_modified_at).toLocaleString()}</span>
+                                        </div>
+                                    )}
+                                    {doc.source_accessed_at && (
+                                        <div className="flex justify-between">
+                                            <span className="text-muted">Accessed</span>
+                                            <span style={{ color: 'var(--text-primary)' }}>{new Date(doc.source_accessed_at).toLocaleString()}</span>
+                                        </div>
+                                    )}
+                                </div>
                             )}
                         </div>
                         </details>

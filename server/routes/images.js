@@ -87,18 +87,97 @@ router.post('/scan', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════
+// POST /api/images/metadata — Collect metadata (istat) for selected files
+// ═══════════════════════════════════════════════════
+router.post('/metadata', (req, res) => {
+    try {
+        const { scanJobId, selectedIndices } = req.body;
+
+        if (!scanJobId || !selectedIndices) {
+            return res.status(400).json({ error: 'scanJobId and selectedIndices are required' });
+        }
+
+        if (!Array.isArray(selectedIndices) || selectedIndices.length === 0) {
+            return res.status(400).json({ error: 'selectedIndices must be a non-empty array' });
+        }
+
+        // Validate scan job
+        const scanJob = db.prepare("SELECT * FROM image_jobs WHERE id = ? AND type = 'scan'").get(scanJobId);
+        if (!scanJob) {
+            return res.status(404).json({ error: 'Scan job not found' });
+        }
+        if (scanJob.status !== 'completed') {
+            return res.status(400).json({ error: 'Scan job has not completed yet' });
+        }
+
+        // Pull files from scan job result_data and pick selected indices
+        let allScanFiles;
+        try {
+            allScanFiles = JSON.parse(scanJob.result_data);
+        } catch (_) {
+            return res.status(400).json({ error: 'Scan job has no valid result data' });
+        }
+
+        const selectedFiles = selectedIndices
+            .filter(i => i >= 0 && i < allScanFiles.length)
+            .map(i => allScanFiles[i]);
+
+        if (selectedFiles.length === 0) {
+            return res.status(400).json({ error: 'No valid files selected' });
+        }
+
+        console.log(`✦ Metadata: ${selectedFiles.length} files selected from scan job ${scanJobId} (${allScanFiles.length} total)`);
+
+        // Create metadata job
+        const jobId = uuidv4();
+        db.prepare(
+            "INSERT INTO image_jobs (id, type, status, image_path, phase) VALUES (?, 'metadata', 'pending', ?, 'queued')"
+        ).run(jobId, scanJob.image_path);
+
+        // Spawn worker
+        const workerPath = path.join(__dirname, '..', 'workers', 'image-metadata-worker.js');
+        const worker = new Worker(workerPath, {
+            workerData: {
+                jobId,
+                imagePath: scanJob.image_path,
+                selectedFiles,
+            },
+        });
+
+        worker.on('error', (err) => {
+            console.error(`⚠ Image Metadata Worker error for job ${jobId}:`, err);
+            db.prepare(
+                "UPDATE image_jobs SET status = 'failed', error_log = ?, completed_at = datetime('now') WHERE id = ?"
+            ).run(JSON.stringify([{ error: `Worker crashed: ${err.message}` }]), jobId);
+        });
+
+        worker.on('exit', (code) => {
+            if (code !== 0) {
+                console.error(`⚠ Image Metadata Worker exited with code ${code} for job ${jobId}`);
+            }
+        });
+
+        res.status(202).json({ jobId, message: 'Metadata collection started' });
+
+    } catch (err) {
+        console.error('Image metadata error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ═══════════════════════════════════════════════════
 // POST /api/images/extract — Extract selected files from E01 image
 // ═══════════════════════════════════════════════════
 router.post('/extract', (req, res) => {
     try {
-        const { scanJobId, selectedFiles, outputDir } = req.body;
+        const { scanJobId, metadataJobId, selectedIndices, outputDir } = req.body;
 
-        if (!scanJobId || !selectedFiles || !outputDir) {
-            return res.status(400).json({ error: 'scanJobId, selectedFiles, and outputDir are required' });
+        if (!scanJobId || !selectedIndices || !outputDir) {
+            return res.status(400).json({ error: 'scanJobId, selectedIndices, and outputDir are required' });
         }
 
-        if (!Array.isArray(selectedFiles) || selectedFiles.length === 0) {
-            return res.status(400).json({ error: 'selectedFiles must be a non-empty array' });
+        if (!Array.isArray(selectedIndices) || selectedIndices.length === 0) {
+            return res.status(400).json({ error: 'selectedIndices must be a non-empty array' });
         }
 
         // Validate output directory
@@ -123,6 +202,28 @@ router.post('/extract', (req, res) => {
         }
         if (scanJob.status !== 'completed') {
             return res.status(400).json({ error: 'Scan job has not completed yet' });
+        }
+
+        // Resolve files from metadata job if available, else scan job
+        let sourceFiles;
+        if (metadataJobId) {
+            const metaJob = db.prepare("SELECT * FROM image_jobs WHERE id = ? AND type = 'metadata'").get(metadataJobId);
+            if (metaJob?.status === 'completed' && metaJob.result_data) {
+                try { sourceFiles = JSON.parse(metaJob.result_data); } catch (_) {}
+            }
+        }
+        if (!sourceFiles) {
+            try { sourceFiles = JSON.parse(scanJob.result_data); } catch (_) {
+                return res.status(400).json({ error: 'No valid file data found' });
+            }
+        }
+
+        const selectedFiles = selectedIndices
+            .filter(i => i >= 0 && i < sourceFiles.length)
+            .map(i => sourceFiles[i]);
+
+        if (selectedFiles.length === 0) {
+            return res.status(400).json({ error: 'No valid files selected' });
         }
 
         // Create extraction job
@@ -159,6 +260,99 @@ router.post('/extract', (req, res) => {
 
     } catch (err) {
         console.error('Image extract error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ═══════════════════════════════════════════════════
+// POST /api/images/ingest — Extract & ingest files from E01 into an investigation
+// ═══════════════════════════════════════════════════
+router.post('/ingest', (req, res) => {
+    try {
+        const { scanJobId, metadataJobId, selectedIndices, investigationId, custodian } = req.body;
+
+        if (!scanJobId || !selectedIndices || !investigationId || !custodian) {
+            return res.status(400).json({ error: 'scanJobId, selectedIndices, investigationId, and custodian are required' });
+        }
+
+        if (!Array.isArray(selectedIndices) || selectedIndices.length === 0) {
+            return res.status(400).json({ error: 'selectedIndices must be a non-empty array' });
+        }
+
+        // Validate scan job
+        const scanJob = db.prepare("SELECT * FROM image_jobs WHERE id = ? AND type = 'scan'").get(scanJobId);
+        if (!scanJob) {
+            return res.status(404).json({ error: 'Scan job not found' });
+        }
+        if (scanJob.status !== 'completed') {
+            return res.status(400).json({ error: 'Scan job has not completed yet' });
+        }
+
+        // Resolve files from metadata job (enriched) if available, else scan job
+        let sourceFiles;
+        if (metadataJobId) {
+            const metaJob = db.prepare("SELECT * FROM image_jobs WHERE id = ? AND type = 'metadata'").get(metadataJobId);
+            if (metaJob?.status === 'completed' && metaJob.result_data) {
+                try { sourceFiles = JSON.parse(metaJob.result_data); } catch (_) {}
+            }
+        }
+        if (!sourceFiles) {
+            try { sourceFiles = JSON.parse(scanJob.result_data); } catch (_) {
+                return res.status(400).json({ error: 'No valid file data found' });
+            }
+        }
+
+        const selectedFiles = selectedIndices
+            .filter(i => i >= 0 && i < sourceFiles.length)
+            .map(i => sourceFiles[i]);
+
+        if (selectedFiles.length === 0) {
+            return res.status(400).json({ error: 'No valid files selected' });
+        }
+
+        console.log(`✦ Ingest: ${selectedFiles.length} files selected (${sourceFiles.length} total), investigation=${investigationId}`);
+
+        // Validate investigation exists
+        const inv = db.prepare('SELECT id FROM investigations WHERE id = ?').get(investigationId);
+        if (!inv) {
+            return res.status(404).json({ error: 'Investigation not found' });
+        }
+
+        // Create ingest job
+        const jobId = uuidv4();
+        db.prepare(
+            "INSERT INTO image_jobs (id, type, status, image_path, phase, investigation_id, custodian) VALUES (?, 'ingest', 'pending', ?, 'queued', ?, ?)"
+        ).run(jobId, scanJob.image_path, investigationId, custodian);
+
+        // Spawn worker
+        const workerPath = path.join(__dirname, '..', 'workers', 'image-ingest-worker.js');
+        const worker = new Worker(workerPath, {
+            workerData: {
+                jobId,
+                imagePath: scanJob.image_path,
+                selectedFiles,
+                investigationId,
+                custodian,
+            },
+        });
+
+        worker.on('error', (err) => {
+            console.error(`⚠ Image Ingest Worker error for job ${jobId}:`, err);
+            db.prepare(
+                "UPDATE image_jobs SET status = 'failed', error_log = ?, completed_at = datetime('now') WHERE id = ?"
+            ).run(JSON.stringify([{ error: `Worker crashed: ${err.message}` }]), jobId);
+        });
+
+        worker.on('exit', (code) => {
+            if (code !== 0) {
+                console.error(`⚠ Image Ingest Worker exited with code ${code} for job ${jobId}`);
+            }
+        });
+
+        res.status(202).json({ jobId, message: 'Ingestion started' });
+
+    } catch (err) {
+        console.error('Image ingest error:', err);
         res.status(500).json({ error: 'Internal server error' });
     }
 });
