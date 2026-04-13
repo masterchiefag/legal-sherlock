@@ -201,14 +201,14 @@ router.delete('/:id', requireRole('admin'), (req, res) => {
 
         const deletedDocs = tx();
 
-        // Delete files from disk — try subdir first, then fall back to per-file
+        // Delete investigation upload directory
         let filesDeleted = 0;
         const invSubdir = path.join(UPLOADS_DIR, invId);
         try {
             if (fs.existsSync(invSubdir)) {
                 fs.rmSync(invSubdir, { recursive: true, force: true });
                 console.log(`✦ Deleted investigation upload dir: ${invId}`);
-                filesDeleted = deletedDocs; // approximate
+                filesDeleted = deletedDocs;
             }
         } catch (_) { /* best effort */ }
 
