@@ -391,6 +391,20 @@ async function main() {
         console.log(`✦ Image Ingest: ingestion phase complete in ${ingestTime}s`);
 
         // ═══════════════════════════════════════════════════
+        // Refresh precomputed investigation counts
+        // ═══════════════════════════════════════════════════
+        db.prepare(`
+            UPDATE investigations SET
+                document_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1),
+                email_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'email'),
+                attachment_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'attachment'),
+                chat_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'chat'),
+                file_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'file')
+            WHERE id = ?1
+        `).run(investigationId);
+        console.log('✦ Image Ingest: investigation counts refreshed');
+
+        // ═══════════════════════════════════════════════════
         // Done
         // ═══════════════════════════════════════════════════
         const totalTime = ((Date.now() - t0) / 1000).toFixed(1);

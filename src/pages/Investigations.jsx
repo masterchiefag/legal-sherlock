@@ -182,7 +182,7 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
                             <th style={thStyle}>Case Name</th>
                             <th style={thStyle}>Source File</th>
                             <th style={{ ...thStyle, textAlign: 'right' }}>Emails</th>
-                            <th style={{ ...thStyle, textAlign: 'right' }}>Attachments</th>
+                            <th style={{ ...thStyle, textAlign: 'right' }}>Files</th>
                             <th style={{ ...thStyle, textAlign: 'right' }}>Total Docs</th>
                             <th style={thStyle}>Imported</th>
                             <th style={thStyle}>Status</th>
@@ -193,8 +193,16 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
                         {investigations.filter(inv => inv.status !== 'archived').map(inv => {
                             const isActive = inv.id === activeInvestigationId;
                             const jobs = inv.import_jobs || [];
+                            const ingestJobs = inv.ingest_jobs || [];
                             const latestJob = jobs[0];
-                            const sourceFiles = [...new Set(jobs.map(j => j.original_name).filter(Boolean))];
+                            const latestIngest = ingestJobs[0];
+                            const latestAnyJob = latestJob && latestIngest
+                                ? (latestJob.completed_at || latestJob.started_at) >= (latestIngest.completed_at || latestIngest.started_at) ? latestJob : latestIngest
+                                : latestJob || latestIngest;
+                            const sourceFiles = [...new Set([
+                                ...jobs.map(j => j.original_name).filter(Boolean),
+                                ...ingestJobs.map(j => j.image_path ? j.image_path.split('/').pop() : null).filter(Boolean),
+                            ])];
                             return (
                                 <tr key={inv.id} style={{
                                     borderBottom: '1px solid var(--border-secondary)',
@@ -218,23 +226,23 @@ function Investigations({ activeInvestigationId, onInvestigationChange, addToast
                                         {inv.email_count?.toLocaleString() || 0}
                                     </td>
                                     <td style={{ ...tdStyle, textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                                        {inv.attachment_count?.toLocaleString() || 0}
+                                        {((inv.file_count || 0) + (inv.attachment_count || 0)).toLocaleString()}
                                     </td>
                                     <td style={{ ...tdStyle, textAlign: 'right', fontVariantNumeric: 'tabular-nums', fontWeight: 600 }}>
                                         {inv.document_count?.toLocaleString() || 0}
                                     </td>
                                     <td style={tdStyle}>
-                                        {latestJob?.completed_at
-                                            ? <span className="text-xs">{new Date(latestJob.completed_at + 'Z').toLocaleDateString()}</span>
-                                            : latestJob?.started_at
-                                                ? <span className="text-xs text-muted">{new Date(latestJob.started_at + 'Z').toLocaleDateString()}</span>
+                                        {latestAnyJob?.completed_at
+                                            ? <span className="text-xs">{new Date(latestAnyJob.completed_at + 'Z').toLocaleDateString()}</span>
+                                            : latestAnyJob?.started_at
+                                                ? <span className="text-xs text-muted">{new Date(latestAnyJob.started_at + 'Z').toLocaleDateString()}</span>
                                                 : <span className="text-xs text-muted">-</span>
                                         }
                                     </td>
                                     <td style={tdStyle}>
-                                        {latestJob ? (
-                                            <span className={`status-badge ${latestJob.status === 'completed' ? 'ready' : latestJob.status === 'processing' ? 'processing' : 'error'}`} style={{ fontSize: '11px' }}>
-                                                {latestJob.status === 'completed' ? 'Imported' : latestJob.status === 'processing' ? 'Importing...' : 'Failed'}
+                                        {latestAnyJob ? (
+                                            <span className={`status-badge ${latestAnyJob.status === 'completed' ? 'ready' : latestAnyJob.status === 'processing' ? 'processing' : 'error'}`} style={{ fontSize: '11px' }}>
+                                                {latestAnyJob.status === 'completed' ? 'Imported' : latestAnyJob.status === 'processing' ? 'Importing...' : 'Failed'}
                                             </span>
                                         ) : (
                                             <span className="text-xs text-muted">No imports</span>
