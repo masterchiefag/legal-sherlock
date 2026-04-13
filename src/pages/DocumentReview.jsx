@@ -900,7 +900,7 @@ function DocumentReview({ addToast, user }) {
                             )}
 
                             {/* Forensic Source subsection */}
-                            {(doc.source_path || doc.source_created_at || doc.source_modified_at) && (
+                            {(doc.source_path || doc.source_created_at || doc.source_modified_at || doc.is_cloud_only) && (
                                 <div style={{ marginTop: '12px', paddingTop: '12px', borderTop: '1px solid var(--border-secondary)' }}>
                                     <div style={{ position: 'relative', marginBottom: '8px' }}>
                                         <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
@@ -932,6 +932,25 @@ function DocumentReview({ addToast, user }) {
                                             </div>
                                         )}
                                     </div>
+                                    {doc.is_cloud_only ? (
+                                        <div style={{
+                                            marginBottom: '10px', padding: '8px 10px',
+                                            background: 'rgba(234,179,8,0.08)',
+                                            border: '1px solid rgba(234,179,8,0.2)',
+                                            borderRadius: '6px',
+                                            fontSize: '12px', lineHeight: '1.5',
+                                        }}>
+                                            <div style={{ display: 'flex', alignItems: 'center', gap: '6px', marginBottom: '4px' }}>
+                                                <span style={{ fontSize: '13px' }}>&#9729;</span>
+                                                <span style={{ fontWeight: 600, color: 'var(--warning, #f59e0b)' }}>Cloud-Only File</span>
+                                            </div>
+                                            <div style={{ color: 'var(--text-secondary)' }}>
+                                                This file was synced to a cloud service (e.g. OneDrive) and only a placeholder existed on the source device.
+                                                The NTFS flags indicate Sparse + Offline + Reparse Point — no local content was available for extraction.
+                                                File metadata (path, dates, size) was preserved from the disk image.
+                                            </div>
+                                        </div>
+                                    ) : null}
                                     {doc.source_path && (
                                         <div style={{ marginBottom: '8px' }}>
                                             <span className="text-muted" style={{ display: 'block', marginBottom: '2px' }}>Source Path</span>

@@ -384,6 +384,7 @@ const sourceColumns = [
     { col: 'source_modified_at', type: 'TEXT' },
     { col: 'source_accessed_at', type: 'TEXT' },
     { col: 'source_job_id', type: 'TEXT' },
+    { col: 'is_cloud_only', type: 'INTEGER DEFAULT 0' },
 ];
 for (const { col, type } of sourceColumns) {
     if (!columnExists('documents', col)) {

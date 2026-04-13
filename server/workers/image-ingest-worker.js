@@ -184,10 +184,23 @@ const insertFile = db.prepare(`
         id, filename, original_name, mime_type, size_bytes, text_content, text_content_size, status,
         doc_type, content_hash, is_duplicate, investigation_id, custodian, doc_identifier,
         doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
-        source_path, source_created_at, source_modified_at, source_accessed_at, source_job_id
+        source_path, source_created_at, source_modified_at, source_accessed_at, source_job_id,
+        is_cloud_only
     ) VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', 'file', ?, ?, ?, ?, ?,
         ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?)
+        ?, ?, ?, ?, ?,
+        ?)
+`);
+
+const insertCloudOnlyFile = db.prepare(`
+    INSERT INTO documents (
+        id, original_name, mime_type, size_bytes, text_content, text_content_size, status,
+        doc_type, investigation_id, custodian, doc_identifier,
+        source_path, source_created_at, source_modified_at, source_accessed_at, source_job_id,
+        is_cloud_only
+    ) VALUES (?, ?, ?, ?, '', 0, 'ready', 'file', ?, ?, ?,
+        ?, ?, ?, ?, ?,
+        1)
 `);
 
 const insertEmail = db.prepare(`
@@ -327,9 +340,53 @@ async function main() {
         const extractedFiles = [];
         const extractStart = Date.now();
 
+        let cloudOnlyCount = 0;
+
         for (let i = 0; i < selectedFiles.length; i++) {
             const file = selectedFiles[i];
             const basename = path.basename(file.path);
+
+            // Cloud-only files: insert metadata-only record, skip extraction
+            if (file.is_cloud_only) {
+                try {
+                    const docId = uuidv4();
+                    const docIdentifier = nextDocIdentifier();
+                    const mime = getMime(basename);
+
+                    insertCloudOnlyFile.run(
+                        docId, basename, mime, file.size || 0,
+                        investigationId, custodian, docIdentifier,
+                        file.path,
+                        normalizeTimestamp(file.created),
+                        normalizeTimestamp(file.modified),
+                        normalizeTimestamp(file.accessed),
+                        jobId
+                    );
+
+                    results.push({
+                        path: file.path,
+                        doc_identifier: docIdentifier,
+                        status: 'cloud_only',
+                        doc_type: 'file',
+                    });
+                    cloudOnlyCount++;
+                    ingested++;
+                    console.log(`✦ Image Ingest: cloud-only record ${basename} → ${docIdentifier}`);
+                } catch (err) {
+                    console.error(`✦ Image Ingest: cloud-only insert failed for ${basename}: ${err.message}`);
+                    errorLog.push({ path: file.path, phase: 'cloud_only', error: err.message });
+                    results.push({ path: file.path, status: 'error', error: `Cloud-only insert failed: ${err.message}` });
+                    failed++;
+                }
+
+                const pct = Math.round(((i + 1) / selectedFiles.length) * 40);
+                update('processing', 'extracting', pct, JSON.stringify({
+                    phase_detail: 'extracting', processed: i + 1, total: selectedFiles.length,
+                    rate: 0, eta_seconds: null, failed, cloud_only: cloudOnlyCount,
+                }), null);
+                continue;
+            }
+
             const tmpPath = path.join(tmpDir, `${i}_${basename}`);
 
             try {
@@ -473,7 +530,7 @@ async function main() {
         // Done
         // ═══════════════════════════════════════════════════
         const totalTime = ((Date.now() - t0) / 1000).toFixed(1);
-        const resultData = JSON.stringify({ totalFiles: selectedFiles.length, ingested, failed, duplicates, elapsed_seconds: parseFloat(totalTime), files: results });
+        const resultData = JSON.stringify({ totalFiles: selectedFiles.length, ingested, failed, duplicates, cloudOnly: cloudOnlyCount, elapsed_seconds: parseFloat(totalTime), files: results });
         const errorJson = errorLog.length > 0 ? JSON.stringify(errorLog) : null;
 
         if (ingested === 0 && failed > 0) {
@@ -571,7 +628,8 @@ async function ingestFile(file, results) {
         normalizeTimestamp(file.created),
         normalizeTimestamp(file.modified),
         normalizeTimestamp(file.accessed),
-        jobId
+        jobId,
+        0 // is_cloud_only
     );
 
     results.push({

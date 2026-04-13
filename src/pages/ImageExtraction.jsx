@@ -878,6 +878,12 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                                     <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Ingested</div>
                                     <div style={{ fontSize: '20px', fontWeight: 600 }}>{ingestResults.ingested || 0}</div>
                                 </div>
+                                {ingestResults.cloudOnly > 0 && (
+                                    <div style={{ padding: '12px 16px', borderRadius: '8px', background: 'rgba(147,130,220,0.08)', border: '1px solid rgba(147,130,220,0.2)' }}>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Cloud Only</div>
+                                        <div style={{ fontSize: '20px', fontWeight: 600 }}>{ingestResults.cloudOnly}</div>
+                                    </div>
+                                )}
                                 {ingestResults.duplicates > 0 && (
                                     <div style={{ padding: '12px 16px', borderRadius: '8px', background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.2)' }}>
                                         <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Duplicates</div>
@@ -902,13 +908,13 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                                         <div key={idx} style={{
                                             display: 'flex', justifyContent: 'space-between', alignItems: 'center',
                                             padding: '8px 12px', borderRadius: '6px',
-                                            background: r.status === 'ok' ? 'rgba(16,185,129,0.05)' : r.status === 'duplicate' ? 'rgba(234,179,8,0.05)' : 'rgba(239,68,68,0.05)',
-                                            border: `1px solid ${r.status === 'ok' ? 'rgba(16,185,129,0.15)' : r.status === 'duplicate' ? 'rgba(234,179,8,0.15)' : 'rgba(239,68,68,0.15)'}`,
+                                            background: r.status === 'ok' ? 'rgba(16,185,129,0.05)' : r.status === 'duplicate' ? 'rgba(234,179,8,0.05)' : r.status === 'cloud_only' ? 'rgba(147,130,220,0.05)' : 'rgba(239,68,68,0.05)',
+                                            border: `1px solid ${r.status === 'ok' ? 'rgba(16,185,129,0.15)' : r.status === 'duplicate' ? 'rgba(234,179,8,0.15)' : r.status === 'cloud_only' ? 'rgba(147,130,220,0.15)' : 'rgba(239,68,68,0.15)'}`,
                                             fontSize: '12px',
                                         }}>
                                             <div style={{ display: 'flex', gap: '12px', alignItems: 'center', minWidth: 0 }}>
                                                 <span style={{ fontWeight: 500 }}>
-                                                    {r.status === 'ok' ? '\u2713' : r.status === 'duplicate' ? '\u2248' : '\u2717'}
+                                                    {r.status === 'ok' ? '\u2713' : r.status === 'duplicate' ? '\u2248' : r.status === 'cloud_only' ? '\u2601' : '\u2717'}
                                                 </span>
                                                 <span style={{ fontFamily: 'var(--font-mono, monospace)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
                                                     {r.path?.split('/').pop() || r.path}
