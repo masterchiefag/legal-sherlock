@@ -9,12 +9,66 @@ const PRESETS = [
     { label: 'All Files', pattern: '.*' },
 ];
 
+function formatEta(seconds) {
+    if (seconds == null || seconds <= 0) return '';
+    if (seconds < 60) return `${seconds}s`;
+    if (seconds < 3600) return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+    const h = Math.floor(seconds / 3600);
+    const m = Math.floor((seconds % 3600) / 60);
+    return `${h}h ${m}m`;
+}
+
+function ProgressDetail({ job, phaseLabel: label }) {
+    if (!job) return null;
+    const progress = job.result_data; // parsed JSON from poll
+    const pct = job.progress_percent || 0;
+
+    return (
+        <div style={{ marginTop: '16px' }}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: '6px' }}>
+                <div style={{ fontSize: '13px', color: 'var(--text-secondary)' }}>
+                    {label} ({pct}%)
+                </div>
+                {progress?.processed != null && progress?.total != null && (
+                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)', display: 'flex', gap: '12px' }}>
+                        <span>{progress.processed.toLocaleString()} / {progress.total.toLocaleString()} files</span>
+                        {progress.rate > 0 && <span>{progress.rate}/s</span>}
+                        {progress.eta_seconds > 0 && <span>ETA {formatEta(progress.eta_seconds)}</span>}
+                    </div>
+                )}
+                {progress?.files_found != null && !progress.processed && (
+                    <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                        {progress.files_found.toLocaleString()} files found
+                        {progress.partition_current && ` (partition ${progress.partition_current}/${progress.partitions})`}
+                    </div>
+                )}
+            </div>
+            <div style={{ background: 'var(--bg-tertiary)', borderRadius: '4px', height: '6px', overflow: 'hidden' }}>
+                <div style={{
+                    width: `${pct}%`,
+                    height: '100%',
+                    background: 'var(--accent-primary)',
+                    borderRadius: '4px',
+                    transition: 'width 0.3s ease',
+                }} />
+            </div>
+            {progress?.failed > 0 && (
+                <div style={{ fontSize: '11px', color: 'var(--warning)', marginTop: '4px' }}>
+                    {progress.failed} failed
+                </div>
+            )}
+        </div>
+    );
+}
+
 function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation }) {
     // Tab state
     const [activeTab, setActiveTab] = useState('scan'); // 'scan' | 'whatsapp'
 
     // Scan state
-    const [imagePath, setImagePath] = useState('');
+    const [imagePath, setImagePath] = useState(
+        () => localStorage.getItem('sherlock_image_path') || ''
+    );
     const [searchPattern, setSearchPattern] = useState('.*\\.(pst|ost)$');
     const [scanning, setScanning] = useState(false);
     const [scanJobId, setScanJobId] = useState(null);
@@ -394,7 +448,10 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                                     type="text"
                                     className="input"
                                     value={imagePath}
-                                    onChange={e => setImagePath(e.target.value)}
+                                    onChange={e => {
+                                        setImagePath(e.target.value);
+                                        localStorage.setItem('sherlock_image_path', e.target.value);
+                                    }}
                                     placeholder="/path/to/image.E01 or .ufdr"
                                     disabled={scanning}
                                     onKeyDown={e => e.key === 'Enter' && !scanning && handleScan()}
@@ -418,13 +475,15 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                                     <select
                                         className="input"
                                         style={{ width: 'auto', minWidth: '100px', cursor: 'pointer', fontSize: '12px' }}
-                                        value=""
+                                        value={PRESETS.find(p => p.pattern === searchPattern)?.pattern || ''}
                                         onChange={e => {
                                             if (e.target.value) setSearchPattern(e.target.value);
                                         }}
                                         disabled={scanning}
                                     >
-                                        <option value="">Presets</option>
+                                        {!PRESETS.find(p => p.pattern === searchPattern) && (
+                                            <option value="">Custom</option>
+                                        )}
                                         {PRESETS.map(p => (
                                             <option key={p.label} value={p.pattern}>{p.label}</option>
                                         ))}
@@ -450,20 +509,7 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
 
                         {/* Scan progress */}
                         {scanning && scanJob && (
-                            <div style={{ marginTop: '16px' }}>
-                                <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-                                    {phaseLabel(scanJob)}
-                                </div>
-                                <div style={{ background: 'var(--bg-tertiary)', borderRadius: '4px', height: '6px', overflow: 'hidden' }}>
-                                    <div style={{
-                                        width: `${scanJob.progress_percent || 0}%`,
-                                        height: '100%',
-                                        background: 'var(--accent-primary)',
-                                        borderRadius: '4px',
-                                        transition: 'width 0.3s ease',
-                                    }} />
-                                </div>
-                            </div>
+                            <ProgressDetail job={scanJob} phaseLabel={phaseLabel(scanJob)} />
                         )}
                     </div>
 
@@ -473,6 +519,11 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '16px' }}>
                                 <h3 style={{ margin: 0, fontSize: '16px', fontWeight: 600 }}>
                                     Found {foundFiles.length} Matching File{foundFiles.length > 1 ? 's' : ''}
+                                    {foundFiles.some(f => f.is_cloud_only) && (
+                                        <span style={{ fontSize: '12px', fontWeight: 400, color: 'var(--text-tertiary)', marginLeft: '8px' }}>
+                                            ({foundFiles.filter(f => f.is_cloud_only).length} cloud-only)
+                                        </span>
+                                    )}
                                 </h3>
                                 <div style={{ display: 'flex', gap: '8px' }}>
                                     <button className="btn btn-ghost btn-sm" onClick={selectAll}>Select All</button>
@@ -494,6 +545,7 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                                             <th style={{ padding: '8px 12px', textAlign: 'left' }}>File Path</th>
                                             <th style={{ padding: '8px 12px', textAlign: 'right' }}>Size</th>
                                             <th style={{ padding: '8px 12px', textAlign: 'left' }}>Modified</th>
+                                            <th style={{ padding: '8px 12px', textAlign: 'left' }}>Status</th>
                                             <th style={{ padding: '8px 12px', textAlign: 'left' }}>Partition</th>
                                         </tr>
                                     </thead>
@@ -516,7 +568,7 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                                                         onClick={e => e.stopPropagation()}
                                                     />
                                                 </td>
-                                                <td style={{ padding: '10px 12px', fontFamily: 'var(--font-mono, monospace)', fontSize: '12px', wordBreak: 'break-all' }}>
+                                                <td style={{ padding: '10px 12px', fontFamily: 'var(--font-mono, monospace)', fontSize: '12px', wordBreak: 'break-all', opacity: f.is_cloud_only ? 0.5 : 1 }}>
                                                     {f.path}
                                                 </td>
                                                 <td style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
@@ -524,6 +576,15 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                                                 </td>
                                                 <td style={{ padding: '10px 12px', whiteSpace: 'nowrap', color: 'var(--text-secondary)' }}>
                                                     {f.modified || '\u2014'}
+                                                </td>
+                                                <td style={{ padding: '10px 12px', whiteSpace: 'nowrap', fontSize: '11px' }}>
+                                                    {f.is_cloud_only ? (
+                                                        <span style={{ color: 'var(--warning, #f59e0b)', background: 'rgba(245,158,11,0.1)', padding: '2px 6px', borderRadius: '4px' }} title="OneDrive cloud-only file — data not on disk">
+                                                            Cloud Only
+                                                        </span>
+                                                    ) : (
+                                                        <span style={{ color: 'var(--accent-success, #22c55e)' }}>Local</span>
+                                                    )}
                                                 </td>
                                                 <td style={{ padding: '10px 12px', whiteSpace: 'nowrap', color: 'var(--text-secondary)', fontSize: '12px' }}>
                                                     {f.partition_desc || '\u2014'}
@@ -567,20 +628,7 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
 
                                 {/* Extract progress */}
                                 {extracting && extractJob && (
-                                    <div style={{ marginTop: '16px' }}>
-                                        <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-                                            {phaseLabel(extractJob)} ({extractJob.progress_percent || 0}%)
-                                        </div>
-                                        <div style={{ background: 'var(--bg-tertiary)', borderRadius: '4px', height: '6px', overflow: 'hidden' }}>
-                                            <div style={{
-                                                width: `${extractJob.progress_percent || 0}%`,
-                                                height: '100%',
-                                                background: 'var(--accent-primary)',
-                                                borderRadius: '4px',
-                                                transition: 'width 0.3s ease',
-                                            }} />
-                                        </div>
-                                    </div>
+                                    <ProgressDetail job={extractJob} phaseLabel={phaseLabel(extractJob)} />
                                 )}
                             </div>
 
@@ -629,20 +677,7 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
 
                                         {/* Ingest progress */}
                                         {ingesting && ingestJob && (
-                                            <div style={{ marginTop: '16px' }}>
-                                                <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-                                                    {phaseLabel(ingestJob)} ({ingestJob.progress_percent || 0}%)
-                                                </div>
-                                                <div style={{ background: 'var(--bg-tertiary)', borderRadius: '4px', height: '6px', overflow: 'hidden' }}>
-                                                    <div style={{
-                                                        width: `${ingestJob.progress_percent || 0}%`,
-                                                        height: '100%',
-                                                        background: 'var(--accent-primary)',
-                                                        borderRadius: '4px',
-                                                        transition: 'width 0.3s ease',
-                                                    }} />
-                                                </div>
-                                            </div>
+                                            <ProgressDetail job={ingestJob} phaseLabel={phaseLabel(ingestJob)} />
                                         )}
                                     </>
                                 )}
@@ -818,20 +853,7 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
 
                         {/* Progress */}
                         {waExtracting && waJob && (
-                            <div style={{ marginTop: '20px' }}>
-                                <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
-                                    {phaseLabel(waJob)} ({waJob.progress_percent || 0}%)
-                                </div>
-                                <div style={{ background: 'var(--bg-tertiary)', borderRadius: '4px', height: '6px', overflow: 'hidden' }}>
-                                    <div style={{
-                                        width: `${waJob.progress_percent || 0}%`,
-                                        height: '100%',
-                                        background: 'var(--accent-primary)',
-                                        borderRadius: '4px',
-                                        transition: 'width 0.3s ease',
-                                    }} />
-                                </div>
-                            </div>
+                            <ProgressDetail job={waJob} phaseLabel={phaseLabel(waJob)} />
                         )}
                     </div>
 
