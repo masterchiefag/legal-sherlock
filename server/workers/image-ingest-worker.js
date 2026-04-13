@@ -295,6 +295,25 @@ async function main() {
         }), null);
 
         // ═══════════════════════════════════════════════════
+        // Disable FTS triggers + drop indexes for bulk import
+        // ═══════════════════════════════════════════════════
+        db.exec('DROP TRIGGER IF EXISTS documents_ai');
+        db.exec('DROP TRIGGER IF EXISTS documents_au');
+        console.log('✦ Image Ingest: disabled FTS triggers for bulk import');
+
+        const BULK_DROP_INDEXES = [
+            'idx_documents_status', 'idx_documents_doc_type', 'idx_documents_status_doctype',
+            'idx_documents_thread_doctype', 'idx_documents_content_hash',
+            'idx_documents_is_duplicate', 'idx_documents_inv_doctype',
+        ];
+        for (const idx of BULK_DROP_INDEXES) {
+            db.exec(`DROP INDEX IF EXISTS ${idx}`);
+        }
+        console.log(`✦ Image Ingest: dropped ${BULK_DROP_INDEXES.length} indexes for bulk import`);
+
+        try { db.pragma('wal_checkpoint(PASSIVE)'); } catch (_) {}
+
+        // ═══════════════════════════════════════════════════
         // Phase 1: Extract files from image to temp dir (0–40%)
         // ═══════════════════════════════════════════════════
         const extractedFiles = [];
@@ -391,6 +410,44 @@ async function main() {
         console.log(`✦ Image Ingest: ingestion phase complete in ${ingestTime}s`);
 
         // ═══════════════════════════════════════════════════
+        // Recreate FTS triggers + rebuild index
+        // ═══════════════════════════════════════════════════
+        console.log('✦ Image Ingest: recreating FTS triggers...');
+        db.exec(`
+            CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
+                INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
+                VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
+            END;
+        `);
+        db.exec(`
+            CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
+                INSERT INTO documents_fts(documents_fts, rowid, original_name, text_content, email_subject, email_from, email_to)
+                VALUES ('delete', old.rowid, old.original_name, COALESCE(old.text_content,''), COALESCE(old.email_subject,''), COALESCE(old.email_from,''), COALESCE(old.email_to,''));
+                INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
+                VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
+            END;
+        `);
+
+        const ftsStart = Date.now();
+        db.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')");
+        console.log(`✦ Image Ingest: FTS index rebuilt in ${((Date.now() - ftsStart) / 1000).toFixed(1)}s`);
+
+        // Recreate indexes
+        db.exec(`
+            CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
+            CREATE INDEX IF NOT EXISTS idx_documents_doc_type ON documents(doc_type);
+            CREATE INDEX IF NOT EXISTS idx_documents_status_doctype ON documents(status, doc_type);
+            CREATE INDEX IF NOT EXISTS idx_documents_thread_doctype ON documents(thread_id, doc_type);
+            CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash);
+            CREATE INDEX IF NOT EXISTS idx_documents_is_duplicate ON documents(is_duplicate);
+            CREATE INDEX IF NOT EXISTS idx_documents_inv_doctype ON documents(investigation_id, doc_type);
+        `);
+        console.log('✦ Image Ingest: indexes rebuilt');
+
+        // WAL checkpoint
+        try { db.pragma('wal_checkpoint(PASSIVE)'); } catch (_) {}
+
+        // ═══════════════════════════════════════════════════
         // Refresh precomputed investigation counts
         // ═══════════════════════════════════════════════════
         db.prepare(`
@@ -423,6 +480,34 @@ async function main() {
         console.error('✦ Image Ingest: fatal error:', err);
         update('failed', 'error', 0, null, JSON.stringify([{ error: err.message, fatal: true }]));
     } finally {
+        // Always restore FTS triggers and indexes even on error
+        try {
+            db.exec(`
+                CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
+                    INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
+                    VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
+                END;
+            `);
+            db.exec(`
+                CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
+                    INSERT INTO documents_fts(documents_fts, rowid, original_name, text_content, email_subject, email_from, email_to)
+                    VALUES ('delete', old.rowid, old.original_name, COALESCE(old.text_content,''), COALESCE(old.email_subject,''), COALESCE(old.email_from,''), COALESCE(old.email_to,''));
+                    INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
+                    VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
+                END;
+            `);
+            db.exec(`
+                CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status);
+                CREATE INDEX IF NOT EXISTS idx_documents_doc_type ON documents(doc_type);
+                CREATE INDEX IF NOT EXISTS idx_documents_status_doctype ON documents(status, doc_type);
+                CREATE INDEX IF NOT EXISTS idx_documents_thread_doctype ON documents(thread_id, doc_type);
+                CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash);
+                CREATE INDEX IF NOT EXISTS idx_documents_is_duplicate ON documents(is_duplicate);
+                CREATE INDEX IF NOT EXISTS idx_documents_inv_doctype ON documents(investigation_id, doc_type);
+            `);
+        } catch (restoreErr) {
+            console.error('✦ Image Ingest: failed to restore FTS triggers/indexes:', restoreErr.message);
+        }
         // Cleanup temp dir
         try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
         db.close();
