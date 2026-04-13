@@ -3,7 +3,8 @@ import { formatSize } from '../utils/format';
 import { apiFetch } from '../utils/api';
 
 const PRESETS = [
-    { label: 'Documents', pattern: '.*\\.(pdf|docx|doc|xlsx|xls|txt|csv|md|eml)$' },
+    { label: 'Documents', pattern: '.*\\.(pdf|docx|doc|xlsx|xls|pptx|ppt|txt|csv|md|rtf|html|htm|eml|msg)$' },
+    { label: 'Documents + Images', pattern: '.*\\.(pdf|docx|doc|xlsx|xls|pptx|ppt|txt|csv|md|rtf|html|htm|eml|msg|png|jpg|jpeg|gif|bmp|webp|tiff|tif|heic|svg)$' },
     { label: 'PST/OST Files', pattern: '.*\\.(pst|ost)$' },
     { label: 'All Media', pattern: '.*\\.(jpg|jpeg|png|gif|mp4|mov|avi|mp3|aac|opus|ogg|pdf|docx|xlsx|webp|heic)$' },
     { label: 'All Files', pattern: '.*' },
