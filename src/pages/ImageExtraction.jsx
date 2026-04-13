@@ -140,10 +140,10 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
     const [waJob, setWaJob] = useState(null);
     const [waResult, setWaResult] = useState(null);
 
-    const pollRef = useRef(null);
+    const pollRefs = useRef({});
 
     // ═══════════════════════════════════════
-    // Polling
+    // Polling — each job gets its own timer
     // ═══════════════════════════════════════
     const pollJob = (jobId, onUpdate, onComplete) => {
         const poll = async () => {
@@ -154,20 +154,21 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                 onUpdate(job);
 
                 if (job.status === 'completed' || job.status === 'failed') {
+                    delete pollRefs.current[jobId];
                     onComplete(job);
                     return;
                 }
             } catch (err) {
                 console.error('Poll error:', err);
             }
-            pollRef.current = setTimeout(() => poll(), 2000);
+            pollRefs.current[jobId] = setTimeout(() => poll(), 2000);
         };
         poll();
     };
 
     useEffect(() => {
         return () => {
-            if (pollRef.current) clearTimeout(pollRef.current);
+            Object.values(pollRefs.current).forEach(t => clearTimeout(t));
         };
     }, []);
 
