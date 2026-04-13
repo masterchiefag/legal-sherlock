@@ -289,7 +289,15 @@ async function main() {
 
     try {
         const t0 = Date.now();
-        console.log(`✦ Image Ingest: starting — ${selectedFiles.length} files for investigation ${investigationId}`);
+        // Log summary of what we're ingesting
+        const extCounts = {};
+        for (const f of selectedFiles) {
+            const ext = (f.path.match(/\.([^.]+)$/)?.[1] || 'unknown').toLowerCase();
+            extCounts[ext] = (extCounts[ext] || 0) + 1;
+        }
+        const extSummary = Object.entries(extCounts).sort((a, b) => b[1] - a[1]).map(([e, c]) => `${e}:${c}`).join(', ');
+        console.log(`✦ Image Ingest: starting — ${selectedFiles.length} files for investigation ${investigationId}, custodian: ${custodian}`);
+        console.log(`✦ Image Ingest: file types — ${extSummary}`);
         update('processing', 'extracting', 0, JSON.stringify({
             phase_detail: 'extracting', processed: 0, total: selectedFiles.length,
         }), null);

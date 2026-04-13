@@ -293,6 +293,7 @@ async function scanArchive(regex) {
 async function main() {
     try {
         const t0 = Date.now();
+        console.log(`\u2726 Image Scan: pattern="${searchPattern}", image="${imagePath}"`);
         const regex = new RegExp(searchPattern, 'i');
 
         // Route to specific scanner
