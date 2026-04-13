@@ -48,6 +48,8 @@ function formatAddresses(addrList) {
         .join(', ');
 }
 
+export { stripHtml, cleanId, formatAddresses, parseReceivedHeaders };
+
 export async function parseEml(filePathOrBuffer) {
     const raw = Buffer.isBuffer(filePathOrBuffer) ? filePathOrBuffer : fs.readFileSync(filePathOrBuffer);
     const parser = new PostalMime();
