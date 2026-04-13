@@ -8,6 +8,7 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
+import { refreshInvestigationCounts } from '../lib/worker-helpers.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -887,16 +888,7 @@ async function main() {
         `).run(totalChatDocs, jobId);
 
         // Refresh precomputed investigation counts
-        db.prepare(`
-            UPDATE investigations SET
-                document_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1),
-                email_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'email'),
-                attachment_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'attachment'),
-                chat_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'chat'),
-                file_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'file')
-            WHERE id = ?1
-        `).run(investigation_id);
-        console.log('✦ Investigation counts refreshed');
+        refreshInvestigationCounts(db, investigation_id);
 
     } catch (err) {
         console.error("Chat worker fatal error:", err);

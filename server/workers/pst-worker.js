@@ -11,6 +11,7 @@ import { fileURLToPath } from 'url';
 import db from '../db.js';
 import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
+import { disableFtsTriggers, enableFtsTriggers, rebuildFtsIndex, dropBulkIndexes, recreateBulkIndexes, refreshInvestigationCounts, walCheckpoint } from '../lib/worker-helpers.js';
 import { resolveThreadId, backfillThread, updateCacheOnly, resolveThreadIdFromCache, initCache } from '../lib/threading-cached.js';
 
 const execFileAsync = promisify(execFile);
@@ -197,36 +198,17 @@ async function main() {
 
         // Disable FTS triggers for bulk import
         console.log('✦ DEBUG: dropping FTS triggers...');
-        db.exec('DROP TRIGGER IF EXISTS documents_ai');
-        db.exec('DROP TRIGGER IF EXISTS documents_au');
-        console.log('✦ PST Import: disabled FTS triggers for bulk import');
+        disableFtsTriggers(db);
 
         // Drop non-essential indexes for faster bulk INSERTs (rebuilt after import)
         // Skip for extractionOnly — Phase 2 only does UPDATEs, indexes aren't a bottleneck
         if (!extractionOnly) {
-        const BULK_DROP_INDEXES = [
-            'idx_documents_status',
-            'idx_documents_doc_type',
-            'idx_documents_status_doctype',
-            'idx_documents_thread_doctype',
-            'idx_documents_content_hash',
-            'idx_documents_is_duplicate',
-            'idx_documents_inv_doctype',
-        ];
-        for (const idx of BULK_DROP_INDEXES) {
-            db.exec(`DROP INDEX IF EXISTS ${idx}`);
-        }
-        console.log(`✦ PST Import: dropped ${BULK_DROP_INDEXES.length} non-essential indexes for bulk import`);
+        dropBulkIndexes(db);
         }
 
         // Checkpoint WAL to reduce write overhead
         console.log('✦ DEBUG: checkpointing WAL...');
-        try {
-            db.pragma('wal_checkpoint(PASSIVE)');
-            console.log('✦ PST Import: WAL checkpointed');
-        } catch (e) {
-            console.warn('✦ PST Import: WAL checkpoint failed:', e.message);
-        }
+        walCheckpoint(db);
 
         // Increase page cache for bulk operations
         console.log('✦ DEBUG: setting cache size...');
@@ -409,22 +391,10 @@ async function main() {
         db.prepare("UPDATE import_jobs SET phase1_completed_at = datetime('now') WHERE id = ?").run(jobId);
 
         // Rebuild indexes dropped for bulk import
-        console.log('✦ PST Import: rebuilding indexes...');
-        const rebuildStart = Date.now();
-        db.exec('CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status)');
-        db.exec('CREATE INDEX IF NOT EXISTS idx_documents_doc_type ON documents(doc_type)');
-        db.exec('CREATE INDEX IF NOT EXISTS idx_documents_status_doctype ON documents(status, doc_type)');
-        db.exec('CREATE INDEX IF NOT EXISTS idx_documents_thread_doctype ON documents(thread_id, doc_type)');
-        db.exec('CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash)');
-        db.exec('CREATE INDEX IF NOT EXISTS idx_documents_is_duplicate ON documents(is_duplicate)');
-        db.exec('CREATE INDEX IF NOT EXISTS idx_documents_inv_doctype ON documents(investigation_id, doc_type)');
-        console.log(`✦ PST Import: indexes rebuilt in ${((Date.now() - rebuildStart) / 1000).toFixed(1)}s`);
+        recreateBulkIndexes(db);
 
         // Checkpoint WAL after bulk writes
-        try {
-            db.pragma('wal_checkpoint(PASSIVE)');
-            console.log('✦ PST Import: WAL checkpointed after Phase 1');
-        } catch (_) {}
+        walCheckpoint(db);
 
         } // end if (!extractionOnly)
 
@@ -625,30 +595,8 @@ async function main() {
         // ═══════════════════════════════════════════
         // Recreate FTS triggers + rebuild index
         // ═══════════════════════════════════════════
-        console.log('✦ Recreating FTS triggers...');
-        const ftsTriggersStart = Date.now();
-        db.exec(`
-            CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
-                INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
-                VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
-            END;
-        `);
-        console.log(`✦ FTS trigger documents_ai created (${((Date.now() - ftsTriggersStart) / 1000).toFixed(1)}s)`);
-        db.exec(`
-            CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
-                INSERT INTO documents_fts(documents_fts, rowid, original_name, text_content, email_subject, email_from, email_to)
-                VALUES ('delete', old.rowid, old.original_name, COALESCE(old.text_content,''), COALESCE(old.email_subject,''), COALESCE(old.email_from,''), COALESCE(old.email_to,''));
-                INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
-                VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
-            END;
-        `);
-        console.log(`✦ FTS trigger documents_au created (${((Date.now() - ftsTriggersStart) / 1000).toFixed(1)}s)`);
-
-        const totalDocsForFts = db.prepare('SELECT COUNT(*) as c FROM documents').get().c;
-        console.log(`✦ Starting FTS rebuild for ${totalDocsForFts} documents...`);
-        const ftsRebuildStart = Date.now();
-        db.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')");
-        console.log(`✦ FTS index rebuilt in ${((Date.now() - ftsRebuildStart) / 1000).toFixed(1)}s`);
+        enableFtsTriggers(db);
+        rebuildFtsIndex(db);
 
         db.prepare(`
             UPDATE import_jobs
@@ -668,22 +616,10 @@ async function main() {
         console.log('✦ Import job marked as completed');
 
         // Refresh precomputed investigation counts
-        db.prepare(`
-            UPDATE investigations SET
-                document_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1),
-                email_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'email'),
-                attachment_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'attachment'),
-                chat_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'chat'),
-                file_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'file')
-            WHERE id = ?1
-        `).run(investigation_id);
-        console.log('✦ Investigation counts refreshed');
+        refreshInvestigationCounts(db, investigation_id);
 
         // WAL checkpoint after FTS rebuild
-        try {
-            db.pragma('wal_checkpoint(PASSIVE)');
-            console.log('✦ WAL checkpointed after Phase 2');
-        } catch (_) {}
+        walCheckpoint(db);
 
         // Auto-cleanup: delete source PST/OST file after successful import
         try {
@@ -695,34 +631,10 @@ async function main() {
 
     } catch (err) {
         console.error("Worker fatal error:", err);
-        try {
-            db.exec(`
-                CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
-                    INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
-                    VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
-                END;
-            `);
-            db.exec(`
-                CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
-                    INSERT INTO documents_fts(documents_fts, rowid, original_name, text_content, email_subject, email_from, email_to)
-                    VALUES ('delete', old.rowid, old.original_name, COALESCE(old.text_content,''), COALESCE(old.email_subject,''), COALESCE(old.email_from,''), COALESCE(old.email_to,''));
-                    INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
-                    VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
-                END;
-            `);
-            db.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')");
-        } catch (_) { /* best effort */ }
-
-        // Rebuild indexes in case they were dropped
-        try {
-            db.exec('CREATE INDEX IF NOT EXISTS idx_documents_status ON documents(status)');
-            db.exec('CREATE INDEX IF NOT EXISTS idx_documents_doc_type ON documents(doc_type)');
-            db.exec('CREATE INDEX IF NOT EXISTS idx_documents_status_doctype ON documents(status, doc_type)');
-            db.exec('CREATE INDEX IF NOT EXISTS idx_documents_thread_doctype ON documents(thread_id, doc_type)');
-            db.exec('CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash)');
-            db.exec('CREATE INDEX IF NOT EXISTS idx_documents_is_duplicate ON documents(is_duplicate)');
-            db.exec('CREATE INDEX IF NOT EXISTS idx_documents_inv_doctype ON documents(investigation_id, doc_type)');
-        } catch (_) { /* best effort */ }
+        // Best-effort recovery: re-enable FTS triggers, rebuild index, recreate indexes
+        enableFtsTriggers(db);
+        rebuildFtsIndex(db);
+        recreateBulkIndexes(db);
 
         db.prepare(`
             UPDATE import_jobs
