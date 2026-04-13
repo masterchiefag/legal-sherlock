@@ -342,6 +342,31 @@ try {
     }
 } catch (_) { /* table already migrated or fresh */ }
 
+// Migration: widen image_jobs.type CHECK to include 'metadata'
+try {
+    const checkInfo3 = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='image_jobs'").get();
+    if (checkInfo3?.sql && !checkInfo3.sql.includes('metadata')) {
+        db.exec(`
+            ALTER TABLE image_jobs RENAME TO image_jobs_old3;
+            CREATE TABLE image_jobs (
+                id TEXT PRIMARY KEY,
+                type TEXT NOT NULL CHECK(type IN ('scan', 'extract', 'whatsapp_zip', 'ingest', 'metadata')),
+                status TEXT NOT NULL CHECK(status IN ('pending', 'processing', 'completed', 'failed')),
+                image_path TEXT NOT NULL,
+                output_dir TEXT,
+                phase TEXT,
+                progress_percent INTEGER DEFAULT 0,
+                result_data TEXT,
+                error_log TEXT,
+                started_at TEXT DEFAULT (datetime('now')),
+                completed_at TEXT
+            );
+            INSERT INTO image_jobs SELECT * FROM image_jobs_old3;
+            DROP TABLE image_jobs_old3;
+        `);
+    }
+} catch (_) { /* table already migrated or fresh */ }
+
 // Migration: Add investigation_id and custodian to image_jobs
 if (!columnExists('image_jobs', 'investigation_id')) {
     db.exec(`ALTER TABLE image_jobs ADD COLUMN investigation_id TEXT`);

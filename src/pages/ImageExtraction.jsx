@@ -80,11 +80,19 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
     const [excludedExts, setExcludedExts] = useState(new Set());
     const [excludeCloudOnly, setExcludeCloudOnly] = useState(true);
 
-    // Compute extension summary from found files
+    // Metadata state (Phase 2)
+    const [metadataLoaded, setMetadataLoaded] = useState(false);
+    const [metadataJobId, setMetadataJobId] = useState(null);
+    const [metadataJob, setMetadataJob] = useState(null);
+    const [loadingMetadata, setLoadingMetadata] = useState(false);
+    const [enrichedFiles, setEnrichedFiles] = useState([]); // files with istat data
+
+    // Compute extension summary from found files (scan results — no size/cloud for E01)
     const extSummary = (() => {
+        const source = metadataLoaded ? enrichedFiles : foundFiles;
         const map = {};
-        for (let i = 0; i < foundFiles.length; i++) {
-            const f = foundFiles[i];
+        for (let i = 0; i < source.length; i++) {
+            const f = source[i];
             const ext = (f.path.match(/\.([^./\\]+)$/)?.[1] || 'unknown').toLowerCase();
             if (!map[ext]) map[ext] = { ext, count: 0, totalSize: 0, cloudOnly: 0, local: 0 };
             map[ext].count++;
@@ -95,12 +103,17 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
         return Object.values(map).sort((a, b) => b.count - a.count);
     })();
 
+    // Are we dealing with an archive? (ZIP/UFDR already have metadata from scan)
+    const isArchive = /\.(zip|ufdr)$/i.test(imagePath);
+    const hasMetadata = metadataLoaded || isArchive;
+
     // Derive selectedFiles from excluded extensions + cloud-only filter
+    const activeFiles = metadataLoaded ? enrichedFiles : foundFiles;
     const selectedFiles = new Set(
-        foundFiles.map((f, i) => {
+        activeFiles.map((f, i) => {
             const ext = (f.path.match(/\.([^./\\]+)$/)?.[1] || 'unknown').toLowerCase();
             if (excludedExts.has(ext)) return null;
-            if (excludeCloudOnly && f.is_cloud_only) return null;
+            if (hasMetadata && excludeCloudOnly && f.is_cloud_only) return null;
             return i;
         }).filter(i => i !== null)
     );
@@ -171,9 +184,16 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
         setFoundFiles([]);
         setExcludedExts(new Set());
         setExcludeCloudOnly(true);
+        setMetadataLoaded(false);
+        setMetadataJob(null);
+        setMetadataJobId(null);
+        setEnrichedFiles([]);
         setExtractResults([]);
         setExtractJob(null);
         setExtractJobId(null);
+        setIngestResults(null);
+        setIngestJob(null);
+        setIngestJobId(null);
 
         try {
             const res = await apiFetch('/api/images/scan', {
@@ -198,6 +218,11 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                     if (job.status === 'completed') {
                         const files = job.result_data || [];
                         setFoundFiles(files);
+                        // Archives (ZIP/UFDR) already have metadata from scan
+                        if (files.length > 0 && files[0]?.is_zip) {
+                            setMetadataLoaded(true);
+                            setEnrichedFiles(files);
+                        }
                         if (files.length === 0) {
                             addToast('No matching files found in image', 'info');
                         } else {
@@ -241,6 +266,61 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
     };
 
     // ═══════════════════════════════════════
+    // Metadata (Phase 2)
+    // ═══════════════════════════════════════
+    const handleMetadata = async () => {
+        if (selectedFiles.size === 0) {
+            addToast('Please select at least one extension', 'error');
+            return;
+        }
+
+        setLoadingMetadata(true);
+        setMetadataJob(null);
+
+        // Send only the selected files (filtered by extension)
+        const filesToEnrich = [...selectedFiles].map(idx => foundFiles[idx]);
+
+        try {
+            const res = await apiFetch('/api/images/metadata', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ scanJobId, selectedFiles: filesToEnrich }),
+            });
+            const data = await res.json();
+
+            if (!res.ok) {
+                addToast(data.error || 'Metadata collection failed', 'error');
+                setLoadingMetadata(false);
+                return;
+            }
+
+            setMetadataJobId(data.jobId);
+            pollJob(
+                data.jobId,
+                (job) => setMetadataJob(job),
+                (job) => {
+                    setLoadingMetadata(false);
+                    if (job.status === 'completed') {
+                        const files = job.result_data || [];
+                        setEnrichedFiles(files);
+                        setMetadataLoaded(true);
+                        // Reset excludedExts since the file set may have changed
+                        setExcludedExts(new Set());
+                        const cloudCount = files.filter(f => f.is_cloud_only).length;
+                        addToast(`Metadata loaded for ${files.length} files${cloudCount > 0 ? ` (${cloudCount} cloud-only)` : ''}`, 'success');
+                    } else {
+                        const errMsg = job.error_log?.[0]?.error || 'Metadata collection failed';
+                        addToast(errMsg, 'error');
+                    }
+                }
+            );
+        } catch (err) {
+            addToast('Network error', 'error');
+            setLoadingMetadata(false);
+        }
+    };
+
+    // ═══════════════════════════════════════
     // Extract
     // ═══════════════════════════════════════
     const handleExtract = async () => {
@@ -256,7 +336,7 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
         setExtracting(true);
         setExtractResults([]);
 
-        const filesToExtract = [...selectedFiles].map(idx => foundFiles[idx]);
+        const filesToExtract = [...selectedFiles].map(idx => activeFiles[idx]);
 
         try {
             const res = await apiFetch('/api/images/extract', {
@@ -318,7 +398,7 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
         setIngesting(true);
         setIngestResults(null);
 
-        const filesToIngest = [...selectedFiles].map(idx => foundFiles[idx]);
+        const filesToIngest = [...selectedFiles].map(idx => activeFiles[idx]);
 
         try {
             const res = await apiFetch('/api/images/ingest', {
@@ -425,7 +505,7 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
             queued: 'Queued...',
             partitions: 'Reading partition table...',
             scanning: 'Scanning for matching files...',
-            metadata: 'Reading file metadata...',
+            metadata: 'Collecting file metadata (istat)...',
             extracting: 'Extracting files...',
             ingesting: 'Processing and ingesting documents...',
             extracting_db: 'Extracting ChatStorage.sqlite...',
@@ -557,14 +637,16 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                                     </span>
                                 </h3>
                                 <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
-                                    <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)', cursor: 'pointer' }}>
-                                        <input
-                                            type="checkbox"
-                                            checked={excludeCloudOnly}
-                                            onChange={e => setExcludeCloudOnly(e.target.checked)}
-                                        />
-                                        Exclude cloud-only
-                                    </label>
+                                    {hasMetadata && (
+                                        <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)', cursor: 'pointer' }}>
+                                            <input
+                                                type="checkbox"
+                                                checked={excludeCloudOnly}
+                                                onChange={e => setExcludeCloudOnly(e.target.checked)}
+                                            />
+                                            Exclude cloud-only
+                                        </label>
+                                    )}
                                     <button className="btn btn-ghost btn-sm" onClick={selectAll}>Select All</button>
                                     <button className="btn btn-ghost btn-sm" onClick={deselectAll}>Deselect All</button>
                                 </div>
@@ -583,9 +665,9 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                                             </th>
                                             <th style={{ padding: '8px 12px', textAlign: 'left' }}>Extension</th>
                                             <th style={{ padding: '8px 12px', textAlign: 'right' }}>Files</th>
-                                            <th style={{ padding: '8px 12px', textAlign: 'right' }}>Total Size</th>
-                                            <th style={{ padding: '8px 12px', textAlign: 'right' }}>Local</th>
-                                            <th style={{ padding: '8px 12px', textAlign: 'right' }}>Cloud Only</th>
+                                            {hasMetadata && <th style={{ padding: '8px 12px', textAlign: 'right' }}>Total Size</th>}
+                                            {hasMetadata && <th style={{ padding: '8px 12px', textAlign: 'right' }}>Local</th>}
+                                            {hasMetadata && <th style={{ padding: '8px 12px', textAlign: 'right' }}>Cloud Only</th>}
                                         </tr>
                                     </thead>
                                     <tbody>
@@ -616,19 +698,25 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                                                     <td style={{ padding: '10px 12px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
                                                         {e.count.toLocaleString()}
                                                     </td>
-                                                    <td style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
-                                                        {formatSize(e.totalSize)}
-                                                    </td>
-                                                    <td style={{ padding: '10px 12px', textAlign: 'right', color: 'var(--accent-success, #22c55e)', fontVariantNumeric: 'tabular-nums' }}>
-                                                        {e.local.toLocaleString()}
-                                                    </td>
-                                                    <td style={{ padding: '10px 12px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
-                                                        {e.cloudOnly > 0 ? (
-                                                            <span style={{ color: 'var(--warning, #f59e0b)' }}>{e.cloudOnly.toLocaleString()}</span>
-                                                        ) : (
-                                                            <span style={{ color: 'var(--text-tertiary)' }}>0</span>
-                                                        )}
-                                                    </td>
+                                                    {hasMetadata && (
+                                                        <td style={{ padding: '10px 12px', textAlign: 'right', whiteSpace: 'nowrap' }}>
+                                                            {formatSize(e.totalSize)}
+                                                        </td>
+                                                    )}
+                                                    {hasMetadata && (
+                                                        <td style={{ padding: '10px 12px', textAlign: 'right', color: 'var(--accent-success, #22c55e)', fontVariantNumeric: 'tabular-nums' }}>
+                                                            {e.local.toLocaleString()}
+                                                        </td>
+                                                    )}
+                                                    {hasMetadata && (
+                                                        <td style={{ padding: '10px 12px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
+                                                            {e.cloudOnly > 0 ? (
+                                                                <span style={{ color: 'var(--warning, #f59e0b)' }}>{e.cloudOnly.toLocaleString()}</span>
+                                                            ) : (
+                                                                <span style={{ color: 'var(--text-tertiary)' }}>0</span>
+                                                            )}
+                                                        </td>
+                                                    )}
                                                 </tr>
                                             );
                                         })}
@@ -640,16 +728,53 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                                             <td style={{ padding: '10px 12px', textAlign: 'right', fontVariantNumeric: 'tabular-nums' }}>
                                                 {selectedFiles.size.toLocaleString()}
                                             </td>
-                                            <td style={{ padding: '10px 12px', textAlign: 'right' }}>
-                                                {formatSize(Array.from(selectedFiles).reduce((sum, i) => sum + (foundFiles[i]?.size || 0), 0))}
-                                            </td>
-                                            <td style={{ padding: '10px 12px' }} colSpan={2}></td>
+                                            {hasMetadata && (
+                                                <td style={{ padding: '10px 12px', textAlign: 'right' }}>
+                                                    {formatSize(Array.from(selectedFiles).reduce((sum, i) => sum + (activeFiles[i]?.size || 0), 0))}
+                                                </td>
+                                            )}
+                                            {hasMetadata && <td style={{ padding: '10px 12px' }} colSpan={2}></td>}
                                         </tr>
                                     </tfoot>
                                 </table>
                             </div>
 
-                            {/* Extract controls */}
+                            {/* Phase 2: Get Metadata (E01 only — archives already have it) */}
+                            {!hasMetadata && (
+                                <div style={{ marginTop: '20px', paddingTop: '20px', borderTop: '1px solid var(--border-secondary)' }}>
+                                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                                        <div>
+                                            <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '4px' }}>
+                                                Step 2: Collect File Metadata
+                                            </div>
+                                            <div style={{ fontSize: '12px', color: 'var(--text-tertiary)' }}>
+                                                Runs istat on {selectedFiles.size.toLocaleString()} selected files to get sizes, dates, and detect cloud-only files.
+                                            </div>
+                                        </div>
+                                        <button
+                                            className="btn btn-primary"
+                                            onClick={handleMetadata}
+                                            disabled={loadingMetadata || selectedFiles.size === 0}
+                                            style={{ whiteSpace: 'nowrap' }}
+                                        >
+                                            {loadingMetadata ? (
+                                                <>
+                                                    <span className="spinner" style={{ width: '14px', height: '14px', marginRight: '8px' }}></span>
+                                                    Loading Metadata...
+                                                </>
+                                            ) : `Get Metadata for ${selectedFiles.size.toLocaleString()} Files`}
+                                        </button>
+                                    </div>
+
+                                    {/* Metadata progress */}
+                                    {loadingMetadata && metadataJob && (
+                                        <ProgressDetail job={metadataJob} phaseLabel={phaseLabel(metadataJob)} />
+                                    )}
+                                </div>
+                            )}
+
+                            {/* Extract controls (only after metadata) */}
+                            {hasMetadata && (
                             <div style={{ marginTop: '20px', paddingTop: '20px', borderTop: '1px solid var(--border-secondary)' }}>
                                 <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-end' }}>
                                     <div style={{ flex: 1 }}>
@@ -685,8 +810,10 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                                     <ProgressDetail job={extractJob} phaseLabel={phaseLabel(extractJob)} />
                                 )}
                             </div>
+                            )}
 
-                            {/* Ingest into Investigation */}
+                            {/* Ingest into Investigation (only after metadata) */}
+                            {hasMetadata && (
                             <div style={{ marginTop: '20px', paddingTop: '20px', borderTop: '1px solid var(--border-secondary)' }}>
                                 <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '12px' }}>
                                     Ingest into Investigation
@@ -736,6 +863,7 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                                     </>
                                 )}
                             </div>
+                            )}
                         </div>
                     )}
 

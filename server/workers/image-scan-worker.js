@@ -75,56 +75,6 @@ function parseFls(output, regex) {
     return files;
 }
 
-function parseIstat(output) {
-    const meta = { size: 0, created: null, modified: null, accessed: null, flags: null, is_cloud_only: false };
-
-    // Size: works for ext/FAT; for NTFS, size is in the $DATA attribute line
-    const sizeMatch = output.match(/^Size:\s+(\d+)/m);
-    if (sizeMatch) {
-        meta.size = parseInt(sizeMatch[1]);
-    } else {
-        // NTFS: "$DATA (128-X)   Name: N/A   ...   size: 1405"
-        const dataMatch = output.match(/\$DATA\s.*\bsize:\s+(\d+)/m);
-        if (dataMatch) meta.size = parseInt(dataMatch[1]);
-    }
-
-    // Created: works across NTFS ("Created:"), ext ("crtime:"), and others
-    const createdMatch = output.match(/^Created:\s+(.+?)(?:\s+\(|$)/m);
-    if (createdMatch) meta.created = createdMatch[1].trim();
-    else {
-        const crtimeMatch = output.match(/^crtime:\s+(.+?)(?:\s+\(|$)/m);
-        if (crtimeMatch) meta.created = crtimeMatch[1].trim();
-    }
-
-    // Modified: NTFS uses "File Modified:", ext uses "Written:" or "mtime:"
-    const fmodMatch = output.match(/^File Modified:\s+(.+?)(?:\s+\(|$)/m);
-    if (fmodMatch) meta.modified = fmodMatch[1].trim();
-    else {
-        const modMatch = output.match(/(?:Written|mtime|Modified):\s+(.+?)(?:\s+\(|$)/m);
-        if (modMatch) meta.modified = modMatch[1].trim();
-    }
-
-    // Accessed: same keyword on NTFS and ext
-    const accessedMatch = output.match(/^Accessed:\s+(.+?)(?:\s+\(|$)/m);
-    if (accessedMatch) meta.accessed = accessedMatch[1].trim();
-    else {
-        const atimeMatch = output.match(/^atime:\s+(.+?)(?:\s+\(|$)/m);
-        if (atimeMatch) meta.accessed = atimeMatch[1].trim();
-    }
-
-    // NTFS flags: detect cloud-only (OneDrive) files
-    const flagsMatch = output.match(/^\$STANDARD_INFORMATION[\s\S]*?^Flags:\s+(.+)$/m);
-    if (flagsMatch) {
-        meta.flags = flagsMatch[1].trim();
-        // OneDrive cloud-only files have Sparse + Offline + Reparse Point
-        if (/Sparse/i.test(meta.flags) && /Offline/i.test(meta.flags)) {
-            meta.is_cloud_only = true;
-        }
-    }
-
-    return meta;
-}
-
 async function scanDiskImage(regex) {
     const scanStart = Date.now();
     console.log(`\u2726 Image Scan: starting E01 scan for ${imagePath}`);
@@ -146,14 +96,14 @@ async function scanDiskImage(regex) {
         return [];
     }
 
-    update('processing', 'scanning', 10, JSON.stringify({
+    update('processing', 'scanning', 5, JSON.stringify({
         phase_detail: 'scanning', partitions: partitions.length, files_found: 0,
     }), null);
     const allFiles = [];
 
     for (let i = 0; i < partitions.length; i++) {
         const part = partitions[i];
-        const pct = 10 + Math.round((i / partitions.length) * 60);
+        const pct = 5 + Math.round((i / partitions.length) * 90);
         update('processing', 'scanning', pct, null, null);
 
         console.log(`\u2726 Image Scan: scanning partition ${i + 1}/${partitions.length} at offset ${part.offset} (${part.description})`);
@@ -183,65 +133,6 @@ async function scanDiskImage(regex) {
             console.log(`\u2726 Image Scan: fls failed for partition at offset ${part.offset} (${flsTime}s): ${e.message}`);
         }
     }
-
-    // Metadata phase: run istat in concurrent batches for performance
-    const CONCURRENCY = 10;
-    const metaStart = Date.now();
-    let metaCompleted = 0;
-    let metaFailed = 0;
-    let lastLogTime = Date.now();
-    const LOG_INTERVAL = 5000; // log every 5s
-
-    update('processing', 'metadata', 70, JSON.stringify({
-        phase_detail: 'metadata', processed: 0, total: allFiles.length, rate: 0, eta_seconds: null,
-    }), null);
-
-    console.log(`\u2726 Image Scan: starting metadata for ${allFiles.length} files (concurrency: ${CONCURRENCY})`);
-
-    for (let i = 0; i < allFiles.length; i += CONCURRENCY) {
-        const batch = allFiles.slice(i, i + CONCURRENCY);
-        await Promise.all(batch.map(async (f) => {
-            try {
-                const args = ['-o', String(f.partition_offset), imagePath, f.inode.split('-')[0]];
-                const { stdout } = await execFileAsync('istat', args, { timeout: 30000, maxBuffer: 5 * 1024 * 1024 });
-                const meta = parseIstat(stdout);
-                f.size = meta.size;
-                f.created = meta.created;
-                f.modified = meta.modified;
-                f.accessed = meta.accessed;
-                if (meta.is_cloud_only) f.is_cloud_only = true;
-                if (meta.flags) f.flags = meta.flags;
-            } catch (e) {
-                f.size = 0;
-                f.created = null;
-                f.modified = null;
-                f.accessed = null;
-                metaFailed++;
-            }
-        }));
-
-        metaCompleted = Math.min(i + CONCURRENCY, allFiles.length);
-        const pct = 70 + Math.round((metaCompleted / allFiles.length) * 25);
-        const elapsed = (Date.now() - metaStart) / 1000;
-        const rate = metaCompleted / elapsed;
-        const remaining = allFiles.length - metaCompleted;
-        const etaSeconds = rate > 0 ? Math.round(remaining / rate) : null;
-
-        update('processing', 'metadata', pct, JSON.stringify({
-            phase_detail: 'metadata', processed: metaCompleted, total: allFiles.length,
-            rate: Math.round(rate * 10) / 10, eta_seconds: etaSeconds, failed: metaFailed,
-        }), null);
-
-        // Periodic console logging
-        if (Date.now() - lastLogTime >= LOG_INTERVAL) {
-            const etaMin = etaSeconds != null ? `${Math.floor(etaSeconds / 60)}m${etaSeconds % 60}s` : '?';
-            console.log(`\u2726 Image Scan: metadata ${metaCompleted}/${allFiles.length} (${Math.round(rate)}/s, ETA ${etaMin}, ${metaFailed} failed)`);
-            lastLogTime = Date.now();
-        }
-    }
-
-    const totalMetaTime = ((Date.now() - metaStart) / 1000).toFixed(1);
-    console.log(`\u2726 Image Scan: metadata complete — ${allFiles.length} files in ${totalMetaTime}s (${metaFailed} failed)`);
 
     return allFiles;
 }

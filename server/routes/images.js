@@ -87,6 +87,67 @@ router.post('/scan', async (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════
+// POST /api/images/metadata — Collect metadata (istat) for selected files
+// ═══════════════════════════════════════════════════
+router.post('/metadata', (req, res) => {
+    try {
+        const { scanJobId, selectedFiles } = req.body;
+
+        if (!scanJobId || !selectedFiles) {
+            return res.status(400).json({ error: 'scanJobId and selectedFiles are required' });
+        }
+
+        if (!Array.isArray(selectedFiles) || selectedFiles.length === 0) {
+            return res.status(400).json({ error: 'selectedFiles must be a non-empty array' });
+        }
+
+        // Validate scan job
+        const scanJob = db.prepare("SELECT * FROM image_jobs WHERE id = ? AND type = 'scan'").get(scanJobId);
+        if (!scanJob) {
+            return res.status(404).json({ error: 'Scan job not found' });
+        }
+        if (scanJob.status !== 'completed') {
+            return res.status(400).json({ error: 'Scan job has not completed yet' });
+        }
+
+        // Create metadata job
+        const jobId = uuidv4();
+        db.prepare(
+            "INSERT INTO image_jobs (id, type, status, image_path, phase) VALUES (?, 'metadata', 'pending', ?, 'queued')"
+        ).run(jobId, scanJob.image_path);
+
+        // Spawn worker
+        const workerPath = path.join(__dirname, '..', 'workers', 'image-metadata-worker.js');
+        const worker = new Worker(workerPath, {
+            workerData: {
+                jobId,
+                imagePath: scanJob.image_path,
+                selectedFiles,
+            },
+        });
+
+        worker.on('error', (err) => {
+            console.error(`⚠ Image Metadata Worker error for job ${jobId}:`, err);
+            db.prepare(
+                "UPDATE image_jobs SET status = 'failed', error_log = ?, completed_at = datetime('now') WHERE id = ?"
+            ).run(JSON.stringify([{ error: `Worker crashed: ${err.message}` }]), jobId);
+        });
+
+        worker.on('exit', (code) => {
+            if (code !== 0) {
+                console.error(`⚠ Image Metadata Worker exited with code ${code} for job ${jobId}`);
+            }
+        });
+
+        res.status(202).json({ jobId, message: 'Metadata collection started' });
+
+    } catch (err) {
+        console.error('Image metadata error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ═══════════════════════════════════════════════════
 // POST /api/images/extract — Extract selected files from E01 image
 // ═══════════════════════════════════════════════════
 router.post('/extract', (req, res) => {
