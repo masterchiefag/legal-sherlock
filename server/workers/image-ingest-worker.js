@@ -517,13 +517,13 @@ async function main() {
         // ═══════════════════════════════════════════════════
         db.prepare(`
             UPDATE investigations SET
-                document_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1),
-                email_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'email'),
-                attachment_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'attachment'),
-                chat_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'chat'),
-                file_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = ?1 AND doc_type = 'file')
-            WHERE id = ?1
-        `).run(investigationId);
+                document_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = $id),
+                email_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = $id AND doc_type = 'email'),
+                attachment_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = $id AND doc_type = 'attachment'),
+                chat_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = $id AND doc_type = 'chat'),
+                file_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = $id AND doc_type = 'file')
+            WHERE id = $id
+        `).run({ id: investigationId });
         console.log('✦ Image Ingest: investigation counts refreshed');
 
         // ═══════════════════════════════════════════════════
