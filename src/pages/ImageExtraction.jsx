@@ -3,12 +3,13 @@ import { formatSize } from '../utils/format';
 import { apiFetch } from '../utils/api';
 
 const PRESETS = [
+    { label: 'Documents', pattern: '.*\\.(pdf|docx|doc|xlsx|xls|txt|csv|md|eml)$' },
     { label: 'PST/OST Files', pattern: '.*\\.(pst|ost)$' },
     { label: 'All Media', pattern: '.*\\.(jpg|jpeg|png|gif|mp4|mov|avi|mp3|aac|opus|ogg|pdf|docx|xlsx|webp|heic)$' },
     { label: 'All Files', pattern: '.*' },
 ];
 
-function ImageExtraction({ addToast }) {
+function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation }) {
     // Tab state
     const [activeTab, setActiveTab] = useState('scan'); // 'scan' | 'whatsapp'
 
@@ -29,6 +30,13 @@ function ImageExtraction({ addToast }) {
     const [extractJobId, setExtractJobId] = useState(null);
     const [extractJob, setExtractJob] = useState(null);
     const [extractResults, setExtractResults] = useState([]);
+
+    // Ingest state
+    const [ingestCustodian, setIngestCustodian] = useState('');
+    const [ingesting, setIngesting] = useState(false);
+    const [ingestJobId, setIngestJobId] = useState(null);
+    const [ingestJob, setIngestJob] = useState(null);
+    const [ingestResults, setIngestResults] = useState(null);
 
     // WhatsApp extract state
     const [waArchivePath, setWaArchivePath] = useState('');
@@ -204,6 +212,69 @@ function ImageExtraction({ addToast }) {
     };
 
     // ═══════════════════════════════════════
+    // Ingest into Investigation
+    // ═══════════════════════════════════════
+    const handleIngest = async () => {
+        if (!activeInvestigationId) {
+            addToast('Please select an investigation first', 'error');
+            return;
+        }
+        if (!ingestCustodian.trim()) {
+            addToast('Please enter a custodian name', 'error');
+            return;
+        }
+        if (selectedFiles.size === 0) {
+            addToast('Please select files to ingest', 'error');
+            return;
+        }
+
+        setIngesting(true);
+        setIngestResults(null);
+
+        const filesToIngest = [...selectedFiles].map(idx => foundFiles[idx]);
+
+        try {
+            const res = await apiFetch('/api/images/ingest', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    scanJobId,
+                    selectedFiles: filesToIngest,
+                    investigationId: activeInvestigationId,
+                    custodian: ingestCustodian.trim(),
+                }),
+            });
+            const data = await res.json();
+
+            if (!res.ok) {
+                addToast(data.error || 'Ingest failed', 'error');
+                setIngesting(false);
+                return;
+            }
+
+            setIngestJobId(data.jobId);
+            pollJob(
+                data.jobId,
+                (job) => setIngestJob(job),
+                (job) => {
+                    setIngesting(false);
+                    if (job.status === 'completed') {
+                        const result = job.result_data || {};
+                        setIngestResults(result);
+                        addToast(`Ingested ${result.ingested || 0} document${result.ingested !== 1 ? 's' : ''} into investigation`, 'success');
+                    } else {
+                        const errMsg = job.error_log?.[0]?.error || 'Ingestion failed';
+                        addToast(errMsg, 'error');
+                    }
+                }
+            );
+        } catch (err) {
+            addToast('Network error', 'error');
+            setIngesting(false);
+        }
+    };
+
+    // ═══════════════════════════════════════
     // WhatsApp Extract
     // ═══════════════════════════════════════
     const handleWhatsAppExtract = async () => {
@@ -269,6 +340,7 @@ function ImageExtraction({ addToast }) {
             scanning: 'Scanning for matching files...',
             metadata: 'Reading file metadata...',
             extracting: 'Extracting files...',
+            ingesting: 'Processing and ingesting documents...',
             extracting_db: 'Extracting ChatStorage.sqlite...',
             reading_db: 'Reading WhatsApp database...',
             indexing_archive: 'Indexing archive contents...',
@@ -511,6 +583,134 @@ function ImageExtraction({ addToast }) {
                                     </div>
                                 )}
                             </div>
+
+                            {/* Ingest into Investigation */}
+                            <div style={{ marginTop: '20px', paddingTop: '20px', borderTop: '1px solid var(--border-secondary)' }}>
+                                <div style={{ fontSize: '13px', fontWeight: 600, marginBottom: '12px' }}>
+                                    Ingest into Investigation
+                                </div>
+                                {!activeInvestigationId ? (
+                                    <div style={{ fontSize: '13px', color: 'var(--text-tertiary)', fontStyle: 'italic' }}>
+                                        Select an investigation from the sidebar to enable ingestion.
+                                    </div>
+                                ) : (
+                                    <>
+                                        <div style={{ fontSize: '12px', color: 'var(--text-secondary)', marginBottom: '12px' }}>
+                                            Investigation: <strong>{activeInvestigation?.name || activeInvestigationId}</strong>
+                                        </div>
+                                        <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-end' }}>
+                                            <div style={{ flex: 1 }}>
+                                                <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                                    Custodian Name
+                                                </label>
+                                                <input
+                                                    type="text"
+                                                    className="input"
+                                                    value={ingestCustodian}
+                                                    onChange={e => setIngestCustodian(e.target.value)}
+                                                    placeholder="e.g. John Doe"
+                                                    disabled={ingesting}
+                                                />
+                                            </div>
+                                            <button
+                                                className="btn btn-primary"
+                                                onClick={handleIngest}
+                                                disabled={ingesting || selectedFiles.size === 0 || !ingestCustodian.trim()}
+                                                style={{ whiteSpace: 'nowrap' }}
+                                            >
+                                                {ingesting ? (
+                                                    <>
+                                                        <span className="spinner" style={{ width: '14px', height: '14px', marginRight: '8px' }}></span>
+                                                        Ingesting...
+                                                    </>
+                                                ) : `Ingest ${selectedFiles.size} File${selectedFiles.size !== 1 ? 's' : ''}`}
+                                            </button>
+                                        </div>
+
+                                        {/* Ingest progress */}
+                                        {ingesting && ingestJob && (
+                                            <div style={{ marginTop: '16px' }}>
+                                                <div style={{ fontSize: '13px', color: 'var(--text-secondary)', marginBottom: '8px' }}>
+                                                    {phaseLabel(ingestJob)} ({ingestJob.progress_percent || 0}%)
+                                                </div>
+                                                <div style={{ background: 'var(--bg-tertiary)', borderRadius: '4px', height: '6px', overflow: 'hidden' }}>
+                                                    <div style={{
+                                                        width: `${ingestJob.progress_percent || 0}%`,
+                                                        height: '100%',
+                                                        background: 'var(--accent-primary)',
+                                                        borderRadius: '4px',
+                                                        transition: 'width 0.3s ease',
+                                                    }} />
+                                                </div>
+                                            </div>
+                                        )}
+                                    </>
+                                )}
+                            </div>
+                        </div>
+                    )}
+
+                    {/* Ingest Results */}
+                    {ingestResults && !ingesting && (
+                        <div className="card" style={{ padding: '24px', marginBottom: '24px' }}>
+                            <h3 style={{ margin: '0 0 16px', fontSize: '16px', fontWeight: 600 }}>Ingestion Results</h3>
+                            <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: '12px', marginBottom: '16px' }}>
+                                <div style={{ padding: '12px 16px', borderRadius: '8px', background: 'rgba(16,185,129,0.08)', border: '1px solid rgba(16,185,129,0.2)' }}>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Ingested</div>
+                                    <div style={{ fontSize: '20px', fontWeight: 600 }}>{ingestResults.ingested || 0}</div>
+                                </div>
+                                {ingestResults.duplicates > 0 && (
+                                    <div style={{ padding: '12px 16px', borderRadius: '8px', background: 'rgba(234,179,8,0.08)', border: '1px solid rgba(234,179,8,0.2)' }}>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Duplicates</div>
+                                        <div style={{ fontSize: '20px', fontWeight: 600 }}>{ingestResults.duplicates}</div>
+                                    </div>
+                                )}
+                                {ingestResults.failed > 0 && (
+                                    <div style={{ padding: '12px 16px', borderRadius: '8px', background: 'rgba(239,68,68,0.08)', border: '1px solid rgba(239,68,68,0.2)' }}>
+                                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Failed</div>
+                                        <div style={{ fontSize: '20px', fontWeight: 600 }}>{ingestResults.failed}</div>
+                                    </div>
+                                )}
+                                <div style={{ padding: '12px 16px', borderRadius: '8px', background: 'var(--bg-tertiary)' }}>
+                                    <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '4px' }}>Total</div>
+                                    <div style={{ fontSize: '20px', fontWeight: 600 }}>{ingestResults.totalFiles || 0}</div>
+                                </div>
+                            </div>
+
+                            {ingestResults.files && ingestResults.files.length > 0 && (
+                                <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
+                                    {ingestResults.files.map((r, idx) => (
+                                        <div key={idx} style={{
+                                            display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                                            padding: '8px 12px', borderRadius: '6px',
+                                            background: r.status === 'ok' ? 'rgba(16,185,129,0.05)' : r.status === 'duplicate' ? 'rgba(234,179,8,0.05)' : 'rgba(239,68,68,0.05)',
+                                            border: `1px solid ${r.status === 'ok' ? 'rgba(16,185,129,0.15)' : r.status === 'duplicate' ? 'rgba(234,179,8,0.15)' : 'rgba(239,68,68,0.15)'}`,
+                                            fontSize: '12px',
+                                        }}>
+                                            <div style={{ display: 'flex', gap: '12px', alignItems: 'center', minWidth: 0 }}>
+                                                <span style={{ fontWeight: 500 }}>
+                                                    {r.status === 'ok' ? '\u2713' : r.status === 'duplicate' ? '\u2248' : '\u2717'}
+                                                </span>
+                                                <span style={{ fontFamily: 'var(--font-mono, monospace)', overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                                                    {r.path?.split('/').pop() || r.path}
+                                                </span>
+                                            </div>
+                                            <div style={{ display: 'flex', gap: '12px', alignItems: 'center', flexShrink: 0 }}>
+                                                {r.doc_identifier && (
+                                                    <span style={{ fontFamily: 'var(--font-mono, monospace)', color: 'var(--accent-primary)', fontWeight: 500 }}>
+                                                        {r.doc_identifier}
+                                                    </span>
+                                                )}
+                                                {r.doc_type && (
+                                                    <span style={{ color: 'var(--text-tertiary)', textTransform: 'uppercase', fontSize: '10px', letterSpacing: '0.05em' }}>
+                                                        {r.doc_type}
+                                                    </span>
+                                                )}
+                                            </div>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
                         </div>
                     )}
 

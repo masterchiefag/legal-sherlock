@@ -262,7 +262,7 @@ function App() {
                             <Route path="/ai-logs" element={<ClassificationLogs activeInvestigationId={activeInvestigationId} />} />
                             <Route path="/summaries" element={<SummarizationJobs activeInvestigationId={activeInvestigationId} addToast={addToast} />} />
                             <Route path="/playground" element={<Playground addToast={addToast} />} />
-                            <Route path="/image-extraction" element={<ImageExtraction addToast={addToast} />} />
+                            <Route path="/image-extraction" element={<ImageExtraction addToast={addToast} activeInvestigationId={activeInvestigationId} activeInvestigation={activeInvestigation} />} />
                             <Route path="/documents/:id" element={<DocumentReview activeInvestigationId={activeInvestigationId} addToast={addToast} user={user} />} />
                             {isAdmin && <Route path="/admin/users" element={<UserManagement addToast={addToast} />} />}
                             {isAdmin && <Route path="/admin/audit" element={<AuditLog />} />}
