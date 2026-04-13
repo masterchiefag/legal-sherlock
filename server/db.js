@@ -544,6 +544,30 @@ db.exec(`
   END;
 `);
 
+// Verify FTS integrity on startup — rebuild if corrupt (e.g. worker crash left triggers disabled)
+try {
+  db.exec("INSERT INTO documents_fts(documents_fts) VALUES('integrity-check')");
+} catch (err) {
+  console.warn('✦ FTS index corrupt, rebuilding...', err.message);
+  try {
+    db.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')");
+    console.log('✦ FTS index rebuilt successfully after corruption.');
+  } catch (rebuildErr) {
+    console.error('✦ FTS rebuild failed — dropping and recreating FTS table...');
+    db.exec('DROP TABLE IF EXISTS documents_fts');
+    db.exec(`
+      CREATE VIRTUAL TABLE documents_fts USING fts5(
+        original_name, text_content, email_subject, email_from, email_to,
+        content='documents', content_rowid='rowid'
+      );
+      INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
+      SELECT rowid, original_name, COALESCE(text_content,''), COALESCE(email_subject,''), COALESCE(email_from,''), COALESCE(email_to,'')
+      FROM documents;
+    `);
+    console.log('✦ FTS table recreated from scratch.');
+  }
+}
+
 // ═══════════════════════════════════════════════════
 // Migration: OCR tracking on documents and import_jobs
 // ═══════════════════════════════════════════════════
