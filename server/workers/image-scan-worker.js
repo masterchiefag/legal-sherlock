@@ -37,13 +37,20 @@ function parsePartitions(output) {
     const lines = output.split('\n');
     const partitions = [];
     for (const line of lines) {
-        const match = line.match(/^\d+:\s+(\d+)\s+\d+\s+(\d+)\s+(.+)$/);
+        // mmls output: "Slot  Start  End  Length  Description"
+        // e.g. "004:  000       0000002048   0000411647   0000409600   Basic data partition"
+        // or   "001:  -------   0000000000   0000002047   0000002048   Unallocated"
+        const match = line.match(/^\d+:\s+(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(.+)$/);
         if (match) {
-            const desc = match[3].trim();
+            const slot = match[1];
+            const start = parseInt(match[2]);
+            const length = parseInt(match[4]);
+            const desc = match[5].trim();
             if (/unalloc|meta|safety|primary table|gpt/i.test(desc)) continue;
+            if (slot === '-------') continue; // skip unallocated slots
             partitions.push({
-                offset: parseInt(match[1]),
-                length: parseInt(match[2]),
+                offset: start,
+                length,
                 description: desc,
             });
         }
@@ -71,17 +78,39 @@ function parseFls(output, regex) {
 function parseIstat(output) {
     const meta = { size: 0, created: null, modified: null, accessed: null };
 
+    // Size: works for ext/FAT; for NTFS, size is in the $DATA attribute line
     const sizeMatch = output.match(/^Size:\s+(\d+)/m);
-    if (sizeMatch) meta.size = parseInt(sizeMatch[1]);
+    if (sizeMatch) {
+        meta.size = parseInt(sizeMatch[1]);
+    } else {
+        // NTFS: "$DATA (128-X)   Name: N/A   ...   size: 1405"
+        const dataMatch = output.match(/\$DATA\s.*\bsize:\s+(\d+)/m);
+        if (dataMatch) meta.size = parseInt(dataMatch[1]);
+    }
 
-    const createdMatch = output.match(/(?:Created|crtime):\s+(.+?)(?:\s+\(|$)/m);
+    // Created: works across NTFS ("Created:"), ext ("crtime:"), and others
+    const createdMatch = output.match(/^Created:\s+(.+?)(?:\s+\(|$)/m);
     if (createdMatch) meta.created = createdMatch[1].trim();
+    else {
+        const crtimeMatch = output.match(/^crtime:\s+(.+?)(?:\s+\(|$)/m);
+        if (crtimeMatch) meta.created = crtimeMatch[1].trim();
+    }
 
-    const modifiedMatch = output.match(/(?:Written|mtime|Modified):\s+(.+?)(?:\s+\(|$)/m);
-    if (modifiedMatch) meta.modified = modifiedMatch[1].trim();
+    // Modified: NTFS uses "File Modified:", ext uses "Written:" or "mtime:"
+    const fmodMatch = output.match(/^File Modified:\s+(.+?)(?:\s+\(|$)/m);
+    if (fmodMatch) meta.modified = fmodMatch[1].trim();
+    else {
+        const modMatch = output.match(/(?:Written|mtime|Modified):\s+(.+?)(?:\s+\(|$)/m);
+        if (modMatch) meta.modified = modMatch[1].trim();
+    }
 
-    const accessedMatch = output.match(/(?:Accessed|atime):\s+(.+?)(?:\s+\(|$)/m);
+    // Accessed: same keyword on NTFS and ext
+    const accessedMatch = output.match(/^Accessed:\s+(.+?)(?:\s+\(|$)/m);
     if (accessedMatch) meta.accessed = accessedMatch[1].trim();
+    else {
+        const atimeMatch = output.match(/^atime:\s+(.+?)(?:\s+\(|$)/m);
+        if (atimeMatch) meta.accessed = atimeMatch[1].trim();
+    }
 
     return meta;
 }
