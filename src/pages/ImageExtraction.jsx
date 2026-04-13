@@ -552,8 +552,8 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                         <p style={{ margin: '0 0 16px', fontSize: '13px', color: 'var(--text-secondary)' }}>
                             Enter the path to an E01 image, UFDR, or ZIP archive to scan for files matching a pattern.
                         </p>
-                        <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-start' }}>
-                            <div style={{ flex: 2 }}>
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: '12px' }}>
+                            <div>
                                 <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
                                     Image / Archive Path
                                 </label>
@@ -570,11 +570,11 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                                     onKeyDown={e => e.key === 'Enter' && !scanning && handleScan()}
                                 />
                             </div>
-                            <div style={{ flex: 1 }}>
-                                <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                                    File Match Regex
-                                </label>
-                                <div style={{ display: 'flex', gap: '6px' }}>
+                            <div style={{ display: 'flex', gap: '12px', alignItems: 'flex-end' }}>
+                                <div style={{ flex: 1 }}>
+                                    <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                        File Match Regex
+                                    </label>
                                     <input
                                         type="text"
                                         className="input"
@@ -582,12 +582,16 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                                         onChange={e => setSearchPattern(e.target.value)}
                                         placeholder=".*\.(pst|ost)$"
                                         disabled={scanning}
-                                        style={{ flex: 1 }}
                                         onKeyDown={e => e.key === 'Enter' && !scanning && handleScan()}
                                     />
+                                </div>
+                                <div>
+                                    <label style={{ display: 'block', fontSize: '12px', color: 'var(--text-tertiary)', marginBottom: '6px', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
+                                        Preset
+                                    </label>
                                     <select
                                         className="input"
-                                        style={{ width: 'auto', minWidth: '100px', cursor: 'pointer', fontSize: '12px' }}
+                                        style={{ width: 'auto', minWidth: '160px', cursor: 'pointer' }}
                                         value={PRESETS.find(p => p.pattern === searchPattern)?.pattern || ''}
                                         onChange={e => {
                                             if (e.target.value) setSearchPattern(e.target.value);
@@ -602,21 +606,19 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
                                         ))}
                                     </select>
                                 </div>
-                            </div>
-                            <div style={{ paddingTop: '22px' }}>
                                 <button
-                                className="btn btn-primary"
-                                onClick={handleScan}
-                                disabled={scanning || !imagePath.trim()}
-                                style={{ whiteSpace: 'nowrap' }}
-                            >
-                                {scanning ? (
-                                    <>
-                                        <span className="spinner" style={{ width: '14px', height: '14px', marginRight: '8px' }}></span>
-                                        Scanning...
-                                    </>
-                                ) : 'Scan Image'}
-                            </button>
+                                    className="btn btn-primary"
+                                    onClick={handleScan}
+                                    disabled={scanning || !imagePath.trim()}
+                                    style={{ whiteSpace: 'nowrap' }}
+                                >
+                                    {scanning ? (
+                                        <>
+                                            <span className="spinner" style={{ width: '14px', height: '14px', marginRight: '8px' }}></span>
+                                            Scanning...
+                                        </>
+                                    ) : 'Scan Image'}
+                                </button>
                             </div>
                         </div>
 
