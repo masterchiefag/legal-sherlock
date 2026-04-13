@@ -120,9 +120,15 @@ const server = app.listen(PORT, () => {
     console.log(`✦ eDiscovery API running on http://localhost:${PORT}`);
 });
 
+// Periodic WAL checkpoint every 5 minutes (PASSIVE never blocks)
+const walCheckpointInterval = setInterval(() => {
+    try { db.pragma('wal_checkpoint(PASSIVE)'); } catch (_) {}
+}, 5 * 60 * 1000);
+
 // Graceful shutdown
 function shutdown(signal) {
     console.log(`\n✦ Received ${signal}, shutting down gracefully...`);
+    clearInterval(walCheckpointInterval);
     server.close(() => {
         try { db.close(); } catch (_) {}
         console.log('✦ Server closed.');

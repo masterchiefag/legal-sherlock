@@ -16,6 +16,8 @@ const db = new Database(DB_PATH);
 db.pragma('journal_mode = WAL');
 db.pragma('foreign_keys = ON');
 db.pragma('busy_timeout = 5000');
+db.pragma('cache_size = -64000');    // 64MB page cache (default ~2MB)
+db.pragma('mmap_size = 268435456');  // memory-map 256MB for faster reads
 
 // Create tables
 db.exec(`
@@ -177,6 +179,14 @@ if (!columnExists('import_jobs', 'investigation_id')) {
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_investigation_id ON documents(investigation_id)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_import_jobs_investigation_id ON import_jobs(investigation_id)`);
 db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_thread_inv_date ON documents(thread_id, investigation_id, doc_type, email_date)`);
+
+// Composite indexes for dashboard stats and search queries
+db.exec(`CREATE INDEX IF NOT EXISTS idx_docs_inv_doctype ON documents(investigation_id, doc_type)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_docs_inv_custodian ON documents(investigation_id, custodian)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_docs_inv_emaildate ON documents(investigation_id, email_date)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_docs_inv_doctype_dup ON documents(investigation_id, doc_type, is_duplicate)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_docreviews_status_docid ON document_reviews(status, document_id)`);
+db.exec(`CREATE INDEX IF NOT EXISTS idx_classifications_docid_id ON classifications(document_id, id)`);
 
 // ═══════════════════════════════════════════════════
 // Migration: Add elapsed_seconds to classifications
@@ -526,13 +536,65 @@ db.exec(`
   CREATE INDEX IF NOT EXISTS idx_review_batch_documents_doc ON review_batch_documents(document_id);
 `);
 
-// Note: don't checkpoint WAL here — TRUNCATE requires exclusive lock and
-// blocks worker threads from opening DB connections, causing deadlocks.
+// ═══════════════════════════════════════════════════
+// Precomputed investigation counts
+// ═══════════════════════════════════════════════════
+for (const col of ['document_count', 'email_count', 'attachment_count', 'chat_count', 'file_count']) {
+    if (!columnExists('investigations', col)) {
+        db.exec(`ALTER TABLE investigations ADD COLUMN ${col} INTEGER DEFAULT 0`);
+        console.log(`✦ Migration: added column investigations.${col}`);
+    }
+}
+
+// Reusable helper to refresh counts for a single investigation
+const refreshInvestigationCountsStmt = db.prepare(`
+    UPDATE investigations SET
+        document_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = @id),
+        email_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = @id AND doc_type = 'email'),
+        attachment_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = @id AND doc_type = 'attachment'),
+        chat_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = @id AND doc_type = 'chat'),
+        file_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = @id AND doc_type = 'file')
+    WHERE id = @id
+`);
+
+function refreshInvestigationCounts(investigationId) {
+    refreshInvestigationCountsStmt.run({ id: investigationId });
+}
+
+// Backfill existing investigations
+const existingInvs = db.prepare('SELECT id FROM investigations').all();
+for (const inv of existingInvs) {
+    refreshInvestigationCounts(inv.id);
+}
+if (existingInvs.length > 0) {
+    console.log(`✦ Backfilled counts for ${existingInvs.length} investigations`);
+}
+
+export { refreshInvestigationCounts };
+
+// Checkpoint WAL on startup (PASSIVE never blocks writers/readers)
+try {
+    const result = db.pragma('wal_checkpoint(PASSIVE)');
+    console.log(`[db] WAL checkpoint on startup: ${JSON.stringify(result)}`);
+} catch (err) {
+    console.warn('[db] WAL checkpoint failed:', err.message);
+}
 
 // Read-only connection for queries — doesn't block on write locks during imports
 const readDb = new Database(DB_PATH, { readonly: true });
 readDb.pragma('journal_mode = WAL');
 readDb.pragma('busy_timeout = 1000');
+readDb.pragma('cache_size = -64000');
+readDb.pragma('mmap_size = 268435456');
+
+// Register file_ext() custom function for SQL-side extension extraction
+function fileExtImpl(name) {
+    if (!name) return 'unknown';
+    const lastDot = name.lastIndexOf('.');
+    return lastDot > 0 ? name.substring(lastDot).toLowerCase() : 'unknown';
+}
+db.function('file_ext', fileExtImpl);
+readDb.function('file_ext', fileExtImpl);
 
 export { readDb };
 export default db;

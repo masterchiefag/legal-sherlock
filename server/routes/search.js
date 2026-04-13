@@ -7,6 +7,7 @@ const router = express.Router();
 // Full-text search with filters
 router.get('/', (req, res) => {
     try {
+        const t0 = Date.now();
         const { q = '', page = 1, limit = 20 } = req.query;
 
         const offset = (parseInt(page) - 1) * parseInt(limit);
@@ -107,7 +108,7 @@ router.get('/', (req, res) => {
             delete r.text_content;
         }
 
-        res.json({
+        const searchResult = {
             results,
             query: q,
             pagination: {
@@ -116,7 +117,9 @@ router.get('/', (req, res) => {
                 total: countRow.total,
                 pages: Math.ceil(countRow.total / parseInt(limit)),
             },
-        });
+        };
+        console.log(`[search] type=${useFts ? 'fts' : 'filter'}, q="${q}", total=${countRow.total}, time=${Date.now() - t0}ms`);
+        res.json(searchResult);
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Internal server error' });
