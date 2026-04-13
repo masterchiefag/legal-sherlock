@@ -15,35 +15,52 @@ const router = express.Router();
 // List investigations — filtered by membership (admins see all)
 router.get('/', (req, res) => {
     try {
+        const t0 = Date.now();
         const isAdmin = req.user.role === 'admin';
         const memberFilter = isAdmin ? '' : `WHERE i.id IN (SELECT investigation_id FROM investigation_members WHERE user_id = ?)`;
         const memberParams = isAdmin ? [] : [req.user.id];
 
+        // Use precomputed counts from investigations table (document_count, email_count, etc.)
         const investigations = db.prepare(`
-            SELECT i.*,
-                (SELECT COUNT(*) FROM documents d WHERE d.investigation_id = i.id) as document_count,
-                (SELECT COUNT(*) FROM documents d WHERE d.investigation_id = i.id AND d.doc_type = 'email') as email_count,
-                (SELECT COUNT(*) FROM documents d WHERE d.investigation_id = i.id AND d.doc_type = 'attachment') as attachment_count,
-                (SELECT COUNT(DISTINCT dr.document_id) FROM document_reviews dr
-                    JOIN documents d ON d.id = dr.document_id
-                    WHERE d.investigation_id = i.id AND dr.status != 'pending'
-                    AND dr.id IN (SELECT MAX(id) FROM document_reviews GROUP BY document_id)
-                ) as reviewed_count
+            SELECT i.*
             FROM investigations i
             ${memberFilter}
             ORDER BY i.created_at DESC
         `).all(...memberParams);
+        const tMain = Date.now();
 
-        // Attach import job summaries per investigation
-        const jobStmt = db.prepare(`
-            SELECT filename as original_name, status, total_emails, total_attachments, started_at, completed_at
-            FROM import_jobs WHERE investigation_id = ?
-            ORDER BY rowid DESC
-        `);
-        for (const inv of investigations) {
-            inv.import_jobs = jobStmt.all(inv.id);
+        // Batch fetch reviewed_count per investigation (single query instead of N correlated subqueries)
+        const reviewedByInv = db.prepare(`
+            SELECT d.investigation_id, COUNT(DISTINCT dr.document_id) as reviewed_count
+            FROM document_reviews dr
+            JOIN documents d ON d.id = dr.document_id
+            WHERE dr.status != 'pending'
+            GROUP BY d.investigation_id
+        `).all();
+        const reviewedMap = new Map(reviewedByInv.map(r => [r.investigation_id, r.reviewed_count]));
+
+        // Batch fetch import jobs for all investigations (single query instead of N)
+        const invIds = investigations.map(inv => inv.id);
+        const jobMap = new Map();
+        if (invIds.length > 0) {
+            const placeholders = invIds.map(() => '?').join(',');
+            const allJobs = db.prepare(`
+                SELECT investigation_id, filename as original_name, status, total_emails, total_attachments, started_at, completed_at
+                FROM import_jobs WHERE investigation_id IN (${placeholders})
+                ORDER BY rowid DESC
+            `).all(...invIds);
+            for (const job of allJobs) {
+                if (!jobMap.has(job.investigation_id)) jobMap.set(job.investigation_id, []);
+                jobMap.get(job.investigation_id).push(job);
+            }
         }
 
+        for (const inv of investigations) {
+            inv.reviewed_count = reviewedMap.get(inv.id) || 0;
+            inv.import_jobs = jobMap.get(inv.id) || [];
+        }
+
+        console.log(`[investigations] list: main=${tMain - t0}ms, total=${Date.now() - t0}ms, count=${investigations.length}`);
         res.json(investigations);
     } catch (err) {
         console.error(err);
