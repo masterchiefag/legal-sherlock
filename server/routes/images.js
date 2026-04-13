@@ -164,6 +164,75 @@ router.post('/extract', (req, res) => {
 });
 
 // ═══════════════════════════════════════════════════
+// POST /api/images/ingest — Extract & ingest files from E01 into an investigation
+// ═══════════════════════════════════════════════════
+router.post('/ingest', (req, res) => {
+    try {
+        const { scanJobId, selectedFiles, investigationId, custodian } = req.body;
+
+        if (!scanJobId || !selectedFiles || !investigationId || !custodian) {
+            return res.status(400).json({ error: 'scanJobId, selectedFiles, investigationId, and custodian are required' });
+        }
+
+        if (!Array.isArray(selectedFiles) || selectedFiles.length === 0) {
+            return res.status(400).json({ error: 'selectedFiles must be a non-empty array' });
+        }
+
+        // Validate scan job
+        const scanJob = db.prepare("SELECT * FROM image_jobs WHERE id = ? AND type = 'scan'").get(scanJobId);
+        if (!scanJob) {
+            return res.status(404).json({ error: 'Scan job not found' });
+        }
+        if (scanJob.status !== 'completed') {
+            return res.status(400).json({ error: 'Scan job has not completed yet' });
+        }
+
+        // Validate investigation exists
+        const inv = db.prepare('SELECT id FROM investigations WHERE id = ?').get(investigationId);
+        if (!inv) {
+            return res.status(404).json({ error: 'Investigation not found' });
+        }
+
+        // Create ingest job
+        const jobId = uuidv4();
+        db.prepare(
+            "INSERT INTO image_jobs (id, type, status, image_path, phase, investigation_id, custodian) VALUES (?, 'ingest', 'pending', ?, 'queued', ?, ?)"
+        ).run(jobId, scanJob.image_path, investigationId, custodian);
+
+        // Spawn worker
+        const workerPath = path.join(__dirname, '..', 'workers', 'image-ingest-worker.js');
+        const worker = new Worker(workerPath, {
+            workerData: {
+                jobId,
+                imagePath: scanJob.image_path,
+                selectedFiles,
+                investigationId,
+                custodian,
+            },
+        });
+
+        worker.on('error', (err) => {
+            console.error(`⚠ Image Ingest Worker error for job ${jobId}:`, err);
+            db.prepare(
+                "UPDATE image_jobs SET status = 'failed', error_log = ?, completed_at = datetime('now') WHERE id = ?"
+            ).run(JSON.stringify([{ error: `Worker crashed: ${err.message}` }]), jobId);
+        });
+
+        worker.on('exit', (code) => {
+            if (code !== 0) {
+                console.error(`⚠ Image Ingest Worker exited with code ${code} for job ${jobId}`);
+            }
+        });
+
+        res.status(202).json({ jobId, message: 'Ingestion started' });
+
+    } catch (err) {
+        console.error('Image ingest error:', err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// ═══════════════════════════════════════════════════
 // POST /api/images/extract-whatsapp — Extract WhatsApp data from UFDR into ZIP
 // ═══════════════════════════════════════════════════
 router.post('/extract-whatsapp', async (req, res) => {
