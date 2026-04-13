@@ -266,13 +266,17 @@ async function main() {
     const errorLog = [];
 
     try {
+        const t0 = Date.now();
         console.log(`✦ Image Ingest: starting — ${selectedFiles.length} files for investigation ${investigationId}`);
-        update('processing', 'extracting', 0, null, null);
+        update('processing', 'extracting', 0, JSON.stringify({
+            phase_detail: 'extracting', processed: 0, total: selectedFiles.length,
+        }), null);
 
         // ═══════════════════════════════════════════════════
         // Phase 1: Extract files from image to temp dir (0–40%)
         // ═══════════════════════════════════════════════════
         const extractedFiles = [];
+        const extractStart = Date.now();
 
         for (let i = 0; i < selectedFiles.length; i++) {
             const file = selectedFiles[i];
@@ -305,13 +309,27 @@ async function main() {
             }
 
             const pct = Math.round(((i + 1) / selectedFiles.length) * 40);
-            update('processing', 'extracting', pct, null, null);
+            const elapsed = (Date.now() - extractStart) / 1000;
+            const rate = (i + 1) / elapsed;
+            const remaining = selectedFiles.length - (i + 1);
+            const etaSeconds = rate > 0 ? Math.round(remaining / rate) : null;
+
+            update('processing', 'extracting', pct, JSON.stringify({
+                phase_detail: 'extracting', processed: i + 1, total: selectedFiles.length,
+                rate: Math.round(rate * 10) / 10, eta_seconds: etaSeconds, failed,
+            }), null);
         }
+
+        const extractTime = ((Date.now() - extractStart) / 1000).toFixed(1);
+        console.log(`✦ Image Ingest: extraction complete — ${extractedFiles.length} files in ${extractTime}s (${failed} failed)`);
 
         // ═══════════════════════════════════════════════════
         // Phase 2: Ingest extracted files (40–100%)
         // ═══════════════════════════════════════════════════
-        update('processing', 'ingesting', 40, null, null);
+        const ingestStart = Date.now();
+        update('processing', 'ingesting', 40, JSON.stringify({
+            phase_detail: 'ingesting', processed: 0, total: extractedFiles.length,
+        }), null);
 
         for (let i = 0; i < extractedFiles.length; i++) {
             const file = extractedFiles[i];
@@ -335,21 +353,34 @@ async function main() {
             }
 
             const pct = 40 + Math.round(((i + 1) / extractedFiles.length) * 60);
-            update('processing', 'ingesting', pct, null, null);
+            const elapsed = (Date.now() - ingestStart) / 1000;
+            const rate = (i + 1) / elapsed;
+            const remaining = extractedFiles.length - (i + 1);
+            const etaSeconds = rate > 0 ? Math.round(remaining / rate) : null;
+
+            update('processing', 'ingesting', pct, JSON.stringify({
+                phase_detail: 'ingesting', processed: i + 1, total: extractedFiles.length,
+                rate: Math.round(rate * 10) / 10, eta_seconds: etaSeconds,
+                ingested, failed, duplicates,
+            }), null);
         }
+
+        const ingestTime = ((Date.now() - ingestStart) / 1000).toFixed(1);
+        console.log(`✦ Image Ingest: ingestion phase complete in ${ingestTime}s`);
 
         // ═══════════════════════════════════════════════════
         // Done
         // ═══════════════════════════════════════════════════
-        const resultData = JSON.stringify({ totalFiles: selectedFiles.length, ingested, failed, duplicates, files: results });
+        const totalTime = ((Date.now() - t0) / 1000).toFixed(1);
+        const resultData = JSON.stringify({ totalFiles: selectedFiles.length, ingested, failed, duplicates, elapsed_seconds: parseFloat(totalTime), files: results });
         const errorJson = errorLog.length > 0 ? JSON.stringify(errorLog) : null;
 
         if (ingested === 0 && failed > 0) {
             update('failed', 'error', 100, resultData, errorJson);
-            console.log('✦ Image Ingest: all files failed');
+            console.log(`✦ Image Ingest: all files failed (${totalTime}s)`);
         } else {
             update('completed', 'done', 100, resultData, errorJson);
-            console.log(`✦ Image Ingest: complete — ${ingested} ingested, ${failed} failed, ${duplicates} duplicates`);
+            console.log(`✦ Image Ingest: complete in ${totalTime}s — ${ingested} ingested, ${failed} failed, ${duplicates} duplicates`);
         }
 
     } catch (err) {
@@ -370,8 +401,9 @@ async function ingestFile(file, results) {
     const ext = path.extname(basename).toLowerCase();
     const mime = getMime(basename);
     const docId = uuidv4();
-    const storedName = `${docId}${ext}`;
-    const destPath = path.join(INV_UPLOADS_DIR, storedName);
+    const bareFilename = `${docId}${ext}`;
+    const storedName = `${investigationId}/${bareFilename}`;
+    const destPath = path.join(INV_UPLOADS_DIR, bareFilename);
 
     // Copy to uploads dir
     fs.copyFileSync(file.tmpPath, destPath);
@@ -432,8 +464,9 @@ async function ingestEml(file, results) {
     const parsed = await parseEml(file.tmpPath);
 
     const docId = uuidv4();
-    const storedName = `${docId}.eml`;
-    const destPath = path.join(INV_UPLOADS_DIR, storedName);
+    const bareFilename = `${docId}.eml`;
+    const storedName = `${investigationId}/${bareFilename}`;
+    const destPath = path.join(INV_UPLOADS_DIR, bareFilename);
     fs.copyFileSync(file.tmpPath, destPath);
 
     const textContent = parsed.textBody || '';
@@ -472,8 +505,9 @@ async function ingestEml(file, results) {
         try {
             const attId = uuidv4();
             const attExt = path.extname(att.filename).toLowerCase() || '.bin';
-            const attStored = `${attId}${attExt}`;
-            const attPath = path.join(INV_UPLOADS_DIR, attStored);
+            const attBareFilename = `${attId}${attExt}`;
+            const attStored = `${investigationId}/${attBareFilename}`;
+            const attPath = path.join(INV_UPLOADS_DIR, attBareFilename);
 
             fs.writeFileSync(attPath, att.content);
 
