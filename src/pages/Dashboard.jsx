@@ -198,7 +198,7 @@ function Dashboard({ activeInvestigationId, activeInvestigation, addToast }) {
                                         padding: '6px 10px', borderRadius: '6px',
                                         background: 'var(--bg-tertiary)', border: '1px solid var(--border-secondary)',
                                         cursor: 'pointer', fontSize: '13px'
-                                    }} onClick={() => navigate(`/search?type=attachment&q=${encodeURIComponent(`original_name:"${t.ext.replace('.', '')}"`)}`)}>
+                                    }} onClick={() => navigate(`/search?q=${encodeURIComponent(`original_name:"${t.ext.replace('.', '')}"`)}`)}>
                                         <span style={{ fontWeight: 500, color: 'var(--text-primary)', fontFamily: 'var(--font-mono, monospace)' }}>
                                             {t.ext}
                                         </span>
