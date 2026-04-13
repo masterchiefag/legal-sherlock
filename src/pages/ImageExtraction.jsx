@@ -277,14 +277,14 @@ function ImageExtraction({ addToast, activeInvestigationId, activeInvestigation 
         setLoadingMetadata(true);
         setMetadataJob(null);
 
-        // Send only the selected files (filtered by extension)
-        const filesToEnrich = [...selectedFiles].map(idx => foundFiles[idx]);
+        // Send only indices — server pulls files from scan job result_data
+        const indices = [...selectedFiles];
 
         try {
             const res = await apiFetch('/api/images/metadata', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ scanJobId, selectedFiles: filesToEnrich }),
+                body: JSON.stringify({ scanJobId, selectedIndices: indices }),
             });
             const data = await res.json();
 

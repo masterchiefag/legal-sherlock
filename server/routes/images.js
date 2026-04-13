@@ -91,14 +91,14 @@ router.post('/scan', async (req, res) => {
 // ═══════════════════════════════════════════════════
 router.post('/metadata', (req, res) => {
     try {
-        const { scanJobId, selectedFiles } = req.body;
+        const { scanJobId, selectedIndices } = req.body;
 
-        if (!scanJobId || !selectedFiles) {
-            return res.status(400).json({ error: 'scanJobId and selectedFiles are required' });
+        if (!scanJobId || !selectedIndices) {
+            return res.status(400).json({ error: 'scanJobId and selectedIndices are required' });
         }
 
-        if (!Array.isArray(selectedFiles) || selectedFiles.length === 0) {
-            return res.status(400).json({ error: 'selectedFiles must be a non-empty array' });
+        if (!Array.isArray(selectedIndices) || selectedIndices.length === 0) {
+            return res.status(400).json({ error: 'selectedIndices must be a non-empty array' });
         }
 
         // Validate scan job
@@ -109,6 +109,24 @@ router.post('/metadata', (req, res) => {
         if (scanJob.status !== 'completed') {
             return res.status(400).json({ error: 'Scan job has not completed yet' });
         }
+
+        // Pull files from scan job result_data and pick selected indices
+        let allScanFiles;
+        try {
+            allScanFiles = JSON.parse(scanJob.result_data);
+        } catch (_) {
+            return res.status(400).json({ error: 'Scan job has no valid result data' });
+        }
+
+        const selectedFiles = selectedIndices
+            .filter(i => i >= 0 && i < allScanFiles.length)
+            .map(i => allScanFiles[i]);
+
+        if (selectedFiles.length === 0) {
+            return res.status(400).json({ error: 'No valid files selected' });
+        }
+
+        console.log(`✦ Metadata: ${selectedFiles.length} files selected from scan job ${scanJobId} (${allScanFiles.length} total)`);
 
         // Create metadata job
         const jobId = uuidv4();
