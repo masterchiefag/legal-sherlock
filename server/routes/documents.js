@@ -11,6 +11,8 @@ import { parseEml } from '../lib/eml-parser.js';
 import { resolveThreadId, backfillThread } from '../lib/threading.js';
 import { requireRole, requireInvestigationAccess } from '../middleware/auth.js';
 import { logAudit, ACTIONS } from '../lib/audit.js';
+import { readDb } from '../db.js';
+import { parseQuery, buildSearchFilter } from '../lib/search-filter.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
@@ -787,6 +789,75 @@ router.get('/', (req, res) => {
     } catch (err) {
         console.error(err);
         res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
+// Get prev/next document IDs in the context of a search query
+router.get('/:id/neighbors', (req, res) => {
+    try {
+        const { q = '', page = 1, limit = 20 } = req.query;
+        const currentId = req.params.id;
+
+        const hasQuery = q.trim().length > 0;
+        const ftsQuery = hasQuery ? parseQuery(q) : '';
+        const isDocIdQuery = hasQuery && /^[A-Z0-9]{2,}_[A-Z0-9]{2,}(_|$)/i.test(q.trim());
+        const useFts = hasQuery && ftsQuery.trim() && ftsQuery.trim() !== 'OR' && !isDocIdQuery;
+
+        const { filterWhere, filterParams } = buildSearchFilter(req.query, req.user);
+
+        let ids;
+        const pageSize = parseInt(limit);
+        const pageNum = parseInt(page);
+        // Fetch 3 pages of IDs centered around current page to handle boundary cases
+        const scanOffset = Math.max(0, (pageNum - 2) * pageSize);
+        const scanLimit = pageSize * 5;
+
+        if (useFts) {
+            ids = readDb.prepare(`
+                SELECT d.id FROM documents_fts fts
+                CROSS JOIN documents d ON d.rowid = fts.rowid
+                WHERE documents_fts MATCH ?
+                ${filterWhere}
+                ORDER BY rank
+                LIMIT ? OFFSET ?
+            `).all(ftsQuery, ...filterParams, scanLimit, scanOffset).map(r => r.id);
+        } else {
+            ids = readDb.prepare(`
+                SELECT d.id FROM documents d
+                WHERE 1=1 ${filterWhere}
+                ORDER BY COALESCE(d.email_date, d.doc_created_at, d.doc_modified_at, d.uploaded_at) DESC
+                LIMIT ? OFFSET ?
+            `).all(...filterParams, scanLimit, scanOffset).map(r => r.id);
+        }
+
+        // Get total count
+        let total;
+        if (useFts) {
+            total = readDb.prepare(`
+                SELECT COUNT(*) as total FROM documents_fts fts
+                CROSS JOIN documents d ON d.rowid = fts.rowid
+                WHERE documents_fts MATCH ? ${filterWhere}
+            `).get(ftsQuery, ...filterParams).total;
+        } else {
+            total = readDb.prepare(`
+                SELECT COUNT(*) as total FROM documents d
+                WHERE 1=1 ${filterWhere}
+            `).get(...filterParams).total;
+        }
+
+        const idx = ids.indexOf(currentId);
+        if (idx === -1) {
+            return res.json({ prev_id: null, next_id: null, position: null, total });
+        }
+
+        const globalPosition = scanOffset + idx + 1;
+        const prevId = idx > 0 ? ids[idx - 1] : null;
+        const nextId = idx < ids.length - 1 ? ids[idx + 1] : null;
+
+        res.json({ prev_id: prevId, next_id: nextId, position: globalPosition, total });
+    } catch (err) {
+        console.error('Error getting neighbors:', err);
+        res.status(500).json({ error: 'Failed to get document neighbors' });
     }
 });
 
