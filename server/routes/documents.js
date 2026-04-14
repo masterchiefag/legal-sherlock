@@ -876,7 +876,7 @@ router.get('/:id/sheets', async (req, res) => {
         const filePath = path.join(UPLOADS_DIR, doc.filename);
         if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found on disk' });
 
-        const XLSX = await import('xlsx');
+        const { default: XLSX } = await import('xlsx');
         const workbook = XLSX.readFile(filePath);
         const MAX_ROWS = 500;
         const MAX_COLS = 100;
