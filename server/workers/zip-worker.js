@@ -441,7 +441,6 @@ async function main() {
         const memBefore = process.memoryUsage();
         console.log(`✦ ZIP Finalization: heapUsed=${(memBefore.heapUsed / 1024 / 1024).toFixed(0)}MB, rss=${(memBefore.rss / 1024 / 1024).toFixed(0)}MB`);
         db.prepare("UPDATE import_jobs SET extraction_done_at = datetime('now') WHERE id = ?").run(jobId);
-        console.log('✦ Extraction complete — extraction_done_at set');
 
         // Mark complete FIRST — FTS rebuild can OOM on large databases
 

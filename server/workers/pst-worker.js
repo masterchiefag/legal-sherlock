@@ -548,11 +548,9 @@ async function main() {
         // Mark extraction done ASAP — frontend uses this to detect stuck jobs.
         // Must be set before any heavy operations (backfill, FTS) that could OOM.
         db.prepare("UPDATE import_jobs SET extraction_done_at = datetime('now') WHERE id = ?").run(jobId);
-        console.log('✦ Extraction complete — extraction_done_at set');
 
         // Backfill text from originals into duplicates (they share content_hash)
         if (dupeCount.changes > 0) {
-            console.log(`✦ Backfilling text for duplicates...`);
             const backfilled = db.prepare(`
                 UPDATE documents SET
                     text_content = (SELECT d2.text_content FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 AND d2.text_content IS NOT NULL LIMIT 1),
