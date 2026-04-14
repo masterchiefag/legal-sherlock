@@ -599,6 +599,10 @@ if (!columnExists('import_jobs', 'job_type')) {
   db.exec(`ALTER TABLE import_jobs ADD COLUMN job_type TEXT DEFAULT 'pst'`);
   console.log(`✦ Migration: added column import_jobs.job_type`);
 }
+if (!columnExists('import_jobs', 'extraction_done_at')) {
+  db.exec(`ALTER TABLE import_jobs ADD COLUMN extraction_done_at TEXT`);
+  console.log(`✦ Migration: added column import_jobs.extraction_done_at`);
+}
 
 // ═══════════════════════════════════════════════════
 // Review Batches tables

@@ -191,6 +191,35 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
         return () => clearInterval(id);
     }, [activeJob?.started_at, activeJob?.completed_at, activeJob?.phase1_completed_at, activeJob?.status, activeJob?.elapsed_seconds]);
 
+    // Show finalize button when extraction is stuck at 100%
+    const [finalizing, setFinalizing] = useState(false);
+
+    // Job is considered stuck if extraction finished (extraction_done_at set) but
+    // job status is still 'processing' for > 5 minutes after extraction completed
+    const isStuckAt100 = activeJob?.phase === 'extracting'
+        && activeJob?.progress_percent >= 100
+        && activeJob?.status === 'processing'
+        && activeJob?.extraction_done_at
+        && (Date.now() - new Date(activeJob.extraction_done_at + 'Z').getTime()) > 5 * 60 * 1000;
+
+    const finalizeJob = async (jobId) => {
+        setFinalizing(true);
+        try {
+            const res = await apiFetch(`/api/documents/jobs/${jobId}/finalize`, { method: 'POST' });
+            const data = await res.json();
+            if (res.ok) {
+                setActiveJob(data);
+                addToast(data.status === 'completed' ? 'Import finalized successfully' : 'Import marked as failed', data.status === 'completed' ? 'success' : 'error');
+            } else {
+                addToast(data.error || 'Finalize failed', 'error');
+            }
+        } catch (err) {
+            addToast('Finalize failed: ' + err.message, 'error');
+        } finally {
+            setFinalizing(false);
+        }
+    };
+
     const resumeJob = async (jobId) => {
         try {
             const res = await apiFetch(`/api/documents/jobs/${jobId}/resume`, { method: 'POST' });
@@ -476,6 +505,21 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                                             transition: 'width 0.3s ease'
                                         }} />
                                     </div>
+                                    {isStuckAt100 && (
+                                        <div className="mt-12 flex items-center gap-12">
+                                            <button
+                                                className="btn btn-sm"
+                                                style={{ background: 'var(--warning)', color: '#000', fontSize: '12px', padding: '6px 14px', border: 'none', borderRadius: '6px', cursor: 'pointer' }}
+                                                onClick={() => finalizeJob(activeJob.id)}
+                                                disabled={finalizing}
+                                            >
+                                                {finalizing ? 'Checking...' : 'Finalize Import'}
+                                            </button>
+                                            <span className="text-xs text-muted">
+                                                Stuck at 100% for {Math.floor((Date.now() - new Date(activeJob.extraction_done_at + 'Z').getTime()) / 60000)}m — click to check if extraction finished
+                                            </span>
+                                        </div>
+                                    )}
                                 </div>
                             )}
                             <div className="flex gap-24 mt-16" style={{ borderTop: '1px solid var(--border-secondary)', paddingTop: '16px' }}>

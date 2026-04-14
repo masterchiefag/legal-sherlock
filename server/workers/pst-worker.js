@@ -558,6 +558,9 @@ async function main() {
             console.log(`✦ Phase 2: backfilled text for ${backfilled.changes} duplicates`);
         }
 
+        // Mark extraction done timestamp — used by frontend to detect stuck jobs
+        db.prepare("UPDATE import_jobs SET extraction_done_at = datetime('now') WHERE id = ?").run(jobId);
+
         console.log(`✦ PST Import Phase 2 complete: extracted text from ${extracted} attachments`);
         if (ocrCount > 0) {
             console.log(`✦ OCR Summary: ${ocrCount} attempted, ${ocrSuccess} succeeded, ${ocrFailed} failed, ${(ocrTotalTimeMs / 1000).toFixed(1)}s total OCR time`);
@@ -593,11 +596,15 @@ async function main() {
         }
 
         // ═══════════════════════════════════════════
-        // Recreate FTS triggers + rebuild index
+        // Finalization — mark job completed FIRST, then FTS rebuild.
+        // FTS rebuild can OOM on large imports (100K+ docs, ~1GB text).
+        // If it kills the worker, the job is already done and FTS
+        // recovery happens via the finalize button or next server startup.
         // ═══════════════════════════════════════════
-        enableFtsTriggers(db);
-        rebuildFtsIndex(db);
+        const memBefore = process.memoryUsage();
+        console.log(`✦ Finalization: heapUsed=${(memBefore.heapUsed / 1024 / 1024).toFixed(0)}MB, rss=${(memBefore.rss / 1024 / 1024).toFixed(0)}MB`);
 
+        console.log('✦ Finalization [1/5]: marking job completed...');
         db.prepare(`
             UPDATE import_jobs
             SET status = 'completed',
@@ -613,13 +620,25 @@ async function main() {
                 completed_at = datetime('now')
             WHERE id = ?
         `).run(totalEmails, totalAttachments, JSON.stringify(errorLog), ocrCount, ocrSuccess, ocrFailed, ocrTotalTimeMs, jobId);
-        console.log('✦ Import job marked as completed');
+        console.log('✦ Finalization [1/5]: done — job marked as completed');
 
-        // Refresh precomputed investigation counts
+        console.log('✦ Finalization [2/5]: refreshing investigation counts...');
         refreshInvestigationCounts(db, investigation_id);
+        console.log('✦ Finalization [2/5]: done');
 
-        // WAL checkpoint after FTS rebuild
+        console.log('✦ Finalization [3/5]: re-enabling FTS triggers...');
+        enableFtsTriggers(db);
+        console.log('✦ Finalization [3/5]: done');
+
+        console.log('✦ Finalization [4/5]: rebuilding FTS index...');
+        const ftsStart = Date.now();
+        rebuildFtsIndex(db);
+        const memAfter = process.memoryUsage();
+        console.log(`✦ Finalization [4/5]: done in ${((Date.now() - ftsStart) / 1000).toFixed(1)}s — heapUsed=${(memAfter.heapUsed / 1024 / 1024).toFixed(0)}MB, rss=${(memAfter.rss / 1024 / 1024).toFixed(0)}MB`);
+
+        console.log('✦ Finalization [5/5]: WAL checkpoint...');
         walCheckpoint(db);
+        console.log('✦ Finalization [5/5]: done — all finalization complete');
 
         // Auto-cleanup: delete source PST/OST file after successful import
         try {
@@ -630,12 +649,10 @@ async function main() {
         }
 
     } catch (err) {
-        console.error("Worker fatal error:", err);
-        // Best-effort recovery: re-enable FTS triggers, rebuild index, recreate indexes
-        enableFtsTriggers(db);
-        rebuildFtsIndex(db);
-        recreateBulkIndexes(db);
+        const mem = process.memoryUsage();
+        console.error(`Worker fatal error (heapUsed=${(mem.heapUsed / 1024 / 1024).toFixed(0)}MB, rss=${(mem.rss / 1024 / 1024).toFixed(0)}MB):`, err);
 
+        // Mark failed FIRST, then best-effort recovery
         db.prepare(`
             UPDATE import_jobs
             SET status = 'failed',
@@ -643,6 +660,11 @@ async function main() {
                 completed_at = datetime('now')
             WHERE id = ?
         `).run(JSON.stringify([{ error: err.message, fatal: true }]), jobId);
+
+        // Best-effort recovery: re-enable FTS triggers, rebuild index, recreate indexes
+        enableFtsTriggers(db);
+        rebuildFtsIndex(db);
+        recreateBulkIndexes(db);
     } finally {
         try {
             fs.rmSync(tmpDir, { recursive: true, force: true });

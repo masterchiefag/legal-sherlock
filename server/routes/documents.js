@@ -60,15 +60,76 @@ const multerUpload = upload.array('files', 50);
 const router = express.Router();
 
 // ═══════════════════════════════════════════════════
-// Recover stuck import jobs from previous server crash
+// Job finalization — handles both crash recovery and worker exit
+// ═══════════════════════════════════════════════════
+
+/**
+ * Check if a stuck/crashed import job actually completed its work and finalize
+ * it appropriately — mark as 'completed' if all docs are ready, 'failed' otherwise.
+ * Also restores FTS triggers and rebuilds the index.
+ */
+function finalizeStuckJob(jobId, reason) {
+    const job = db.prepare("SELECT * FROM import_jobs WHERE id = ?").get(jobId);
+    if (!job || job.status !== 'processing') return;
+
+    // Check if the extraction actually finished (no docs left in 'processing' status)
+    const pendingDocs = db.prepare(
+        "SELECT COUNT(*) as cnt FROM documents WHERE investigation_id = ? AND status = 'processing'"
+    ).get(job.investigation_id);
+
+    if (pendingDocs.cnt === 0) {
+        // All docs extracted — worker died during finalization (FTS rebuild, status update)
+        db.prepare(`
+            UPDATE import_jobs SET status = 'completed', phase = 'completed',
+            progress_percent = 100, completed_at = datetime('now') WHERE id = ?
+        `).run(jobId);
+        console.log(`✦ Finalized stuck job ${job.filename} (${jobId}) as completed — all docs ready. Reason: ${reason}`);
+
+        // Refresh investigation counts
+        try { refreshInvestigationCounts(job.investigation_id); } catch (_) {}
+    } else {
+        // Extraction was incomplete
+        db.prepare(`
+            UPDATE import_jobs SET status = 'failed',
+            error_log = ?, completed_at = datetime('now') WHERE id = ?
+        `).run(JSON.stringify([{ error: `${reason}. ${pendingDocs.cnt} documents not extracted.`, fatal: true }]), jobId);
+        console.log(`✦ Finalized stuck job ${job.filename} (${jobId}) as failed — ${pendingDocs.cnt} docs still pending. Reason: ${reason}`);
+    }
+
+    // Restore FTS triggers and rebuild index
+    try {
+        db.exec(`
+            CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
+                INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
+                VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
+            END;
+            CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
+                INSERT INTO documents_fts(documents_fts, rowid, original_name, text_content, email_subject, email_from, email_to)
+                VALUES ('delete', old.rowid, old.original_name, COALESCE(old.text_content,''), COALESCE(old.email_subject,''), COALESCE(old.email_from,''), COALESCE(old.email_to,''));
+            END;
+            CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
+                INSERT INTO documents_fts(documents_fts, rowid, original_name, text_content, email_subject, email_from, email_to)
+                VALUES ('delete', old.rowid, old.original_name, COALESCE(old.text_content,''), COALESCE(old.email_subject,''), COALESCE(old.email_from,''), COALESCE(old.email_to,''));
+                INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
+                VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
+            END;
+        `);
+        db.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')");
+        console.log(`✦ FTS triggers restored and index rebuilt for job ${jobId}`);
+    } catch (ftsErr) {
+        console.error(`✦ FTS recovery failed for job ${jobId}:`, ftsErr.message);
+    }
+}
+
+// ═══════════════════════════════════════════════════
+// Log stuck import jobs on startup (finalization is manual via UI button)
 // ═══════════════════════════════════════════════════
 const stuckJobs = db.prepare("SELECT id, filename FROM import_jobs WHERE status IN ('processing', 'pending')").all();
-for (const job of stuckJobs) {
-    db.prepare(`
-        UPDATE import_jobs SET status = 'failed',
-        error_log = ?, completed_at = datetime('now') WHERE id = ?
-    `).run(JSON.stringify([{ error: 'Server restarted during import', fatal: true }]), job.id);
-    console.log(`✦ Recovered stuck import job: ${job.filename} (${job.id})`);
+if (stuckJobs.length > 0) {
+    console.log(`✦ Found ${stuckJobs.length} stuck import job(s) — use "Finalize Import" button in UI to recover:`);
+    for (const job of stuckJobs) {
+        console.log(`  - ${job.filename} (${job.id})`);
+    }
 }
 
 // ═══════════════════════════════════════════════════
@@ -234,15 +295,13 @@ function spawnPstWorker(jobId, filename, filepath, originalname, investigation_i
 
     worker.on('error', (err) => {
         console.error(`⚠ PST Worker error for job ${jobId}:`, err);
-        db.prepare(`UPDATE import_jobs SET status = 'failed', error_log = ?, completed_at = datetime('now') WHERE id = ?`).run(
-            JSON.stringify([{ error: `Worker crashed: ${err.message}` }]), jobId
-        );
     });
 
     worker.on('exit', (code) => {
         if (code !== 0) {
             console.error(`⚠ PST Worker for job ${jobId} stopped with exit code ${code}`);
         }
+        finalizeStuckJob(jobId, `Worker exited with code ${code}`);
     });
 
     return worker;
@@ -259,15 +318,13 @@ function spawnChatWorker(jobId, filename, filepath, originalname, investigation_
 
     worker.on('error', (err) => {
         console.error(`⚠ Chat Worker error for job ${jobId}:`, err);
-        db.prepare(`UPDATE import_jobs SET status = 'failed', error_log = ?, completed_at = datetime('now') WHERE id = ?`).run(
-            JSON.stringify([{ error: `Worker crashed: ${err.message}` }]), jobId
-        );
     });
 
     worker.on('exit', (code) => {
         if (code !== 0) {
             console.error(`⚠ Chat Worker for job ${jobId} stopped with exit code ${code}`);
         }
+        finalizeStuckJob(jobId, `Worker exited with code ${code}`);
     });
 
     return worker;
@@ -284,15 +341,13 @@ function spawnZipWorker(jobId, filename, filepath, originalname, investigation_i
 
     worker.on('error', (err) => {
         console.error(`⚠ ZIP Worker error for job ${jobId}:`, err);
-        db.prepare(`UPDATE import_jobs SET status = 'failed', error_log = ?, completed_at = datetime('now') WHERE id = ?`).run(
-            JSON.stringify([{ error: `Worker crashed: ${err.message}` }]), jobId
-        );
     });
 
     worker.on('exit', (code) => {
         if (code !== 0) {
             console.error(`⚠ ZIP Worker for job ${jobId} stopped with exit code ${code}`);
         }
+        finalizeStuckJob(jobId, `Worker exited with code ${code}`);
     });
 
     return worker;
@@ -534,6 +589,22 @@ router.get('/jobs/:id', (req, res) => {
     }
 });
 
+// Finalize a stuck import job — check if extraction actually completed and update status
+router.post('/jobs/:id/finalize', requireRole('admin', 'reviewer'), (req, res) => {
+    try {
+        const job = db.prepare('SELECT * FROM import_jobs WHERE id = ?').get(req.params.id);
+        if (!job) return res.status(404).json({ error: 'Job not found' });
+        if (job.status !== 'processing') return res.status(400).json({ error: 'Job is not stuck — current status: ' + job.status });
+
+        finalizeStuckJob(job.id, 'Manual finalization by user');
+        const updated = db.prepare('SELECT * FROM import_jobs WHERE id = ?').get(req.params.id);
+        res.json(updated);
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // Resume a failed PST import job — admin or reviewer
 router.post('/jobs/:id/resume', requireRole('admin', 'reviewer'), (req, res) => {
     try {
@@ -631,13 +702,11 @@ router.post('/jobs/:id/resume', requireRole('admin', 'reviewer'), (req, res) => 
 
         worker.on('error', (err) => {
             console.error(`⚠ PST Worker resume error for job ${job.id}:`, err);
-            db.prepare(`UPDATE import_jobs SET status = 'failed', error_log = ?, completed_at = datetime('now') WHERE id = ?`).run(
-                JSON.stringify([{ error: `Worker crashed: ${err.message}` }]), job.id
-            );
         });
 
         worker.on('exit', (code) => {
             if (code !== 0) console.error(`⚠ PST Worker resume for job ${job.id} stopped with exit code ${code}`);
+            finalizeStuckJob(job.id, `Resume worker exited with code ${code}`);
         });
 
         res.json({ message: 'Import resumed', jobId: job.id });
