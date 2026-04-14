@@ -1,7 +1,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { formatSize } from '../utils/format';
-import { apiFetch, getAuthHeader } from '../utils/api';
+import { apiFetch, apiPost, getAuthHeader } from '../utils/api';
 
 function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
     const [files, setFiles] = useState([]);
@@ -12,6 +12,8 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
     const [failedJobs, setFailedJobs] = useState([]);
     const [dragActive, setDragActive] = useState(false);
     const [custodian, setCustodian] = useState('');
+    const [localPath, setLocalPath] = useState('');
+    const [localImporting, setLocalImporting] = useState(false);
     const inputRef = useRef(null);
     const navigate = useNavigate();
 
@@ -255,6 +257,31 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
         return 'PST Import';
     };
 
+    const importLocalPath = async () => {
+        if (!localPath.trim()) return;
+        setLocalImporting(true);
+        try {
+            const res = await apiPost('/api/documents/import-local', {
+                path: localPath.trim(),
+                investigation_id: activeInvestigationId,
+                custodian: custodian.trim() || undefined,
+            });
+            const data = await res.json();
+            if (res.status === 202 && data.jobId) {
+                setLocalPath('');
+                addToast(data.message, 'info');
+                setActiveJob({ id: data.jobId, status: 'pending', filename: data.filename || 'File' });
+                pollJobStatus(data.jobId);
+            } else {
+                addToast(data.error || 'Import failed', 'error');
+            }
+        } catch (err) {
+            addToast('Import failed: ' + err.message, 'error');
+        } finally {
+            setLocalImporting(false);
+        }
+    };
+
     if (!activeInvestigationId) {
         return (
             <div className="empty-state">
@@ -345,6 +372,48 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                 </p>
                 <p className="dropzone-sub" style={{ fontSize: '11px', marginTop: '4px', color: 'var(--text-muted)' }}>
                     💡 For large PST files, keep your laptop awake during import (run <code>caffeinate -i</code> in Terminal)
+                </p>
+            </div>
+
+            {/* Local Path Import */}
+            <div className="mt-16 p-16" style={{ background: 'var(--bg-secondary)', borderRadius: '12px', border: '1px solid var(--border-secondary)' }}>
+                <div className="flex items-center gap-8 mb-12">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                    </svg>
+                    <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                        Import PST/OST from local path
+                    </span>
+                    <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 400 }}>
+                        — skips upload, reads directly from disk
+                    </span>
+                </div>
+                <div className="flex gap-8 items-end">
+                    <div style={{ flex: 1 }}>
+                        <input
+                            type="text"
+                            className="input"
+                            placeholder="/Volumes/External/mailbox.pst"
+                            value={localPath}
+                            onChange={(e) => setLocalPath(e.target.value)}
+                            onKeyDown={(e) => e.key === 'Enter' && importLocalPath()}
+                            style={{ fontSize: '14px', fontFamily: 'var(--font-mono, monospace)' }}
+                        />
+                    </div>
+                    <button
+                        className="btn btn-primary"
+                        onClick={importLocalPath}
+                        disabled={localImporting || !localPath.trim()}
+                    >
+                        {localImporting ? (
+                            <><div className="spinner"></div> Starting...</>
+                        ) : (
+                            'Import'
+                        )}
+                    </button>
+                </div>
+                <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>
+                    For large PST files on external drives. The source file will not be modified or deleted.
                 </p>
             </div>
 
