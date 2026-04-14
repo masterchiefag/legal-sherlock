@@ -666,6 +666,33 @@ function DocumentReview({ addToast, user }) {
                     </div>
                 </div>
 
+                {/* Parent email (if this is an attachment) */}
+                {doc.parent && (
+                    <div className="doc-sidebar-section">
+                        <h3>Parent Email</h3>
+                        <Link
+                            to={`/documents/${doc.parent.id}`}
+                            style={{
+                                display: 'block',
+                                padding: '10px 12px',
+                                borderRadius: 'var(--radius-sm)',
+                                background: 'var(--bg-tertiary)',
+                                border: '1px solid var(--border-secondary)',
+                                textDecoration: 'none',
+                            }}
+                        >
+                            <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-accent)', marginBottom: '2px' }}>
+                                ✉ {doc.parent.email_subject || doc.parent.original_name}
+                            </div>
+                            {doc.parent.email_from && (
+                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                    From: {doc.parent.email_from.split('<')[0].trim()}
+                                </div>
+                            )}
+                        </Link>
+                    </div>
+                )}
+
                 {/* Document / Email Info */}
                 <div className="doc-sidebar-section">
                     <details>
@@ -1189,33 +1216,6 @@ function DocumentReview({ addToast, user }) {
                         </div>
                     );
                 })()}
-
-                {/* Parent email (if this is an attachment) */}
-                {doc.parent && (
-                    <div className="doc-sidebar-section">
-                        <h3>Parent Email</h3>
-                        <Link
-                            to={`/documents/${doc.parent.id}`}
-                            style={{
-                                display: 'block',
-                                padding: '10px 12px',
-                                borderRadius: 'var(--radius-sm)',
-                                background: 'var(--bg-tertiary)',
-                                border: '1px solid var(--border-secondary)',
-                                textDecoration: 'none',
-                            }}
-                        >
-                            <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-accent)', marginBottom: '2px' }}>
-                                ✉ {doc.parent.email_subject || doc.parent.original_name}
-                            </div>
-                            {doc.parent.email_from && (
-                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                    From: {doc.parent.email_from.split('<')[0].trim()}
-                                </div>
-                            )}
-                        </Link>
-                    </div>
-                )}
 
                 {/* Sibling Attachments (when viewing an attachment) */}
                 {doc.siblings && doc.siblings.length > 0 && (
