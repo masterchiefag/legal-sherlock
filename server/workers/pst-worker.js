@@ -363,7 +363,7 @@ async function main() {
                     console.log(`✦ PST Import: ${totalEmails} emails, ${totalAttachments} attachments processed`);
                     logPerfSummary();
                 } else if (totalEmails % 50 === 0) {
-                    // Update progress more frequently so UI stays in sync
+                    // Lightweight progress update for UI polling (no flush)
                     updateProgress.run(totalEmails, totalAttachments, 'importing', jobId);
                 }
             } catch (err) {
