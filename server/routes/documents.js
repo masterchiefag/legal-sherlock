@@ -611,7 +611,7 @@ router.post('/import-local', requireRole('admin', 'reviewer'), (req, res) => {
 // Get recent failed jobs for the active investigation (must be before /jobs/:id)
 router.get('/jobs/failed/:investigation_id', (req, res) => {
     try {
-        const jobs = db.prepare(
+        const jobs = readDb.prepare(
             "SELECT * FROM import_jobs WHERE investigation_id = ? AND status = 'failed' ORDER BY started_at DESC LIMIT 5"
         ).all(req.params.investigation_id);
         res.json({ jobs });
@@ -624,7 +624,7 @@ router.get('/jobs/failed/:investigation_id', (req, res) => {
 // Get recent import jobs for the active investigation (all statuses)
 router.get('/jobs/recent/:investigation_id', (req, res) => {
     try {
-        const jobs = db.prepare(
+        const jobs = readDb.prepare(
             "SELECT * FROM import_jobs WHERE investigation_id = ? ORDER BY started_at DESC LIMIT 5"
         ).all(req.params.investigation_id);
         res.json({ jobs });
@@ -637,7 +637,7 @@ router.get('/jobs/recent/:investigation_id', (req, res) => {
 // GET /api/documents/jobs/:id - Poll job status
 router.get('/jobs/:id', (req, res) => {
     try {
-        const job = db.prepare('SELECT * FROM import_jobs WHERE id = ?').get(req.params.id);
+        const job = readDb.prepare('SELECT * FROM import_jobs WHERE id = ?').get(req.params.id);
         if (!job) {
             return res.status(404).json({ error: "Job not found" });
         }
