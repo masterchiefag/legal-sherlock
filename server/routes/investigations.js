@@ -220,11 +220,18 @@ router.delete('/:id', requireRole('admin'), (req, res) => {
         const inv = db.prepare(`SELECT * FROM investigations WHERE id = ?`).get(invId);
         if (!inv) return res.status(404).json({ error: 'Investigation not found' });
 
+        // Drop FTS triggers before deleting — if the FTS index is corrupt,
+        // the delete trigger would abort the whole transaction.
+        db.exec('DROP TRIGGER IF EXISTS documents_ai');
+        db.exec('DROP TRIGGER IF EXISTS documents_ad');
+        db.exec('DROP TRIGGER IF EXISTS documents_au');
+
         // Delete in correct order for foreign key constraints
         const tx = db.transaction(() => {
             db.prepare(`DELETE FROM document_tags WHERE document_id IN (SELECT id FROM documents WHERE investigation_id = ?)`).run(invId);
             db.prepare(`DELETE FROM document_reviews WHERE document_id IN (SELECT id FROM documents WHERE investigation_id = ?)`).run(invId);
             db.prepare(`DELETE FROM classifications WHERE document_id IN (SELECT id FROM documents WHERE investigation_id = ?)`).run(invId);
+            db.prepare(`DELETE FROM summaries WHERE document_id IN (SELECT id FROM documents WHERE investigation_id = ?)`).run(invId);
             const delResult = db.prepare('DELETE FROM documents WHERE investigation_id = ?').run(invId);
             db.prepare('DELETE FROM import_jobs WHERE investigation_id = ?').run(invId);
             db.prepare('DELETE FROM investigation_members WHERE investigation_id = ?').run(invId);
@@ -233,6 +240,25 @@ router.delete('/:id', requireRole('admin'), (req, res) => {
         });
 
         const deletedDocs = tx();
+
+        // Rebuild FTS index from scratch (handles corrupt index) then restore triggers
+        try { db.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')"); } catch (_) {}
+        db.exec(`
+            CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
+                INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
+                VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
+            END;
+            CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
+                INSERT INTO documents_fts(documents_fts, rowid, original_name, text_content, email_subject, email_from, email_to)
+                VALUES ('delete', old.rowid, old.original_name, COALESCE(old.text_content,''), COALESCE(old.email_subject,''), COALESCE(old.email_from,''), COALESCE(old.email_to,''));
+            END;
+            CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
+                INSERT INTO documents_fts(documents_fts, rowid, original_name, text_content, email_subject, email_from, email_to)
+                VALUES ('delete', old.rowid, old.original_name, COALESCE(old.text_content,''), COALESCE(old.email_subject,''), COALESCE(old.email_from,''), COALESCE(old.email_to,''));
+                INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
+                VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
+            END;
+        `);
 
         // Delete investigation upload directory
         let filesDeleted = 0;
@@ -244,9 +270,6 @@ router.delete('/:id', requireRole('admin'), (req, res) => {
                 filesDeleted = deletedDocs;
             }
         } catch (_) { /* best effort */ }
-
-        // Rebuild FTS index
-        try { db.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')"); } catch (_) {}
 
         logAudit(db, {
             userId: req.user.id,

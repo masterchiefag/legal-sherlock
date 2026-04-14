@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "concurrently \"npm run dev:server\" \"npm run dev:client\"",
     "dev:client": "vite",
-    "dev:server": "node --env-file=.env server/index.js",
+    "dev:server": "node --env-file=.env server/index.js 2>&1 | tee logs/server.log",
     "build": "vite build",
     "preview": "vite preview",
     "test": "vitest run",

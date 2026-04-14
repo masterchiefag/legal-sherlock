@@ -437,11 +437,10 @@ async function main() {
         // Final flush
         flushPendingOps();
 
-        // Rebuild FTS
-        enableFtsTriggers(db);
-        rebuildFtsIndex(db);
+        // Mark complete FIRST — FTS rebuild can OOM on large databases
+        const memBefore = process.memoryUsage();
+        console.log(`✦ ZIP Finalization: heapUsed=${(memBefore.heapUsed / 1024 / 1024).toFixed(0)}MB, rss=${(memBefore.rss / 1024 / 1024).toFixed(0)}MB`);
 
-        // Mark complete
         db.prepare(`
             UPDATE import_jobs
             SET status = 'completed',
@@ -459,6 +458,12 @@ async function main() {
         // Refresh precomputed investigation counts
         refreshInvestigationCounts(db, investigation_id);
 
+        // Rebuild FTS (heavy — scans all docs across all investigations)
+        enableFtsTriggers(db);
+        rebuildFtsIndex(db);
+        const memAfter = process.memoryUsage();
+        console.log(`✦ ZIP FTS rebuild done — heapUsed=${(memAfter.heapUsed / 1024 / 1024).toFixed(0)}MB, rss=${(memAfter.rss / 1024 / 1024).toFixed(0)}MB`);
+
         // Cleanup source ZIP
         try {
             fs.unlinkSync(filepath);
@@ -468,16 +473,18 @@ async function main() {
         }
 
     } catch (err) {
-        console.error("ZIP Worker fatal error:", err);
+        const mem = process.memoryUsage();
+        console.error(`ZIP Worker fatal error (heapUsed=${(mem.heapUsed / 1024 / 1024).toFixed(0)}MB, rss=${(mem.rss / 1024 / 1024).toFixed(0)}MB):`, err);
 
-        // Restore FTS triggers (best effort)
-        enableFtsTriggers(db);
-        rebuildFtsIndex(db);
-
+        // Mark failed FIRST, then best-effort FTS recovery
         db.prepare(`
             UPDATE import_jobs SET status = 'failed',
             error_log = ?, completed_at = datetime('now') WHERE id = ?
         `).run(JSON.stringify([...errorLog, { error: err.message, fatal: true }]), jobId);
+
+        // Best-effort FTS recovery
+        enableFtsTriggers(db);
+        rebuildFtsIndex(db);
     }
 }
 
