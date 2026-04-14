@@ -779,6 +779,13 @@ body {
   border-bottom-color: var(--primary);
 }
 
+/* ── DOCX Preview ──────────────────── */
+.docx-preview p { margin: 0 0 12px; }
+.docx-preview h1, .docx-preview h2, .docx-preview h3 { color: var(--text-primary); margin: 16px 0 8px; }
+.docx-preview table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+.docx-preview td, .docx-preview th { border: 1px solid var(--border-secondary); padding: 6px 10px; font-size: 13px; }
+.docx-preview img { max-width: 100%; border-radius: 4px; }
+
 .doc-text-content {
   font-size: 14px;
   line-height: 1.8;
