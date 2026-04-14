@@ -3,6 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import fs from 'fs';
 import crypto from 'crypto';
+import os from 'os';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = path.join(__dirname, '..', 'data', 'ediscovery.db');
@@ -732,6 +733,50 @@ if (reviewTableSql && !reviewTableSql.sql.includes('technical_issue')) {
         console.log('✦ Migration: seeded "Privileged" default tag');
     }
 }
+
+// ═══════════════════════════════════════════════════
+// System settings (admin-configurable, DB-backed)
+// ═══════════════════════════════════════════════════
+db.exec(`
+  CREATE TABLE IF NOT EXISTS system_settings (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    type TEXT NOT NULL DEFAULT 'number',
+    category TEXT NOT NULL,
+    label TEXT NOT NULL,
+    description TEXT,
+    unit TEXT,
+    default_value TEXT NOT NULL,
+    updated_at TEXT,
+    updated_by TEXT REFERENCES users(id)
+  )
+`);
+
+// Seed defaults (INSERT OR IGNORE so existing values are preserved)
+const seedSetting = db.prepare(`
+  INSERT OR IGNORE INTO system_settings (key, value, type, category, label, description, unit, default_value)
+  VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+`);
+const seedSettings = db.transaction((settings) => {
+  for (const s of settings) seedSetting.run(s.key, s.default_value, s.type, s.category, s.label, s.description, s.unit, s.default_value);
+});
+seedSettings([
+  { key: 'ocr_dpi', type: 'number', category: 'ocr', label: 'OCR DPI', description: 'PDF-to-image resolution for OCR pipeline. Lower = faster, higher = more accurate.', unit: 'dpi', default_value: '100' },
+  { key: 'ocr_pdftoppm_timeout', type: 'number', category: 'ocr', label: 'pdftoppm Timeout', description: 'Max time for PDF-to-image conversion per document.', unit: 'seconds', default_value: '60' },
+  { key: 'ocr_tesseract_timeout', type: 'number', category: 'ocr', label: 'Tesseract Timeout', description: 'Max time for OCR per page.', unit: 'seconds', default_value: '60' },
+  { key: 'ocr_min_text_length', type: 'number', category: 'ocr', label: 'OCR Text Threshold', description: 'If pdf-parse extracts fewer chars than this, trigger OCR fallback.', unit: 'chars', default_value: '100' },
+  { key: 'extract_timeout', type: 'number', category: 'extraction', label: 'Extraction Timeout', description: 'Max time for text extraction subprocess (non-OCR).', unit: 'seconds', default_value: '15' },
+  { key: 'extract_ocr_timeout', type: 'number', category: 'extraction', label: 'OCR Extraction Timeout', description: 'Max time for OCR extraction subprocess (pdftoppm + tesseract).', unit: 'seconds', default_value: '120' },
+  { key: 'extract_max_file_size_mb', type: 'number', category: 'extraction', label: 'Max File Size', description: 'Files larger than this are skipped during extraction.', unit: 'MB', default_value: '50' },
+  { key: 'import_parse_concurrency', type: 'number', category: 'import', label: 'Parse Concurrency', description: 'Parallel email parsing threads during PST import Phase 1.', unit: 'threads', default_value: String(Math.max(2, Math.min(os.cpus().length - 1, 6))) },
+  { key: 'import_phase2_concurrency', type: 'number', category: 'import', label: 'Phase 2 Concurrency', description: 'Parallel text extraction threads during PST import Phase 2.', unit: 'threads', default_value: '4' },
+  { key: 'import_db_batch_size', type: 'number', category: 'import', label: 'DB Batch Size', description: 'Documents per database transaction flush during import.', unit: 'docs', default_value: '500' },
+  { key: 'import_max_attachment_size_mb', type: 'number', category: 'import', label: 'Max Attachment Size', description: 'Attachments larger than this are skipped during import.', unit: 'MB', default_value: '100' },
+  { key: 'llm_max_body_chars', type: 'number', category: 'llm', label: 'Max Body Chars', description: 'Max characters per document body sent to LLM.', unit: 'chars', default_value: '100000' },
+  { key: 'llm_max_thread_chars', type: 'number', category: 'llm', label: 'Max Thread Chars', description: 'Max characters for email thread context sent to LLM.', unit: 'chars', default_value: '1500' },
+  { key: 'llm_max_attachment_chars', type: 'number', category: 'llm', label: 'Max Attachment Chars', description: 'Max characters per attachment context sent to LLM.', unit: 'chars', default_value: '1500' },
+]);
+console.log('✦ System settings table ready');
 
 // Checkpoint WAL on startup (PASSIVE never blocks writers/readers)
 try {

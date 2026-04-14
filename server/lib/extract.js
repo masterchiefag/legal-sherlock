@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { getSetting } from './settings.js';
 
 /**
  * Extract text content from uploaded files.
@@ -11,13 +12,14 @@ export async function extractText(filePath, mimeType) {
     try {
         const stat = fs.statSync(filePath);
         // Protect against synchronous parsing lockups (OOM/CPU freeze)
-        if (stat.size > 50 * 1024 * 1024 && ['.xlsx', '.xls', '.docx', '.pdf'].includes(ext)) {
+        const maxFileSize = getSetting('extract_max_file_size_mb') * 1024 * 1024;
+        if (stat.size > maxFileSize && ['.xlsx', '.xls', '.docx', '.pdf'].includes(ext)) {
             console.warn(`[extractText] Skipping ${filePath} - file too large (${Math.round(stat.size/1e6)}MB)`);
             return `[File too large to safely extract text: ${Math.round(stat.size/1e6)}MB]`;
         }
 
         if (ext === '.txt' || ext === '.csv' || ext === '.md') {
-            if (stat.size > 50 * 1024 * 1024) return ''; // limit arbitrary text too
+            if (stat.size > maxFileSize) return ''; // limit arbitrary text too
             return fs.readFileSync(filePath, 'utf-8');
         }
 
@@ -29,7 +31,7 @@ export async function extractText(filePath, mimeType) {
 
             // If pdf-parse returned very little text, the PDF is likely scanned/image-based.
             // Fall back to OCR: convert pages to images with pdftoppm, then run tesseract.
-            if (text.length < 100) {
+            if (text.length < getSetting('ocr_min_text_length')) {
                 console.log(`[extractText] PDF has only ${text.length} chars of text — attempting OCR fallback for ${filePath}`);
                 const ocrStart = Date.now();
                 const ocrText = await ocrPdf(filePath);
@@ -151,7 +153,7 @@ export async function extractMetadata(filePath, mimeType) {
 
     try {
         // Protect against parsing locks during metadata resolution
-        if (stat && stat.size > 50 * 1024 * 1024 && ['.xlsx', '.xls', '.docx', '.pdf'].includes(ext)) {
+        if (stat && stat.size > getSetting('extract_max_file_size_mb') * 1024 * 1024 && ['.xlsx', '.xls', '.docx', '.pdf'].includes(ext)) {
             console.warn(`[extractMetadata] Skipping ${filePath} - file too large (${Math.round(stat.size/1e6)}MB)`);
             return meta;
         }
@@ -423,7 +425,7 @@ export async function extractTextWithOcrInfo(filePath, mimeType) {
 
     try {
         const stat = fs.statSync(filePath);
-        if (stat.size > 50 * 1024 * 1024) {
+        if (stat.size > getSetting('extract_max_file_size_mb') * 1024 * 1024) {
             return { text: `[File too large to safely extract text: ${Math.round(stat.size/1e6)}MB]`, ocr: ocrInfo };
         }
 
@@ -432,7 +434,7 @@ export async function extractTextWithOcrInfo(filePath, mimeType) {
         const data = await pdfParse(buffer);
         const text = (data.text || '').trim();
 
-        if (text.length < 100) {
+        if (text.length < getSetting('ocr_min_text_length')) {
             ocrInfo.attempted = true;
             const ocrStart = Date.now();
             const ocrText = await ocrPdf(filePath);
@@ -486,15 +488,17 @@ async function ocrPdf(filePath) {
     const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sherlock-ocr-'));
 
     try {
-        // Convert PDF pages to PNG images at 100 DPI.
+        // Convert PDF pages to PNG images. DPI configurable via admin settings.
         // Benchmarked 100 vs 200 DPI: conversion is ~2x faster, OCR text output
         // is nearly identical (99% char match). pdftoppm is the bottleneck (70-90%
         // of total OCR time), so halving DPI roughly halves total pipeline time.
+        const ocrDpi = String(getSetting('ocr_dpi'));
+        const pdftoppmTimeout = getSetting('ocr_pdftoppm_timeout') * 1000;
         const prefix = path.join(tmpDir, 'page');
-        console.log(`[OCR] Converting PDF pages to images...`);
+        console.log(`[OCR] Converting PDF pages to images at ${ocrDpi} DPI...`);
         await execFileAsync('pdftoppm', [
-            '-png', '-r', '100', filePath, prefix
-        ], { timeout: 60000 }); // 1 min timeout
+            '-png', '-r', ocrDpi, filePath, prefix
+        ], { timeout: pdftoppmTimeout });
 
         // List generated page images, sorted
         const pageFiles = fs.readdirSync(tmpDir)
@@ -512,9 +516,10 @@ async function ocrPdf(filePath) {
         const pageTexts = [];
         for (let i = 0; i < pageFiles.length; i++) {
             try {
+                const tesseractTimeout = getSetting('ocr_tesseract_timeout') * 1000;
                 const { stdout } = await execFileAsync('tesseract', [
                     pageFiles[i], 'stdout', '--psm', '6'
-                ], { timeout: 60000, maxBuffer: 10 * 1024 * 1024 });
+                ], { timeout: tesseractTimeout, maxBuffer: 10 * 1024 * 1024 });
                 const pageText = stdout.trim();
                 if (pageText) {
                     pageTexts.push(`--- Page ${i + 1} ---\n${pageText}`);

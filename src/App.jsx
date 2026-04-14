@@ -13,6 +13,7 @@ import Playground from './pages/Playground';
 import ImageExtraction from './pages/ImageExtraction';
 import SummarizationJobs from './pages/SummarizationJobs';
 import UserManagement from './pages/UserManagement';
+import SystemSettings from './pages/SystemSettings';
 import AuditLog from './pages/AuditLog';
 import Batches from './pages/Batches';
 
@@ -89,6 +90,7 @@ function App() {
         '/image-extraction': 'Image Extraction',
         '/admin/users': 'User Management',
         '/admin/audit': 'Audit Log',
+        '/admin/settings': 'System Settings',
     }[location.pathname] || (location.pathname.startsWith('/documents/') ? 'Document Review' : '');
 
     return (
@@ -193,6 +195,13 @@ function App() {
                                 </svg>
                                 Audit Log
                             </NavLink>
+                            <NavLink to="/admin/settings" className={({ isActive }) => `nav-link ${isActive ? 'active' : ''}`}>
+                                <svg className="nav-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                                    <circle cx="12" cy="12" r="3"></circle>
+                                    <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-2 2 2 2 0 0 1-2-2v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1-2-2 2 2 0 0 1 2-2h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 2-2 2 2 0 0 1 2 2v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 2 2 2 2 0 0 1-2 2h-.09a1.65 1.65 0 0 0-1.51 1z"></path>
+                                </svg>
+                                Settings
+                            </NavLink>
                         </>
                     )}
                 </nav>
@@ -266,6 +275,7 @@ function App() {
                             <Route path="/documents/:id" element={<DocumentReview activeInvestigationId={activeInvestigationId} addToast={addToast} user={user} />} />
                             {isAdmin && <Route path="/admin/users" element={<UserManagement addToast={addToast} />} />}
                             {isAdmin && <Route path="/admin/audit" element={<AuditLog />} />}
+                            {isAdmin && <Route path="/admin/settings" element={<SystemSettings addToast={addToast} />} />}
                             <Route path="*" element={
                                 <div className="empty-state">
                                     <h3 className="empty-state-title">Page not found</h3>

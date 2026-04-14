@@ -38,6 +38,9 @@ export const ACTIONS = {
   BATCH_CREATE: 'batch.create',
   BATCH_ASSIGN: 'batch.assign',
   BATCH_DELETE: 'batch.delete',
+
+  SETTINGS_UPDATE: 'settings.update',
+  SETTINGS_RESET: 'settings.reset',
 };
 
 export function logAudit(db, { userId, action, resourceType, resourceId, details, ipAddress }) {
