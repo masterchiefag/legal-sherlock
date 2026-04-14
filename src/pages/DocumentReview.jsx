@@ -26,6 +26,7 @@ function DocumentReview({ addToast, user }) {
     const [textSearch, setTextSearch] = useState(() => searchParams.get('q') || '');
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
     const [showSourceInfo, setShowSourceInfo] = useState(false);
+    const [viewerTab, setViewerTab] = useState('viewer');
 
     // AI Classification state
     const [investigationPrompt, setInvestigationPrompt] = useState(
@@ -247,6 +248,9 @@ function DocumentReview({ addToast, user }) {
 
     const isEmail = doc.doc_type === 'email';
     const isChat = doc.doc_type === 'chat';
+    const ext = doc.original_name?.split('.').pop().toLowerCase() || '';
+    const nativeViewerExts = ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'xls', 'xlsx', 'docx'];
+    const hasNativeViewer = nativeViewerExts.includes(ext) && doc.status !== 'processing' && doc.filename;
 
     return (
         <div className="doc-viewer fade-in">
@@ -420,10 +424,12 @@ function DocumentReview({ addToast, user }) {
                         <p className="empty-state-text">Text extraction in progress. Content will appear shortly.</p>
                     </div>
                 ) : (() => {
-                    const ext = doc.original_name?.split('.').pop().toLowerCase() || '';
                     const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg'];
                     const isImage = imageExts.includes(ext);
                     const isPdf = ext === 'pdf';
+                    const isXls = ['xls', 'xlsx'].includes(ext);
+                    const isDocx = ext === 'docx';
+
                     // Oversized files — no raw file on disk
                     if (!doc.filename) {
                         const sizeMB = doc.size_bytes ? (doc.size_bytes / 1e6).toFixed(0) : '?';
@@ -441,77 +447,128 @@ function DocumentReview({ addToast, user }) {
                             </div>
                         );
                     }
-                    if (isImage) {
-                        return (
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px' }}>
-                                <img
-                                    src={`/uploads/${doc.filename}`}
-                                    alt={doc.original_name}
-                                    style={{ maxWidth: '100%', maxHeight: '70vh', borderRadius: '8px', border: '1px solid var(--border-secondary)' }}
-                                />
-                                <a
-                                    href={`/uploads/${doc.filename}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    style={{ marginTop: '12px', color: 'var(--text-accent)', fontSize: '13px' }}
-                                >
-                                    Open full size ↗
-                                </a>
-                            </div>
-                        );
-                    }
-                    if (isPdf) {
+
+                    // --- Tab bar for native-viewable files ---
+                    if (hasNativeViewer) {
                         return (
                             <div>
-                                <div style={{ display: 'flex', flexDirection: 'column', height: '80vh' }}>
-                                    <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 0' }}>
-                                        <a
-                                            href={`/uploads/${doc.filename}`}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            style={{ color: 'var(--text-accent)', fontSize: '13px' }}
-                                        >
-                                            Open in new tab ↗
-                                        </a>
-                                    </div>
-                                    <object
-                                        data={`/uploads/${doc.filename}`}
-                                        type="application/pdf"
-                                        style={{ width: '100%', flex: 1, border: 'none', borderRadius: '8px' }}
+                                <div className="viewer-tabs">
+                                    <button
+                                        className={`viewer-tab ${viewerTab === 'viewer' ? 'active' : ''}`}
+                                        onClick={() => setViewerTab('viewer')}
                                     >
-                                        <div className="empty-state" style={{ padding: '48px' }}>
-                                            <p className="empty-state-text">PDF preview not available in this browser.</p>
-                                            <a
-                                                href={`/uploads/${doc.filename}`}
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                className="btn btn-outline btn-sm"
-                                                style={{ marginTop: '12px' }}
-                                            >
-                                                Open PDF ↗
-                                            </a>
-                                        </div>
-                                    </object>
+                                        Viewer
+                                    </button>
+                                    <button
+                                        className={`viewer-tab ${viewerTab === 'text' ? 'active' : ''}`}
+                                        onClick={() => setViewerTab('text')}
+                                    >
+                                        Extracted Text
+                                    </button>
                                 </div>
-                                {highlightedText?.trim() && (
-                                    <div style={{ marginTop: '24px', borderTop: '1px solid var(--border-secondary)', paddingTop: '20px' }}>
-                                        <h4 style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                                            Extracted Text
-                                        </h4>
-                                        <div className="doc-text-content" dangerouslySetInnerHTML={{ __html: highlightedText }} />
-                                    </div>
+
+                                {viewerTab === 'viewer' && (
+                                    <>
+                                        {isImage && (
+                                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px' }}>
+                                                <img
+                                                    src={`/uploads/${doc.filename}`}
+                                                    alt={doc.original_name}
+                                                    style={{ maxWidth: '100%', maxHeight: '70vh', borderRadius: '8px', border: '1px solid var(--border-secondary)' }}
+                                                />
+                                                <a
+                                                    href={`/uploads/${doc.filename}`}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    style={{ marginTop: '12px', color: 'var(--text-accent)', fontSize: '13px' }}
+                                                >
+                                                    Open full size ↗
+                                                </a>
+                                            </div>
+                                        )}
+                                        {isPdf && (
+                                            <div style={{ display: 'flex', flexDirection: 'column', height: '80vh' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 0' }}>
+                                                    <a
+                                                        href={`/uploads/${doc.filename}`}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        style={{ color: 'var(--text-accent)', fontSize: '13px' }}
+                                                    >
+                                                        Open in new tab ↗
+                                                    </a>
+                                                </div>
+                                                <object
+                                                    data={`/uploads/${doc.filename}`}
+                                                    type="application/pdf"
+                                                    style={{ width: '100%', flex: 1, border: 'none', borderRadius: '8px' }}
+                                                >
+                                                    <div className="empty-state" style={{ padding: '48px' }}>
+                                                        <p className="empty-state-text">PDF preview not available in this browser.</p>
+                                                        <a
+                                                            href={`/uploads/${doc.filename}`}
+                                                            target="_blank"
+                                                            rel="noopener noreferrer"
+                                                            className="btn btn-outline btn-sm"
+                                                            style={{ marginTop: '12px' }}
+                                                        >
+                                                            Open PDF ↗
+                                                        </a>
+                                                    </div>
+                                                </object>
+                                            </div>
+                                        )}
+                                        {(isXls || isDocx) && (
+                                            <div>
+                                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '16px 20px', background: 'var(--bg-tertiary)', borderRadius: '8px', border: '1px solid var(--border-secondary)', marginBottom: '20px' }}>
+                                                    <span style={{ fontSize: '28px' }}>{isXls ? '📊' : '📄'}</span>
+                                                    <div style={{ flex: 1 }}>
+                                                        <div style={{ fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>{doc.original_name}</div>
+                                                        <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>{ext.toUpperCase()} document · {formatSize(doc.size_bytes)}</div>
+                                                    </div>
+                                                    <a
+                                                        href={`/uploads/${doc.filename}`}
+                                                        download={doc.original_name}
+                                                        className="btn btn-sm btn-outline"
+                                                        style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                                                    >
+                                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                                                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+                                                        </svg>
+                                                        Download
+                                                    </a>
+                                                </div>
+                                                {/* Native preview placeholder — XLSX and DOCX viewers will be added here */}
+                                                <div id="native-preview-slot"></div>
+                                            </div>
+                                        )}
+                                    </>
+                                )}
+
+                                {viewerTab === 'text' && (
+                                    <>
+                                        {highlightedText?.trim() ? (
+                                            <div className="doc-text-content" dangerouslySetInnerHTML={{ __html: highlightedText }} />
+                                        ) : (
+                                            <div className="empty-state">
+                                                <p className="empty-state-text">No extracted text available for this document.</p>
+                                            </div>
+                                        )}
+                                    </>
                                 )}
                             </div>
                         );
                     }
-                    const officeExts = ['xls', 'xlsx', 'doc', 'docx', 'ppt', 'pptx'];
+
+                    // --- No native viewer: show content directly (no tabs) ---
+                    const officeExts = ['doc', 'ppt', 'pptx'];
                     const isOffice = officeExts.includes(ext);
                     if (isOffice) {
                         return (
                             <div>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '16px 20px', background: 'var(--bg-tertiary)', borderRadius: '8px', border: '1px solid var(--border-secondary)', marginBottom: '20px' }}>
                                     <span style={{ fontSize: '28px' }}>
-                                        {['xls', 'xlsx'].includes(ext) ? '📊' : ['ppt', 'pptx'].includes(ext) ? '📽️' : '📄'}
+                                        {['ppt', 'pptx'].includes(ext) ? '📽️' : '📄'}
                                     </span>
                                     <div style={{ flex: 1 }}>
                                         <div style={{ fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>{doc.original_name}</div>
