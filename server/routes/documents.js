@@ -289,10 +289,10 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
 
-function spawnPstWorker(jobId, filename, filepath, originalname, investigation_id, custodian, extractionOnly = false) {
+function spawnPstWorker(jobId, filename, filepath, originalname, investigation_id, custodian, extractionOnly = false, preserveSource = false) {
     const workerPath = path.join(__dirname, '..', 'workers', 'pst-worker.js');
     const worker = new Worker(workerPath, {
-        workerData: { jobId, filename, filepath, originalname, investigation_id, custodian, resume: extractionOnly, extractionOnly }
+        workerData: { jobId, filename, filepath, originalname, investigation_id, custodian, resume: extractionOnly, extractionOnly, preserveSource }
     });
 
     worker.on('error', (err) => {
@@ -551,6 +551,56 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
     }
 });
 
+// ═══════════════════════════════════════════════════
+// Import PST/OST from local filesystem path (no upload)
+// ═══════════════════════════════════════════════════
+router.post('/import-local', requireRole('admin', 'reviewer'), (req, res) => {
+    try {
+        const { path: localPath, investigation_id, custodian } = req.body;
+
+        if (!localPath || !investigation_id) {
+            return res.status(400).json({ error: 'path and investigation_id are required' });
+        }
+
+        const ext = path.extname(localPath).toLowerCase();
+        if (ext !== '.pst' && ext !== '.ost') {
+            return res.status(400).json({ error: 'Only .pst and .ost files are supported' });
+        }
+
+        // Resolve to absolute path and verify file exists
+        const resolvedPath = path.resolve(localPath);
+        if (!fs.existsSync(resolvedPath)) {
+            return res.status(400).json({ error: `File not found: ${resolvedPath}` });
+        }
+
+        const stat = fs.statSync(resolvedPath);
+        if (!stat.isFile()) {
+            return res.status(400).json({ error: 'Path is not a file' });
+        }
+
+        const originalname = path.basename(resolvedPath);
+        const jobId = uuidv4();
+
+        db.prepare(`
+            INSERT INTO import_jobs (id, filename, filepath, status, investigation_id, custodian, preserve_source)
+            VALUES (?, ?, ?, 'pending', ?, ?, 1)
+        `).run(jobId, originalname, resolvedPath, investigation_id, custodian || null);
+
+        spawnPstWorker(jobId, originalname, resolvedPath, originalname, investigation_id, custodian || null, false, true);
+
+        logAudit(req, ACTIONS.DOCUMENT_UPLOAD, 'import_job', jobId, { originalname, source: 'local', filepath: resolvedPath });
+
+        res.status(202).json({
+            message: `${ext.toUpperCase().slice(1)} import started from local path.`,
+            jobId,
+            filename: originalname
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // Get recent failed jobs for the active investigation (must be before /jobs/:id)
 router.get('/jobs/failed/:investigation_id', (req, res) => {
     try {
@@ -699,6 +749,7 @@ router.post('/jobs/:id/resume', requireRole('admin', 'reviewer'), (req, res) => 
                 custodian: job.custodian,
                 resume: true,
                 extractionOnly,
+                preserveSource: !!job.preserve_source,
             }
         });
 

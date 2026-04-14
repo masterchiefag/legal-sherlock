@@ -604,6 +604,10 @@ if (!columnExists('import_jobs', 'extraction_done_at')) {
   db.exec(`ALTER TABLE import_jobs ADD COLUMN extraction_done_at TEXT`);
   console.log(`✦ Migration: added column import_jobs.extraction_done_at`);
 }
+if (!columnExists('import_jobs', 'preserve_source')) {
+  db.exec(`ALTER TABLE import_jobs ADD COLUMN preserve_source INTEGER DEFAULT 0`);
+  console.log(`✦ Migration: added column import_jobs.preserve_source`);
+}
 
 // ═══════════════════════════════════════════════════
 // Review Batches tables
