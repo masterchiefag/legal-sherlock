@@ -3,11 +3,12 @@ import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom'
 import { formatSize, getScoreColor, getScoreLabel } from '../utils/format';
 import { highlightText } from '../utils/sanitize';
 import { apiFetch } from '../utils/api';
+import { searchContextToApiParams, hasSearchContext } from '../utils/searchContext';
 
 const REVIEW_OPTIONS = [
     { status: 'relevant', label: 'Relevant', color: '#10b981', key: 'r' },
     { status: 'not_relevant', label: 'Not Relevant', color: '#ef4444', key: 'n' },
-    { status: 'privileged', label: 'Privileged', color: '#f59e0b', key: 'p' },
+    { status: 'technical_issue', label: 'Technical Issue', color: '#f59e0b', key: 't' },
 ];
 
 function DocumentReview({ addToast, user }) {
@@ -26,6 +27,17 @@ function DocumentReview({ addToast, user }) {
     const [textSearch, setTextSearch] = useState(() => searchParams.get('q') || '');
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
     const [showSourceInfo, setShowSourceInfo] = useState(false);
+    const [viewerTab, setViewerTab] = useState('viewer');
+
+    // Native preview state
+    const [sheetData, setSheetData] = useState(null);
+    const [activeSheet, setActiveSheet] = useState(0);
+    const [sheetsLoading, setSheetsLoading] = useState(false);
+    const [docxHtml, setDocxHtml] = useState(null);
+    const [docxLoading, setDocxLoading] = useState(false);
+
+    // Prev/next navigation
+    const [neighbors, setNeighbors] = useState(null); // { prev_id, next_id, position, total }
 
     // AI Classification state
     const [investigationPrompt, setInvestigationPrompt] = useState(
@@ -120,14 +132,57 @@ function DocumentReview({ addToast, user }) {
     // Keyboard shortcuts
     useEffect(() => {
         const handler = (e) => {
-            if (!canEdit) return;
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+            // Prev/next navigation with arrow keys
+            if (e.key === 'ArrowLeft' && neighbors?.prev_id) { navigateToDoc(neighbors.prev_id); return; }
+            if (e.key === 'ArrowRight' && neighbors?.next_id) { navigateToDoc(neighbors.next_id); return; }
+            // Review shortcuts
+            if (!canEdit) return;
             const option = REVIEW_OPTIONS.find(o => o.key === e.key);
             if (option) handleReview(option.status);
         };
         window.addEventListener('keydown', handler);
         return () => window.removeEventListener('keydown', handler);
-    }, [id, canEdit]);
+    }, [id, canEdit, neighbors]);
+
+    // Fetch native preview data for XLSX/DOCX
+    useEffect(() => {
+        if (!doc?.original_name || !doc?.filename) return;
+        const docExt = doc.original_name.split('.').pop().toLowerCase();
+        if (['xls', 'xlsx'].includes(docExt)) {
+            setSheetsLoading(true);
+            setSheetData(null);
+            setActiveSheet(0);
+            apiFetch(`/api/documents/${id}/sheets`)
+                .then(r => r.json())
+                .then(data => { setSheetData(data.sheets); setSheetsLoading(false); })
+                .catch(() => setSheetsLoading(false));
+        }
+        if (docExt === 'docx') {
+            setDocxLoading(true);
+            setDocxHtml(null);
+            apiFetch(`/api/documents/${id}/preview`)
+                .then(r => r.json())
+                .then(data => { setDocxHtml(data.html); setDocxLoading(false); })
+                .catch(() => setDocxLoading(false));
+        }
+    }, [id, doc?.original_name, doc?.filename]);
+
+    // Fetch prev/next neighbors when navigated from search
+    useEffect(() => {
+        if (!hasSearchContext(searchParams)) { setNeighbors(null); return; }
+        const apiParams = searchContextToApiParams(searchParams);
+        apiFetch(`/api/documents/${id}/neighbors?${apiParams}`)
+            .then(r => r.json())
+            .then(data => setNeighbors(data))
+            .catch(() => setNeighbors(null));
+    }, [id, searchParams]);
+
+    const navigateToDoc = (docId) => {
+        if (!docId) return;
+        const qs = searchParams.toString();
+        navigate(`/documents/${docId}${qs ? `?${qs}` : ''}`);
+    };
 
     const handleReview = async (status) => {
         if (!canEdit) { addToast('Assign the batch to yourself first', 'error'); return; }
@@ -247,9 +302,36 @@ function DocumentReview({ addToast, user }) {
 
     const isEmail = doc.doc_type === 'email';
     const isChat = doc.doc_type === 'chat';
+    const ext = doc.original_name?.split('.').pop().toLowerCase() || '';
+    const nativeViewerExts = ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'xls', 'xlsx', 'docx'];
+    const hasNativeViewer = nativeViewerExts.includes(ext) && doc.status !== 'processing' && doc.filename;
 
     return (
         <div className="doc-viewer fade-in">
+            {/* Prev/Next navigation bar */}
+            {neighbors && (
+                <div className="doc-nav-bar">
+                    <button
+                        className="doc-nav-btn"
+                        disabled={!neighbors.prev_id}
+                        onClick={() => navigateToDoc(neighbors.prev_id)}
+                        title="Previous document (←)"
+                    >
+                        ← Prev
+                    </button>
+                    <span className="doc-nav-position">
+                        {neighbors.position} of {neighbors.total}
+                    </span>
+                    <button
+                        className="doc-nav-btn"
+                        disabled={!neighbors.next_id}
+                        onClick={() => navigateToDoc(neighbors.next_id)}
+                        title="Next document (→)"
+                    >
+                        Next →
+                    </button>
+                </div>
+            )}
             {/* Text Viewer */}
             <div className="doc-text-panel">
                 {/* In-doc search */}
@@ -420,10 +502,12 @@ function DocumentReview({ addToast, user }) {
                         <p className="empty-state-text">Text extraction in progress. Content will appear shortly.</p>
                     </div>
                 ) : (() => {
-                    const ext = doc.original_name?.split('.').pop().toLowerCase() || '';
                     const imageExts = ['png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg'];
                     const isImage = imageExts.includes(ext);
                     const isPdf = ext === 'pdf';
+                    const isXls = ['xls', 'xlsx'].includes(ext);
+                    const isDocx = ext === 'docx';
+
                     // Oversized files — no raw file on disk
                     if (!doc.filename) {
                         const sizeMB = doc.size_bytes ? (doc.size_bytes / 1e6).toFixed(0) : '?';
@@ -441,77 +525,201 @@ function DocumentReview({ addToast, user }) {
                             </div>
                         );
                     }
-                    if (isImage) {
-                        return (
-                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px' }}>
-                                <img
-                                    src={`/uploads/${doc.filename}`}
-                                    alt={doc.original_name}
-                                    style={{ maxWidth: '100%', maxHeight: '70vh', borderRadius: '8px', border: '1px solid var(--border-secondary)' }}
-                                />
-                                <a
-                                    href={`/uploads/${doc.filename}`}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    style={{ marginTop: '12px', color: 'var(--text-accent)', fontSize: '13px' }}
-                                >
-                                    Open full size ↗
-                                </a>
-                            </div>
-                        );
-                    }
-                    if (isPdf) {
+
+                    // --- Tab bar for native-viewable files ---
+                    if (hasNativeViewer) {
                         return (
                             <div>
-                                <div style={{ display: 'flex', flexDirection: 'column', height: '80vh' }}>
-                                    <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 0' }}>
-                                        <a
-                                            href={`/uploads/${doc.filename}`}
-                                            target="_blank"
-                                            rel="noopener noreferrer"
-                                            style={{ color: 'var(--text-accent)', fontSize: '13px' }}
-                                        >
-                                            Open in new tab ↗
-                                        </a>
-                                    </div>
-                                    <object
-                                        data={`/uploads/${doc.filename}`}
-                                        type="application/pdf"
-                                        style={{ width: '100%', flex: 1, border: 'none', borderRadius: '8px' }}
+                                <div className="viewer-tabs">
+                                    <button
+                                        className={`viewer-tab ${viewerTab === 'viewer' ? 'active' : ''}`}
+                                        onClick={() => setViewerTab('viewer')}
                                     >
-                                        <div className="empty-state" style={{ padding: '48px' }}>
-                                            <p className="empty-state-text">PDF preview not available in this browser.</p>
-                                            <a
-                                                href={`/uploads/${doc.filename}`}
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                className="btn btn-outline btn-sm"
-                                                style={{ marginTop: '12px' }}
-                                            >
-                                                Open PDF ↗
-                                            </a>
-                                        </div>
-                                    </object>
+                                        Viewer
+                                    </button>
+                                    <button
+                                        className={`viewer-tab ${viewerTab === 'text' ? 'active' : ''}`}
+                                        onClick={() => setViewerTab('text')}
+                                    >
+                                        Extracted Text
+                                    </button>
                                 </div>
-                                {highlightedText?.trim() && (
-                                    <div style={{ marginTop: '24px', borderTop: '1px solid var(--border-secondary)', paddingTop: '20px' }}>
-                                        <h4 style={{ margin: '0 0 12px', fontSize: '13px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em' }}>
-                                            Extracted Text
-                                        </h4>
-                                        <div className="doc-text-content" dangerouslySetInnerHTML={{ __html: highlightedText }} />
-                                    </div>
+
+                                {viewerTab === 'viewer' && (
+                                    <>
+                                        {isImage && (
+                                            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', padding: '24px' }}>
+                                                <img
+                                                    src={`/uploads/${doc.filename}`}
+                                                    alt={doc.original_name}
+                                                    style={{ maxWidth: '100%', maxHeight: '70vh', borderRadius: '8px', border: '1px solid var(--border-secondary)' }}
+                                                />
+                                                <a
+                                                    href={`/uploads/${doc.filename}`}
+                                                    target="_blank"
+                                                    rel="noopener noreferrer"
+                                                    style={{ marginTop: '12px', color: 'var(--text-accent)', fontSize: '13px' }}
+                                                >
+                                                    Open full size ↗
+                                                </a>
+                                            </div>
+                                        )}
+                                        {isPdf && (
+                                            <div style={{ display: 'flex', flexDirection: 'column', height: '80vh' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 0' }}>
+                                                    <a
+                                                        href={`/uploads/${doc.filename}`}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        style={{ color: 'var(--text-accent)', fontSize: '13px' }}
+                                                    >
+                                                        Open in new tab ↗
+                                                    </a>
+                                                </div>
+                                                <object
+                                                    data={`/uploads/${doc.filename}`}
+                                                    type="application/pdf"
+                                                    style={{ width: '100%', flex: 1, border: 'none', borderRadius: '8px' }}
+                                                >
+                                                    <div className="empty-state" style={{ padding: '48px' }}>
+                                                        <p className="empty-state-text">PDF preview not available in this browser.</p>
+                                                        <a
+                                                            href={`/uploads/${doc.filename}`}
+                                                            target="_blank"
+                                                            rel="noopener noreferrer"
+                                                            className="btn btn-outline btn-sm"
+                                                            style={{ marginTop: '12px' }}
+                                                        >
+                                                            Open PDF ↗
+                                                        </a>
+                                                    </div>
+                                                </object>
+                                            </div>
+                                        )}
+                                        {(isXls || isDocx) && (
+                                            <div style={{ display: 'flex', flexDirection: 'column', height: '80vh' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 0', gap: '12px', alignItems: 'center' }}>
+                                                    <span style={{ fontSize: '13px', color: 'var(--text-muted)', marginRight: 'auto' }}>
+                                                        {doc.original_name} · {formatSize(doc.size_bytes)}
+                                                    </span>
+                                                    <a
+                                                        href={`/uploads/${doc.filename}`}
+                                                        download={doc.original_name}
+                                                        style={{ color: 'var(--text-accent)', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}
+                                                    >
+                                                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
+                                                            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
+                                                        </svg>
+                                                        Download
+                                                    </a>
+                                                </div>
+                                                <div className="native-preview-frame">
+                                                    {/* XLSX native preview */}
+                                                    {isXls && sheetsLoading && (
+                                                        <div style={{ textAlign: 'center', padding: '32px' }}>
+                                                            <div className="spinner" style={{ marginBottom: '8px' }}></div>
+                                                            <p style={{ color: '#666', fontSize: '13px' }}>Loading spreadsheet...</p>
+                                                        </div>
+                                                    )}
+                                                    {isXls && sheetData && (
+                                                        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                                                            {sheetData.length > 1 && (
+                                                                <div style={{ display: 'flex', gap: '0', borderBottom: '1px solid #ddd', flexWrap: 'wrap', flexShrink: 0, background: '#f5f5f5' }}>
+                                                                    {sheetData.map((sheet, i) => (
+                                                                        <button
+                                                                            key={i}
+                                                                            onClick={() => setActiveSheet(i)}
+                                                                            style={{
+                                                                                padding: '6px 14px', fontSize: '12px', fontWeight: 500, cursor: 'pointer',
+                                                                                background: activeSheet === i ? '#fff' : 'transparent', border: 'none',
+                                                                                borderBottom: activeSheet === i ? '2px solid #3b82f6' : '2px solid transparent',
+                                                                                color: activeSheet === i ? '#3b82f6' : '#666',
+                                                                            }}
+                                                                        >
+                                                                            {sheet.name}
+                                                                        </button>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {sheetData[activeSheet] && (
+                                                                <div style={{ overflowX: 'auto', overflowY: 'auto', flex: 1 }}>
+                                                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', fontFamily: 'var(--font-mono)' }}>
+                                                                        <thead>
+                                                                            <tr>
+                                                                                {sheetData[activeSheet].headers.map((h, i) => (
+                                                                                    <th key={i} style={{
+                                                                                        padding: '6px 10px', textAlign: 'left', fontWeight: 600,
+                                                                                        background: '#f0f0f0', borderBottom: '2px solid #ddd',
+                                                                                        color: '#333', whiteSpace: 'nowrap', position: 'sticky', top: 0,
+                                                                                    }}>{h || `Col ${i + 1}`}</th>
+                                                                                ))}
+                                                                            </tr>
+                                                                        </thead>
+                                                                        <tbody>
+                                                                            {sheetData[activeSheet].rows.map((row, ri) => (
+                                                                                <tr key={ri} style={{ borderBottom: '1px solid #eee' }}>
+                                                                                    {row.map((cell, ci) => (
+                                                                                        <td key={ci} style={{
+                                                                                            padding: '4px 10px', color: '#444',
+                                                                                            whiteSpace: 'nowrap', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis',
+                                                                                        }}>{cell != null ? String(cell) : ''}</td>
+                                                                                    ))}
+                                                                                </tr>
+                                                                            ))}
+                                                                        </tbody>
+                                                                    </table>
+                                                                    {sheetData[activeSheet].truncated && (
+                                                                        <p style={{ padding: '8px 0', fontSize: '12px', color: '#999', textAlign: 'center' }}>
+                                                                            Showing first 500 of {sheetData[activeSheet].totalRows} rows
+                                                                        </p>
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                    {/* DOCX native preview */}
+                                                    {isDocx && docxLoading && (
+                                                        <div style={{ textAlign: 'center', padding: '32px' }}>
+                                                            <div className="spinner" style={{ marginBottom: '8px' }}></div>
+                                                            <p style={{ color: '#666', fontSize: '13px' }}>Loading document...</p>
+                                                        </div>
+                                                    )}
+                                                    {isDocx && docxHtml && (
+                                                        <div
+                                                            className="docx-preview"
+                                                            dangerouslySetInnerHTML={{ __html: docxHtml }}
+                                                        />
+                                                    )}
+                                                </div>
+                                            </div>
+                                        )}
+                                    </>
+                                )}
+
+                                {viewerTab === 'text' && (
+                                    <>
+                                        {highlightedText?.trim() ? (
+                                            <div className="doc-text-content" dangerouslySetInnerHTML={{ __html: highlightedText }} />
+                                        ) : (
+                                            <div className="empty-state">
+                                                <p className="empty-state-text">No extracted text available for this document.</p>
+                                            </div>
+                                        )}
+                                    </>
                                 )}
                             </div>
                         );
                     }
-                    const officeExts = ['xls', 'xlsx', 'doc', 'docx', 'ppt', 'pptx'];
+
+                    // --- No native viewer: show content directly (no tabs) ---
+                    const officeExts = ['doc', 'ppt', 'pptx'];
                     const isOffice = officeExts.includes(ext);
                     if (isOffice) {
                         return (
                             <div>
                                 <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '16px 20px', background: 'var(--bg-tertiary)', borderRadius: '8px', border: '1px solid var(--border-secondary)', marginBottom: '20px' }}>
                                     <span style={{ fontSize: '28px' }}>
-                                        {['xls', 'xlsx'].includes(ext) ? '📊' : ['ppt', 'pptx'].includes(ext) ? '📽️' : '📄'}
+                                        {['ppt', 'pptx'].includes(ext) ? '📽️' : '📄'}
                                     </span>
                                     <div style={{ flex: 1 }}>
                                         <div style={{ fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>{doc.original_name}</div>
@@ -666,6 +874,33 @@ function DocumentReview({ addToast, user }) {
                     </div>
                 </div>
 
+                {/* Parent email (if this is an attachment) */}
+                {doc.parent && (
+                    <div className="doc-sidebar-section">
+                        <h3>Parent Email</h3>
+                        <Link
+                            to={`/documents/${doc.parent.id}`}
+                            style={{
+                                display: 'block',
+                                padding: '10px 12px',
+                                borderRadius: 'var(--radius-sm)',
+                                background: 'var(--bg-tertiary)',
+                                border: '1px solid var(--border-secondary)',
+                                textDecoration: 'none',
+                            }}
+                        >
+                            <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-accent)', marginBottom: '2px' }}>
+                                ✉ {doc.parent.email_subject || doc.parent.original_name}
+                            </div>
+                            {doc.parent.email_from && (
+                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
+                                    From: {doc.parent.email_from.split('<')[0].trim()}
+                                </div>
+                            )}
+                        </Link>
+                    </div>
+                )}
+
                 {/* Document / Email Info */}
                 <div className="doc-sidebar-section">
                     <details>
@@ -705,14 +940,12 @@ function DocumentReview({ addToast, user }) {
                             <span className="text-muted">Size</span>
                             <span style={{ color: 'var(--text-primary)' }}>{formatSize(doc.size_bytes)}</span>
                         </div>
-                        <div className="flex justify-between">
-                            <span className="text-muted">Uploaded</span>
-                            <span style={{ color: 'var(--text-primary)' }}>{new Date(doc.uploaded_at).toLocaleString()}</span>
-                        </div>
-                        <div className="flex justify-between">
-                            <span className="text-muted">Status</span>
-                            <span className={`status-badge ${doc.status}`}>{doc.status}</span>
-                        </div>
+                        {(isEmail || isChat) && doc.recipient_count > 0 && (
+                            <div className="flex justify-between">
+                                <span className="text-muted">Recipients</span>
+                                <span style={{ color: 'var(--text-primary)' }}>{doc.recipient_count}</span>
+                            </div>
+                        )}
                     </div>
                     </details>
                 </div>
@@ -1191,33 +1424,6 @@ function DocumentReview({ addToast, user }) {
                         </div>
                     );
                 })()}
-
-                {/* Parent email (if this is an attachment) */}
-                {doc.parent && (
-                    <div className="doc-sidebar-section">
-                        <h3>Parent Email</h3>
-                        <Link
-                            to={`/documents/${doc.parent.id}`}
-                            style={{
-                                display: 'block',
-                                padding: '10px 12px',
-                                borderRadius: 'var(--radius-sm)',
-                                background: 'var(--bg-tertiary)',
-                                border: '1px solid var(--border-secondary)',
-                                textDecoration: 'none',
-                            }}
-                        >
-                            <div style={{ fontSize: '13px', fontWeight: 500, color: 'var(--text-accent)', marginBottom: '2px' }}>
-                                ✉ {doc.parent.email_subject || doc.parent.original_name}
-                            </div>
-                            {doc.parent.email_from && (
-                                <div style={{ fontSize: '11px', color: 'var(--text-tertiary)' }}>
-                                    From: {doc.parent.email_from.split('<')[0].trim()}
-                                </div>
-                            )}
-                        </Link>
-                    </div>
-                )}
 
                 {/* Sibling Attachments (when viewing an attachment) */}
                 {doc.siblings && doc.siblings.length > 0 && (

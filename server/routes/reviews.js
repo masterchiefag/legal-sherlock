@@ -12,7 +12,7 @@ router.put('/documents/:docId/review', requireRole('admin', 'reviewer'), (req, r
         const { status, notes } = req.body;
         if (!status) return res.status(400).json({ error: 'Review status is required' });
 
-        const valid = ['pending', 'relevant', 'not_relevant', 'privileged'];
+        const valid = ['pending', 'relevant', 'not_relevant', 'technical_issue'];
         if (!valid.includes(status)) {
             return res.status(400).json({ error: `Status must be one of: ${valid.join(', ')}` });
         }

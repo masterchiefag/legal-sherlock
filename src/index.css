@@ -738,8 +738,41 @@ body {
 .doc-viewer {
   display: grid;
   grid-template-columns: 1fr 380px;
+  grid-template-rows: auto 1fr;
   gap: 24px;
   height: calc(100vh - var(--header-height) - 64px);
+}
+
+.doc-nav-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 8px 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-md);
+  margin-bottom: -16px;
+}
+
+.doc-nav-btn {
+  padding: 4px 12px;
+  font-size: 13px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.doc-nav-btn:hover:not(:disabled) { background: var(--primary); color: #fff; }
+.doc-nav-btn:disabled { opacity: 0.4; cursor: default; }
+
+.doc-nav-position {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 .doc-text-panel {
@@ -749,6 +782,59 @@ body {
   overflow-y: auto;
   padding: 32px;
 }
+
+/* ── Viewer Tabs ──────────────────── */
+.viewer-tabs {
+  display: flex;
+  gap: 0;
+  margin-bottom: 20px;
+  border-bottom: 1px solid var(--border-secondary);
+}
+
+.viewer-tab {
+  padding: 8px 20px;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-tertiary);
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+
+.viewer-tab:hover {
+  color: var(--text-primary);
+}
+
+.viewer-tab.active {
+  color: var(--primary);
+  border-bottom-color: var(--primary);
+}
+
+/* ── Native Preview Frame (XLSX, DOCX) ── */
+.native-preview-frame {
+  flex: 1;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+/* ── DOCX Preview ──────────────────── */
+.docx-preview {
+  padding: 32px 40px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #333;
+  overflow-y: auto;
+  height: 100%;
+}
+.docx-preview p { margin: 0 0 12px; }
+.docx-preview h1, .docx-preview h2, .docx-preview h3 { color: #111; margin: 16px 0 8px; }
+.docx-preview table { border-collapse: collapse; width: 100%; margin: 12px 0; }
+.docx-preview td, .docx-preview th { border: 1px solid #ddd; padding: 6px 10px; font-size: 13px; color: #444; }
+.docx-preview img { max-width: 100%; border-radius: 4px; }
 
 .doc-text-content {
   font-size: 14px;
@@ -823,10 +909,10 @@ body {
   color: var(--status-not-relevant);
 }
 
-.review-btn.active-privileged {
+.review-btn.active-technical_issue {
   background: rgba(245, 158, 11, 0.1);
   border-color: rgba(245, 158, 11, 0.4);
-  color: var(--status-privileged);
+  color: #f59e0b;
 }
 
 .review-dot {

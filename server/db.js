@@ -676,6 +676,63 @@ if (existingInvs.length > 0) {
 
 export { refreshInvestigationCounts };
 
+// ═══════════════════════════════════════════════════
+// Migrate review status: privileged → technical_issue
+// ═══════════════════════════════════════════════════
+const reviewTableSql = db.prepare("SELECT sql FROM sqlite_master WHERE type='table' AND name='document_reviews'").get();
+if (reviewTableSql && !reviewTableSql.sql.includes('technical_issue')) {
+    console.log('✦ Migration: widening document_reviews CHECK constraint to include technical_issue');
+    db.exec(`
+        ALTER TABLE document_reviews RENAME TO document_reviews_old;
+
+        CREATE TABLE document_reviews (
+            id TEXT PRIMARY KEY,
+            document_id TEXT NOT NULL,
+            status TEXT NOT NULL CHECK(status IN ('pending','relevant','not_relevant','privileged','technical_issue')),
+            notes TEXT,
+            reviewed_at TEXT DEFAULT (datetime('now')),
+            reviewer_id TEXT,
+            FOREIGN KEY (document_id) REFERENCES documents(id) ON DELETE CASCADE
+        );
+
+        INSERT INTO document_reviews SELECT * FROM document_reviews_old;
+        DROP TABLE document_reviews_old;
+
+        CREATE INDEX IF NOT EXISTS idx_document_reviews_document_id ON document_reviews(document_id);
+        CREATE INDEX IF NOT EXISTS idx_docreviews_status_docid ON document_reviews(status, document_id);
+    `);
+
+    // Seed "Privileged" tag if it doesn't exist
+    const existingTag = db.prepare("SELECT id FROM tags WHERE name = 'Privileged'").get();
+    let privilegedTagId;
+    if (existingTag) {
+        privilegedTagId = existingTag.id;
+    } else {
+        privilegedTagId = crypto.randomUUID();
+        db.prepare("INSERT INTO tags (id, name, color) VALUES (?, 'Privileged', '#f59e0b')").run(privilegedTagId);
+        console.log('✦ Migration: seeded "Privileged" default tag');
+    }
+
+    // Migrate existing privileged reviews: assign tag + reset status to pending
+    const privilegedReviews = db.prepare("SELECT id, document_id FROM document_reviews WHERE status = 'privileged'").all();
+    if (privilegedReviews.length > 0) {
+        const assignTag = db.prepare("INSERT OR IGNORE INTO document_tags (document_id, tag_id) VALUES (?, ?)");
+        const updateStatus = db.prepare("UPDATE document_reviews SET status = 'pending' WHERE id = ?");
+        for (const review of privilegedReviews) {
+            assignTag.run(review.document_id, privilegedTagId);
+            updateStatus.run(review.id);
+        }
+        console.log(`✦ Migration: converted ${privilegedReviews.length} privileged reviews → Privileged tag + pending status`);
+    }
+} else {
+    // Ensure Privileged tag exists even if CHECK migration already ran
+    const existingTag = db.prepare("SELECT id FROM tags WHERE name = 'Privileged'").get();
+    if (!existingTag) {
+        db.prepare("INSERT INTO tags (id, name, color) VALUES (?, 'Privileged', '#f59e0b')").run(crypto.randomUUID());
+        console.log('✦ Migration: seeded "Privileged" default tag');
+    }
+}
+
 // Checkpoint WAL on startup (PASSIVE never blocks writers/readers)
 try {
     const result = db.pragma('wal_checkpoint(PASSIVE)');
