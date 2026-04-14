@@ -705,14 +705,6 @@ function DocumentReview({ addToast, user }) {
                             <span className="text-muted">Size</span>
                             <span style={{ color: 'var(--text-primary)' }}>{formatSize(doc.size_bytes)}</span>
                         </div>
-                        <div className="flex justify-between">
-                            <span className="text-muted">Uploaded</span>
-                            <span style={{ color: 'var(--text-primary)' }}>{new Date(doc.uploaded_at).toLocaleString()}</span>
-                        </div>
-                        <div className="flex justify-between">
-                            <span className="text-muted">Status</span>
-                            <span className={`status-badge ${doc.status}`}>{doc.status}</span>
-                        </div>
                     </div>
                     </details>
                 </div>
