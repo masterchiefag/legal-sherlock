@@ -129,8 +129,16 @@ const flushBatch = db.transaction((ops) => {
 
 function flushPendingOps() {
     if (batchBuffer.length === 0) return;
-    flushBatch(batchBuffer);
-    batchBuffer = [];
+    try {
+        flushBatch(batchBuffer);
+        batchBuffer = [];
+    } catch (err) {
+        console.error(`✦ FLUSH ERROR (${batchBuffer.length} ops): ${err.message}`);
+        // Clear the buffer even on failure — otherwise it grows unbounded
+        // and every subsequent flush retries the same broken ops
+        batchBuffer = [];
+        throw err; // re-throw so caller sees the failure
+    }
 }
 
 // In-memory hash set for fast dedup within this import
@@ -323,7 +331,7 @@ async function main() {
             fileIdx++;
             try {
                 if (fileIdx <= 3 || fileIdx % 50 === 0) {
-                    console.log(`✦ PST Import: parsing file ${fileIdx}/${filesToProcess.length}: ${path.basename(emlPath)}`);
+                    console.log(`✦ PST Import: file ${fileIdx}/${filesToProcess.length} — ${totalEmails} emails, ${totalAttachments} attachments`);
                 }
                 const t0 = Date.now();
                 const eml = await parseEml(emlPath);
@@ -549,9 +557,12 @@ async function main() {
         // Mark extraction done ASAP — frontend uses this to detect stuck jobs.
         // Must be set before any heavy operations (backfill, FTS) that could OOM.
         db.prepare("UPDATE import_jobs SET extraction_done_at = datetime('now') WHERE id = ?").run(jobId);
+        console.log('✦ Extraction complete — extraction_done_at set');
 
         // Backfill text from originals into duplicates (they share content_hash)
         if (dupeCount.changes > 0) {
+            console.log(`✦ Backfilling text for ${dupeCount.changes} duplicates...`);
+            const backfillStart = Date.now();
             const backfilled = db.prepare(`
                 UPDATE documents SET
                     text_content = (SELECT d2.text_content FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 AND d2.text_content IS NOT NULL LIMIT 1),
@@ -560,7 +571,7 @@ async function main() {
                     ocr_time_ms = (SELECT d2.ocr_time_ms FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 LIMIT 1)
                 WHERE is_duplicate = 1 AND doc_type = 'attachment' AND investigation_id = ? AND text_content IS NULL
             `).run(investigation_id);
-            console.log(`✦ Phase 2: backfilled text for ${backfilled.changes} duplicates`);
+            console.log(`✦ Backfill done: ${backfilled.changes} duplicates in ${((Date.now() - backfillStart) / 1000).toFixed(1)}s`);
         }
 
         console.log(`✦ PST Import Phase 2 complete: extracted text from ${extracted} attachments`);
@@ -735,7 +746,7 @@ async function processEmail(eml) {
         // Skip file write for duplicates or oversized — reuse existing file or skip entirely
         let finalFilename = attFilename;
         if (isOversized) {
-            finalFilename = null; // no file on disk
+            finalFilename = `oversized/${attId}${attExt}`; // no file on disk, but DB needs non-null filename
             perfStats.attSkippedSize++;
         } else if (isDuplicate) {
             finalFilename = seenHashes.get(attHash); // point to existing file
