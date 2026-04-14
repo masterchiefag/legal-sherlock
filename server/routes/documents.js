@@ -124,13 +124,17 @@ function finalizeStuckJob(jobId, reason) {
 }
 
 // ═══════════════════════════════════════════════════
-// Log stuck import jobs on startup (finalization is manual via UI button)
+// Mark stuck import jobs as failed on startup (no worker is running after restart)
 // ═══════════════════════════════════════════════════
-const stuckJobs = db.prepare("SELECT id, filename FROM import_jobs WHERE status IN ('processing', 'pending')").all();
+const stuckJobs = db.prepare("SELECT id, filename, total_emails, total_attachments FROM import_jobs WHERE status IN ('processing', 'pending')").all();
 if (stuckJobs.length > 0) {
-    console.log(`✦ Found ${stuckJobs.length} stuck import job(s) — use "Finalize Import" button in UI to recover:`);
+    console.log(`✦ Found ${stuckJobs.length} stuck import job(s) — marking as failed (use Resume to continue):`);
+    const markFailed = db.prepare(
+        "UPDATE import_jobs SET status = 'failed', completed_at = datetime('now') WHERE id = ?"
+    );
     for (const job of stuckJobs) {
-        console.log(`  - ${job.filename} (${job.id})`);
+        markFailed.run(job.id);
+        console.log(`  - ${job.filename} (${job.id}) — ${job.total_emails || 0} emails, ${job.total_attachments || 0} attachments before crash`);
     }
 }
 
