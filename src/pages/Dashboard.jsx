@@ -639,8 +639,8 @@ function ScoreDistribution({ data }) {
 }
 
 function ReviewDonut({ data, total, reviewed }) {
-    const statusColors = { pending: '#6b7280', relevant: '#22c55e', not_relevant: '#ef4444', privileged: '#eab308' };
-    const statusLabels = { pending: 'Pending', relevant: 'Relevant', not_relevant: 'Not Relevant', privileged: 'Privileged' };
+    const statusColors = { pending: '#6b7280', relevant: '#22c55e', not_relevant: '#ef4444', technical_issue: '#eab308' };
+    const statusLabels = { pending: 'Pending', relevant: 'Relevant', not_relevant: 'Not Relevant', technical_issue: 'Technical Issue' };
     const segments = data.map(s => ({ ...s, color: statusColors[s.status] || '#6b7280' }));
     const segTotal = segments.reduce((s, seg) => s + seg.count, 0);
     let accum = 0;

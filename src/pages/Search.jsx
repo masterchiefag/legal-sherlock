@@ -726,7 +726,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
                         <option value="pending">Pending</option>
                         <option value="relevant">Relevant</option>
                         <option value="not_relevant">Not Relevant</option>
-                        <option value="privileged">Privileged</option>
+                        <option value="technical_issue">Technical Issue</option>
                     </select>
                     <select className="filter-select" value={docType} onChange={e => setDocType(e.target.value)}>
                         <option value="">All Types</option>

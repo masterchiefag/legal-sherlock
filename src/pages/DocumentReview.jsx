@@ -7,7 +7,7 @@ import { apiFetch } from '../utils/api';
 const REVIEW_OPTIONS = [
     { status: 'relevant', label: 'Relevant', color: '#10b981', key: 'r' },
     { status: 'not_relevant', label: 'Not Relevant', color: '#ef4444', key: 'n' },
-    { status: 'privileged', label: 'Privileged', color: '#f59e0b', key: 'p' },
+    { status: 'technical_issue', label: 'Technical Issue', color: '#f59e0b', key: 't' },
 ];
 
 function DocumentReview({ addToast, user }) {

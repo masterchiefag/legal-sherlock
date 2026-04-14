@@ -99,7 +99,7 @@ export function createTestDb() {
     CREATE TABLE document_reviews (
       id TEXT PRIMARY KEY,
       document_id TEXT NOT NULL,
-      status TEXT NOT NULL CHECK(status IN ('pending','relevant','not_relevant','privileged')),
+      status TEXT NOT NULL CHECK(status IN ('pending','relevant','not_relevant','privileged','technical_issue')),
       notes TEXT,
       reviewed_at TEXT DEFAULT (datetime('now')),
       reviewer_id TEXT,
