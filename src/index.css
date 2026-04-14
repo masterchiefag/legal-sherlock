@@ -738,8 +738,41 @@ body {
 .doc-viewer {
   display: grid;
   grid-template-columns: 1fr 380px;
+  grid-template-rows: auto 1fr;
   gap: 24px;
   height: calc(100vh - var(--header-height) - 64px);
+}
+
+.doc-nav-bar {
+  grid-column: 1 / -1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 8px 16px;
+  background: var(--bg-surface);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-md);
+  margin-bottom: -16px;
+}
+
+.doc-nav-btn {
+  padding: 4px 12px;
+  font-size: 13px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-secondary);
+  border-radius: var(--radius-sm);
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.doc-nav-btn:hover:not(:disabled) { background: var(--primary); color: #fff; }
+.doc-nav-btn:disabled { opacity: 0.4; cursor: default; }
+
+.doc-nav-position {
+  font-size: 13px;
+  color: var(--text-secondary);
+  font-variant-numeric: tabular-nums;
 }
 
 .doc-text-panel {

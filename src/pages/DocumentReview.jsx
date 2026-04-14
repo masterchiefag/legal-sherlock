@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link, useSearchParams } from 'react-router-dom'
 import { formatSize, getScoreColor, getScoreLabel } from '../utils/format';
 import { highlightText } from '../utils/sanitize';
 import { apiFetch } from '../utils/api';
+import { searchContextToApiParams, hasSearchContext } from '../utils/searchContext';
 
 const REVIEW_OPTIONS = [
     { status: 'relevant', label: 'Relevant', color: '#10b981', key: 'r' },
@@ -34,6 +35,9 @@ function DocumentReview({ addToast, user }) {
     const [sheetsLoading, setSheetsLoading] = useState(false);
     const [docxHtml, setDocxHtml] = useState(null);
     const [docxLoading, setDocxLoading] = useState(false);
+
+    // Prev/next navigation
+    const [neighbors, setNeighbors] = useState(null); // { prev_id, next_id, position, total }
 
     // AI Classification state
     const [investigationPrompt, setInvestigationPrompt] = useState(
@@ -128,14 +132,18 @@ function DocumentReview({ addToast, user }) {
     // Keyboard shortcuts
     useEffect(() => {
         const handler = (e) => {
-            if (!canEdit) return;
             if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+            // Prev/next navigation with arrow keys
+            if (e.key === 'ArrowLeft' && neighbors?.prev_id) { navigateToDoc(neighbors.prev_id); return; }
+            if (e.key === 'ArrowRight' && neighbors?.next_id) { navigateToDoc(neighbors.next_id); return; }
+            // Review shortcuts
+            if (!canEdit) return;
             const option = REVIEW_OPTIONS.find(o => o.key === e.key);
             if (option) handleReview(option.status);
         };
         window.addEventListener('keydown', handler);
         return () => window.removeEventListener('keydown', handler);
-    }, [id, canEdit]);
+    }, [id, canEdit, neighbors]);
 
     // Fetch native preview data for XLSX/DOCX
     useEffect(() => {
@@ -159,6 +167,22 @@ function DocumentReview({ addToast, user }) {
                 .catch(() => setDocxLoading(false));
         }
     }, [id, doc?.original_name, doc?.filename]);
+
+    // Fetch prev/next neighbors when navigated from search
+    useEffect(() => {
+        if (!hasSearchContext(searchParams)) { setNeighbors(null); return; }
+        const apiParams = searchContextToApiParams(searchParams);
+        apiFetch(`/api/documents/${id}/neighbors?${apiParams}`)
+            .then(r => r.json())
+            .then(data => setNeighbors(data))
+            .catch(() => setNeighbors(null));
+    }, [id, searchParams]);
+
+    const navigateToDoc = (docId) => {
+        if (!docId) return;
+        const qs = searchParams.toString();
+        navigate(`/documents/${docId}${qs ? `?${qs}` : ''}`);
+    };
 
     const handleReview = async (status) => {
         if (!canEdit) { addToast('Assign the batch to yourself first', 'error'); return; }
@@ -284,6 +308,30 @@ function DocumentReview({ addToast, user }) {
 
     return (
         <div className="doc-viewer fade-in">
+            {/* Prev/Next navigation bar */}
+            {neighbors && (
+                <div className="doc-nav-bar">
+                    <button
+                        className="doc-nav-btn"
+                        disabled={!neighbors.prev_id}
+                        onClick={() => navigateToDoc(neighbors.prev_id)}
+                        title="Previous document (←)"
+                    >
+                        ← Prev
+                    </button>
+                    <span className="doc-nav-position">
+                        {neighbors.position} of {neighbors.total}
+                    </span>
+                    <button
+                        className="doc-nav-btn"
+                        disabled={!neighbors.next_id}
+                        onClick={() => navigateToDoc(neighbors.next_id)}
+                        title="Next document (→)"
+                    >
+                        Next →
+                    </button>
+                </div>
+            )}
             {/* Text Viewer */}
             <div className="doc-text-panel">
                 {/* In-doc search */}
