@@ -705,6 +705,12 @@ function DocumentReview({ addToast, user }) {
                             <span className="text-muted">Size</span>
                             <span style={{ color: 'var(--text-primary)' }}>{formatSize(doc.size_bytes)}</span>
                         </div>
+                        {(isEmail || isChat) && doc.recipient_count > 0 && (
+                            <div className="flex justify-between">
+                                <span className="text-muted">Recipients</span>
+                                <span style={{ color: 'var(--text-primary)' }}>{doc.recipient_count}</span>
+                            </div>
+                        )}
                     </div>
                     </details>
                 </div>
