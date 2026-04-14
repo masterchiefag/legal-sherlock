@@ -437,9 +437,12 @@ async function main() {
         // Final flush
         flushPendingOps();
 
-        // Mark complete FIRST — FTS rebuild can OOM on large databases
+        // Mark extraction_done_at — frontend uses this to detect stuck jobs
         const memBefore = process.memoryUsage();
         console.log(`✦ ZIP Finalization: heapUsed=${(memBefore.heapUsed / 1024 / 1024).toFixed(0)}MB, rss=${(memBefore.rss / 1024 / 1024).toFixed(0)}MB`);
+        db.prepare("UPDATE import_jobs SET extraction_done_at = datetime('now') WHERE id = ?").run(jobId);
+
+        // Mark complete FIRST — FTS rebuild can OOM on large databases
 
         db.prepare(`
             UPDATE import_jobs
