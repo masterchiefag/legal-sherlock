@@ -33,7 +33,8 @@ function createSchema(db) {
       investigation_id TEXT,
       error_log TEXT,
       completed_at TEXT,
-      extraction_done_at TEXT
+      extraction_done_at TEXT,
+      started_at TEXT
     );
 
     CREATE TABLE documents (
@@ -153,11 +154,13 @@ function seedImportJob(db, id, invId, overrides = {}) {
     total_emails: 10,
     total_attachments: 5,
     investigation_id: invId,
+    extraction_done_at: null,
+    started_at: null,
     ...overrides,
   };
   db.prepare(
-    'INSERT INTO import_jobs (id, filename, status, phase, progress_percent, total_emails, total_attachments, investigation_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?)'
-  ).run(job.id, job.filename, job.status, job.phase, job.progress_percent, job.total_emails, job.total_attachments, job.investigation_id);
+    'INSERT INTO import_jobs (id, filename, status, phase, progress_percent, total_emails, total_attachments, investigation_id, extraction_done_at, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)'
+  ).run(job.id, job.filename, job.status, job.phase, job.progress_percent, job.total_emails, job.total_attachments, job.investigation_id, job.extraction_done_at, job.started_at);
   return job;
 }
 
@@ -470,6 +473,52 @@ describe('FTS recovery and cleanup', () => {
       db.prepare('INSERT INTO documents (id, original_name, text_content) VALUES (?, ?, ?)').run('d-new', 'new.txt', 'freshcontent');
       const newResults = db.prepare("SELECT * FROM documents_fts WHERE documents_fts MATCH 'freshcontent'").all();
       expect(newResults.length).toBe(1);
+    });
+  });
+
+  // ───────────────────────────────────────────────────
+  // Stuck job detection (isStuckAt100 logic)
+  // ───────────────────────────────────────────────────
+
+  describe('stuck job detection for finalize button', () => {
+    // Helper mirrors the frontend isStuckAt100 logic
+    function isStuckAt100(job) {
+      if (job?.phase !== 'extracting' || job?.progress_percent < 100 || job?.status !== 'processing') return false;
+      if (!job.extraction_done_at) return false;
+      return (Date.now() - new Date(job.extraction_done_at + 'Z').getTime()) > 5 * 60 * 1000;
+    }
+
+    it('detects stuck job via extraction_done_at (primary path)', () => {
+      const invId = seedInvestigation(db);
+      const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+      seedImportJob(db, 'stuck-1', invId, { extraction_done_at: tenMinAgo });
+      const job = db.prepare('SELECT * FROM import_jobs WHERE id = ?').get('stuck-1');
+      expect(isStuckAt100(job)).toBe(true);
+    });
+
+    it('does not trigger when extraction_done_at is recent', () => {
+      const invId = seedInvestigation(db);
+      const twoMinAgo = new Date(Date.now() - 2 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+      seedImportJob(db, 'stuck-2', invId, { extraction_done_at: twoMinAgo });
+      const job = db.prepare('SELECT * FROM import_jobs WHERE id = ?').get('stuck-2');
+      expect(isStuckAt100(job)).toBe(false);
+    });
+
+    it('does not trigger for completed jobs', () => {
+      const invId = seedInvestigation(db);
+      const tenMinAgo = new Date(Date.now() - 10 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+      seedImportJob(db, 'stuck-3', invId, {
+        status: 'completed', phase: 'completed', extraction_done_at: tenMinAgo,
+      });
+      const job = db.prepare('SELECT * FROM import_jobs WHERE id = ?').get('stuck-3');
+      expect(isStuckAt100(job)).toBe(false);
+    });
+
+    it('does not trigger when extraction_done_at is null', () => {
+      const invId = seedInvestigation(db);
+      seedImportJob(db, 'stuck-4', invId, { extraction_done_at: null });
+      const job = db.prepare('SELECT * FROM import_jobs WHERE id = ?').get('stuck-4');
+      expect(isStuckAt100(job)).toBe(false);
     });
   });
 

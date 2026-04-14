@@ -545,6 +545,10 @@ async function main() {
 
         if (extractionOps.length > 0) flushBatch(extractionOps);
 
+        // Mark extraction done ASAP — frontend uses this to detect stuck jobs.
+        // Must be set before any heavy operations (backfill, FTS) that could OOM.
+        db.prepare("UPDATE import_jobs SET extraction_done_at = datetime('now') WHERE id = ?").run(jobId);
+
         // Backfill text from originals into duplicates (they share content_hash)
         if (dupeCount.changes > 0) {
             const backfilled = db.prepare(`
@@ -557,9 +561,6 @@ async function main() {
             `).run(investigation_id);
             console.log(`✦ Phase 2: backfilled text for ${backfilled.changes} duplicates`);
         }
-
-        // Mark extraction done timestamp — used by frontend to detect stuck jobs
-        db.prepare("UPDATE import_jobs SET extraction_done_at = datetime('now') WHERE id = ?").run(jobId);
 
         console.log(`✦ PST Import Phase 2 complete: extracted text from ${extracted} attachments`);
         if (ocrCount > 0) {
