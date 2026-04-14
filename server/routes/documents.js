@@ -588,7 +588,14 @@ router.post('/import-local', requireRole('admin', 'reviewer'), (req, res) => {
 
         spawnPstWorker(jobId, originalname, resolvedPath, originalname, investigation_id, custodian || null, false, true);
 
-        logAudit(req, ACTIONS.DOCUMENT_UPLOAD, 'import_job', jobId, { originalname, source: 'local', filepath: resolvedPath });
+        logAudit(db, {
+            userId: req.user.id,
+            action: ACTIONS.DOC_UPLOAD,
+            resourceType: 'import_job',
+            resourceId: jobId,
+            details: { originalname, source: 'local', filepath: resolvedPath },
+            ipAddress: req.ip,
+        });
 
         res.status(202).json({
             message: `${ext.toUpperCase().slice(1)} import started from local path.`,
