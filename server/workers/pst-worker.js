@@ -129,8 +129,16 @@ const flushBatch = db.transaction((ops) => {
 
 function flushPendingOps() {
     if (batchBuffer.length === 0) return;
-    flushBatch(batchBuffer);
-    batchBuffer = [];
+    try {
+        flushBatch(batchBuffer);
+        batchBuffer = [];
+    } catch (err) {
+        console.error(`✦ FLUSH ERROR (${batchBuffer.length} ops): ${err.message}`);
+        // Clear the buffer even on failure — otherwise it grows unbounded
+        // and every subsequent flush retries the same broken ops
+        batchBuffer = [];
+        throw err; // re-throw so caller sees the failure
+    }
 }
 
 // In-memory hash set for fast dedup within this import
@@ -354,6 +362,9 @@ async function main() {
                     updateProgress.run(totalEmails, totalAttachments, 'importing', jobId);
                     console.log(`✦ PST Import: ${totalEmails} emails, ${totalAttachments} attachments processed`);
                     logPerfSummary();
+                } else if (totalEmails % 50 === 0) {
+                    // Update progress more frequently so UI stays in sync
+                    updateProgress.run(totalEmails, totalAttachments, 'importing', jobId);
                 }
             } catch (err) {
                 errorLog.push({ file: path.basename(emlPath), error: err.message });
@@ -441,6 +452,16 @@ async function main() {
         const OCR_TIMEOUT = (getSetting('extract_ocr_timeout') || 120) * 1000;
         const NODE_BIN = process.execPath;
 
+        // Pass extraction settings as env vars so subprocesses don't need db.js
+        const extractEnv = {
+            ...process.env,
+            EXTRACT_MAX_FILE_SIZE_MB: String(getSetting('extract_max_file_size_mb') || 50),
+            EXTRACT_OCR_MIN_TEXT_LENGTH: String(getSetting('ocr_min_text_length') || 100),
+            EXTRACT_OCR_DPI: String(getSetting('ocr_dpi') || 100),
+            EXTRACT_OCR_PDFTOPPM_TIMEOUT: String(getSetting('ocr_pdftoppm_timeout') || 60),
+            EXTRACT_OCR_TESSERACT_TIMEOUT: String(getSetting('ocr_tesseract_timeout') || 60),
+        };
+
         function extractViaSubprocess(filePath, mimeType, mode = 'text') {
             const timeout = mode === 'textocr' ? OCR_TIMEOUT : EXTRACT_TIMEOUT;
             return new Promise((resolve, reject) => {
@@ -448,6 +469,7 @@ async function main() {
                     timeout,
                     maxBuffer: 50 * 1024 * 1024,
                     killSignal: 'SIGKILL',
+                    env: extractEnv,
                 }, (err, stdout, stderr) => {
                     if (err) {
                         if (err.killed) return reject(new Error('Extraction timed out (killed)'));
@@ -460,7 +482,7 @@ async function main() {
 
         console.log(`✦ DEBUG: Starting runConcurrent with ${pendingDocs.length} docs...`);
         await runConcurrent(pendingDocs, PHASE2_CONCURRENCY, async (doc) => {
-            if (!doc.filename) {
+            if (!doc.filename || doc.filename.startsWith('oversized/')) {
                 extracted++;
                 return;
             }
@@ -534,7 +556,17 @@ async function main() {
             if (extractionOps.length >= DB_BATCH_SIZE) {
                 const ops = extractionOps;
                 extractionOps = [];
-                flushBatch(ops);
+                try {
+                    flushBatch(ops);
+                } catch (flushErr) {
+                    console.error(`✦ Phase 2 FLUSH ERROR: ${flushErr.message}`);
+                    // FTS corruption is recoverable — skip the batch and continue
+                    if (flushErr.code === 'SQLITE_CORRUPT_VTAB') {
+                        console.warn('✦ FTS corruption detected — will rebuild at end of Phase 2');
+                    } else {
+                        throw flushErr;
+                    }
+                }
             }
 
             if (extracted % 50 === 0 || extracted === totalPending) {
@@ -544,14 +576,23 @@ async function main() {
             }
         });
 
-        if (extractionOps.length > 0) flushBatch(extractionOps);
+        if (extractionOps.length > 0) {
+            try {
+                flushBatch(extractionOps);
+            } catch (flushErr) {
+                console.error(`✦ Phase 2 final FLUSH ERROR: ${flushErr.message}`);
+            }
+        }
 
         // Mark extraction done ASAP — frontend uses this to detect stuck jobs.
         // Must be set before any heavy operations (backfill, FTS) that could OOM.
         db.prepare("UPDATE import_jobs SET extraction_done_at = datetime('now') WHERE id = ?").run(jobId);
+        console.log('✦ Extraction complete — extraction_done_at set');
 
         // Backfill text from originals into duplicates (they share content_hash)
         if (dupeCount.changes > 0) {
+            console.log(`✦ Backfilling text for ${dupeCount.changes} duplicates...`);
+            const backfillStart = Date.now();
             const backfilled = db.prepare(`
                 UPDATE documents SET
                     text_content = (SELECT d2.text_content FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 AND d2.text_content IS NOT NULL LIMIT 1),
@@ -560,7 +601,7 @@ async function main() {
                     ocr_time_ms = (SELECT d2.ocr_time_ms FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 LIMIT 1)
                 WHERE is_duplicate = 1 AND doc_type = 'attachment' AND investigation_id = ? AND text_content IS NULL
             `).run(investigation_id);
-            console.log(`✦ Phase 2: backfilled text for ${backfilled.changes} duplicates`);
+            console.log(`✦ Backfill done: ${backfilled.changes} duplicates in ${((Date.now() - backfillStart) / 1000).toFixed(1)}s`);
         }
 
         console.log(`✦ PST Import Phase 2 complete: extracted text from ${extracted} attachments`);
@@ -735,7 +776,7 @@ async function processEmail(eml) {
         // Skip file write for duplicates or oversized — reuse existing file or skip entirely
         let finalFilename = attFilename;
         if (isOversized) {
-            finalFilename = null; // no file on disk
+            finalFilename = `oversized/${attId}${attExt}`; // no file on disk, but DB needs non-null filename
             perfStats.attSkippedSize++;
         } else if (isDuplicate) {
             finalFilename = seenHashes.get(attHash); // point to existing file
