@@ -740,6 +740,17 @@ async function main() {
             const NODE_BIN = process.execPath;
             const PHASE2_CONCURRENCY = getSetting('import_phase2_concurrency') || 4;
 
+            // Pass extraction settings as env vars so subprocesses don't need db.js
+            const extractEnv = {
+                ...process.env,
+                EXTRACT_OCR_ENABLED: String(getSetting('ocr_enabled') ?? true),
+                EXTRACT_MAX_FILE_SIZE_MB: String(getSetting('extract_max_file_size_mb') || 50),
+                EXTRACT_OCR_MIN_TEXT_LENGTH: String(getSetting('ocr_min_text_length') || 100),
+                EXTRACT_OCR_DPI: String(getSetting('ocr_dpi') || 100),
+                EXTRACT_OCR_PDFTOPPM_TIMEOUT: String(getSetting('ocr_pdftoppm_timeout') || 60),
+                EXTRACT_OCR_TESSERACT_TIMEOUT: String(getSetting('ocr_tesseract_timeout') || 60),
+            };
+
             function extractViaSubprocess(filePath, mimeType, mode = 'text') {
                 const timeout = mode === 'textocr' ? OCR_TIMEOUT : EXTRACT_TIMEOUT;
                 return new Promise((resolve, reject) => {
@@ -747,6 +758,7 @@ async function main() {
                         timeout,
                         maxBuffer: 50 * 1024 * 1024,
                         killSignal: 'SIGKILL',
+                        env: extractEnv,
                     }, (err, stdout, stderr) => {
                         if (err) {
                             if (err.killed) return reject(new Error('Extraction timed out (killed)'));

@@ -455,6 +455,7 @@ async function main() {
         // Pass extraction settings as env vars so subprocesses don't need db.js
         const extractEnv = {
             ...process.env,
+            EXTRACT_OCR_ENABLED: String(getSetting('ocr_enabled') ?? true),
             EXTRACT_MAX_FILE_SIZE_MB: String(getSetting('extract_max_file_size_mb') || 50),
             EXTRACT_OCR_MIN_TEXT_LENGTH: String(getSetting('ocr_min_text_length') || 100),
             EXTRACT_OCR_DPI: String(getSetting('ocr_dpi') || 100),
