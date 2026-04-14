@@ -22,7 +22,7 @@ const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
 const EML_PARSE_WORKER = path.join(__dirname, 'eml-parse-worker.js');
 
 console.log('✦ DEBUG: workerData destructured');
-const { jobId, filename, filepath, originalname, investigation_id, custodian, resume, extractionOnly } = workerData;
+const { jobId, filename, filepath, originalname, investigation_id, custodian, resume, extractionOnly, preserveSource } = workerData;
 console.log('✦ DEBUG: constants initializing');
 
 // Ensure investigation subdirectory exists
@@ -363,7 +363,7 @@ async function main() {
                     console.log(`✦ PST Import: ${totalEmails} emails, ${totalAttachments} attachments processed`);
                     logPerfSummary();
                 } else if (totalEmails % 50 === 0) {
-                    // Update progress more frequently so UI stays in sync
+                    // Lightweight progress update for UI polling (no flush)
                     updateProgress.run(totalEmails, totalAttachments, 'importing', jobId);
                 }
             } catch (err) {
@@ -683,12 +683,16 @@ async function main() {
         walCheckpoint(db);
         console.log('✦ Finalization [5/5]: done — all finalization complete');
 
-        // Auto-cleanup: delete source PST/OST file after successful import
-        try {
-            fs.unlinkSync(filepath);
-            console.log('✦ PST Import: deleted source file to free disk space');
-        } catch (e) {
-            console.warn('✦ PST Import: could not delete source file:', e.message);
+        // Auto-cleanup: delete source PST/OST file after successful import (skip for local path imports)
+        if (preserveSource) {
+            console.log('✦ PST Import: preserving source file (local path import)');
+        } else {
+            try {
+                fs.unlinkSync(filepath);
+                console.log('✦ PST Import: deleted source file to free disk space');
+            } catch (e) {
+                console.warn('✦ PST Import: could not delete source file:', e.message);
+            }
         }
 
     } catch (err) {

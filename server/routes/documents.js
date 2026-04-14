@@ -124,13 +124,17 @@ function finalizeStuckJob(jobId, reason) {
 }
 
 // ═══════════════════════════════════════════════════
-// Log stuck import jobs on startup (finalization is manual via UI button)
+// Mark stuck import jobs as failed on startup (no worker is running after restart)
 // ═══════════════════════════════════════════════════
-const stuckJobs = db.prepare("SELECT id, filename FROM import_jobs WHERE status IN ('processing', 'pending')").all();
+const stuckJobs = db.prepare("SELECT id, filename, total_emails, total_attachments FROM import_jobs WHERE status IN ('processing', 'pending')").all();
 if (stuckJobs.length > 0) {
-    console.log(`✦ Found ${stuckJobs.length} stuck import job(s) — use "Finalize Import" button in UI to recover:`);
+    console.log(`✦ Found ${stuckJobs.length} stuck import job(s) — marking as failed (use Resume to continue):`);
+    const markFailed = db.prepare(
+        "UPDATE import_jobs SET status = 'failed', completed_at = datetime('now') WHERE id = ?"
+    );
     for (const job of stuckJobs) {
-        console.log(`  - ${job.filename} (${job.id})`);
+        markFailed.run(job.id);
+        console.log(`  - ${job.filename} (${job.id}) — ${job.total_emails || 0} emails, ${job.total_attachments || 0} attachments before crash`);
     }
 }
 
@@ -289,10 +293,10 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
 
-function spawnPstWorker(jobId, filename, filepath, originalname, investigation_id, custodian, extractionOnly = false) {
+function spawnPstWorker(jobId, filename, filepath, originalname, investigation_id, custodian, extractionOnly = false, preserveSource = false) {
     const workerPath = path.join(__dirname, '..', 'workers', 'pst-worker.js');
     const worker = new Worker(workerPath, {
-        workerData: { jobId, filename, filepath, originalname, investigation_id, custodian, resume: extractionOnly, extractionOnly }
+        workerData: { jobId, filename, filepath, originalname, investigation_id, custodian, resume: extractionOnly, extractionOnly, preserveSource }
     });
 
     worker.on('error', (err) => {
@@ -551,10 +555,67 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
     }
 });
 
+// ═══════════════════════════════════════════════════
+// Import PST/OST from local filesystem path (no upload)
+// ═══════════════════════════════════════════════════
+router.post('/import-local', requireRole('admin', 'reviewer'), (req, res) => {
+    try {
+        const { path: localPath, investigation_id, custodian } = req.body;
+
+        if (!localPath || !investigation_id) {
+            return res.status(400).json({ error: 'path and investigation_id are required' });
+        }
+
+        const ext = path.extname(localPath).toLowerCase();
+        if (ext !== '.pst' && ext !== '.ost') {
+            return res.status(400).json({ error: 'Only .pst and .ost files are supported' });
+        }
+
+        // Resolve to absolute path and verify file exists
+        const resolvedPath = path.resolve(localPath);
+        if (!fs.existsSync(resolvedPath)) {
+            return res.status(400).json({ error: `File not found: ${resolvedPath}` });
+        }
+
+        const stat = fs.statSync(resolvedPath);
+        if (!stat.isFile()) {
+            return res.status(400).json({ error: 'Path is not a file' });
+        }
+
+        const originalname = path.basename(resolvedPath);
+        const jobId = uuidv4();
+
+        db.prepare(`
+            INSERT INTO import_jobs (id, filename, filepath, status, investigation_id, custodian, preserve_source)
+            VALUES (?, ?, ?, 'pending', ?, ?, 1)
+        `).run(jobId, originalname, resolvedPath, investigation_id, custodian || null);
+
+        spawnPstWorker(jobId, originalname, resolvedPath, originalname, investigation_id, custodian || null, false, true);
+
+        logAudit(db, {
+            userId: req.user.id,
+            action: ACTIONS.DOC_UPLOAD,
+            resourceType: 'import_job',
+            resourceId: jobId,
+            details: { originalname, source: 'local', filepath: resolvedPath },
+            ipAddress: req.ip,
+        });
+
+        res.status(202).json({
+            message: `${ext.toUpperCase().slice(1)} import started from local path.`,
+            jobId,
+            filename: originalname
+        });
+    } catch (err) {
+        console.error(err);
+        res.status(500).json({ error: 'Internal server error' });
+    }
+});
+
 // Get recent failed jobs for the active investigation (must be before /jobs/:id)
 router.get('/jobs/failed/:investigation_id', (req, res) => {
     try {
-        const jobs = db.prepare(
+        const jobs = readDb.prepare(
             "SELECT * FROM import_jobs WHERE investigation_id = ? AND status = 'failed' ORDER BY started_at DESC LIMIT 5"
         ).all(req.params.investigation_id);
         res.json({ jobs });
@@ -567,7 +628,7 @@ router.get('/jobs/failed/:investigation_id', (req, res) => {
 // Get recent import jobs for the active investigation (all statuses)
 router.get('/jobs/recent/:investigation_id', (req, res) => {
     try {
-        const jobs = db.prepare(
+        const jobs = readDb.prepare(
             "SELECT * FROM import_jobs WHERE investigation_id = ? ORDER BY started_at DESC LIMIT 5"
         ).all(req.params.investigation_id);
         res.json({ jobs });
@@ -580,7 +641,7 @@ router.get('/jobs/recent/:investigation_id', (req, res) => {
 // GET /api/documents/jobs/:id - Poll job status
 router.get('/jobs/:id', (req, res) => {
     try {
-        const job = db.prepare('SELECT * FROM import_jobs WHERE id = ?').get(req.params.id);
+        const job = readDb.prepare('SELECT * FROM import_jobs WHERE id = ?').get(req.params.id);
         if (!job) {
             return res.status(404).json({ error: "Job not found" });
         }
@@ -699,6 +760,7 @@ router.post('/jobs/:id/resume', requireRole('admin', 'reviewer'), (req, res) => 
                 custodian: job.custodian,
                 resume: true,
                 extractionOnly,
+                preserveSource: !!job.preserve_source,
             }
         });
 
