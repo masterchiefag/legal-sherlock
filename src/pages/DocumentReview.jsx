@@ -597,18 +597,15 @@ function DocumentReview({ addToast, user }) {
                                             </div>
                                         )}
                                         {(isXls || isDocx) && (
-                                            <div>
-                                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px', padding: '16px 20px', background: 'var(--bg-tertiary)', borderRadius: '8px', border: '1px solid var(--border-secondary)', marginBottom: '20px' }}>
-                                                    <span style={{ fontSize: '28px' }}>{isXls ? '📊' : '📄'}</span>
-                                                    <div style={{ flex: 1 }}>
-                                                        <div style={{ fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>{doc.original_name}</div>
-                                                        <div style={{ fontSize: '12px', color: 'var(--text-muted)', marginTop: '2px' }}>{ext.toUpperCase()} document · {formatSize(doc.size_bytes)}</div>
-                                                    </div>
+                                            <div style={{ display: 'flex', flexDirection: 'column', height: '80vh' }}>
+                                                <div style={{ display: 'flex', justifyContent: 'flex-end', padding: '8px 0', gap: '12px', alignItems: 'center' }}>
+                                                    <span style={{ fontSize: '13px', color: 'var(--text-muted)', marginRight: 'auto' }}>
+                                                        {doc.original_name} · {formatSize(doc.size_bytes)}
+                                                    </span>
                                                     <a
                                                         href={`/uploads/${doc.filename}`}
                                                         download={doc.original_name}
-                                                        className="btn btn-sm btn-outline"
-                                                        style={{ display: 'flex', alignItems: 'center', gap: '6px' }}
+                                                        style={{ color: 'var(--text-accent)', fontSize: '13px', display: 'flex', alignItems: 'center', gap: '4px' }}
                                                     >
                                                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" width="14" height="14">
                                                             <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" /><polyline points="7 10 12 15 17 10" /><line x1="12" y1="15" x2="12" y2="3" />
@@ -616,83 +613,84 @@ function DocumentReview({ addToast, user }) {
                                                         Download
                                                     </a>
                                                 </div>
-                                                {/* XLSX native preview */}
-                                                {isXls && sheetsLoading && (
-                                                    <div style={{ textAlign: 'center', padding: '32px' }}>
-                                                        <div className="spinner" style={{ marginBottom: '8px' }}></div>
-                                                        <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>Loading spreadsheet...</p>
-                                                    </div>
-                                                )}
-                                                {isXls && sheetData && (
-                                                    <div>
-                                                        {sheetData.length > 1 && (
-                                                            <div style={{ display: 'flex', gap: '0', marginBottom: '12px', borderBottom: '1px solid var(--border-secondary)', flexWrap: 'wrap' }}>
-                                                                {sheetData.map((sheet, i) => (
-                                                                    <button
-                                                                        key={i}
-                                                                        onClick={() => setActiveSheet(i)}
-                                                                        style={{
-                                                                            padding: '6px 14px', fontSize: '12px', fontWeight: 500, cursor: 'pointer',
-                                                                            background: 'none', border: 'none',
-                                                                            borderBottom: activeSheet === i ? '2px solid var(--primary)' : '2px solid transparent',
-                                                                            color: activeSheet === i ? 'var(--primary)' : 'var(--text-tertiary)',
-                                                                        }}
-                                                                    >
-                                                                        {sheet.name}
-                                                                    </button>
-                                                                ))}
-                                                            </div>
-                                                        )}
-                                                        {sheetData[activeSheet] && (
-                                                            <div style={{ overflowX: 'auto', maxHeight: '70vh', overflowY: 'auto' }}>
-                                                                <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', fontFamily: 'var(--font-mono)' }}>
-                                                                    <thead>
-                                                                        <tr>
-                                                                            {sheetData[activeSheet].headers.map((h, i) => (
-                                                                                <th key={i} style={{
-                                                                                    padding: '6px 10px', textAlign: 'left', fontWeight: 600,
-                                                                                    background: 'var(--bg-tertiary)', borderBottom: '2px solid var(--border-secondary)',
-                                                                                    color: 'var(--text-primary)', whiteSpace: 'nowrap', position: 'sticky', top: 0,
-                                                                                }}>{h || `Col ${i + 1}`}</th>
-                                                                            ))}
-                                                                        </tr>
-                                                                    </thead>
-                                                                    <tbody>
-                                                                        {sheetData[activeSheet].rows.map((row, ri) => (
-                                                                            <tr key={ri} style={{ borderBottom: '1px solid var(--border-secondary)' }}>
-                                                                                {row.map((cell, ci) => (
-                                                                                    <td key={ci} style={{
-                                                                                        padding: '4px 10px', color: 'var(--text-secondary)',
-                                                                                        whiteSpace: 'nowrap', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis',
-                                                                                    }}>{cell != null ? String(cell) : ''}</td>
+                                                <div className="native-preview-frame">
+                                                    {/* XLSX native preview */}
+                                                    {isXls && sheetsLoading && (
+                                                        <div style={{ textAlign: 'center', padding: '32px' }}>
+                                                            <div className="spinner" style={{ marginBottom: '8px' }}></div>
+                                                            <p style={{ color: '#666', fontSize: '13px' }}>Loading spreadsheet...</p>
+                                                        </div>
+                                                    )}
+                                                    {isXls && sheetData && (
+                                                        <div style={{ display: 'flex', flexDirection: 'column', height: '100%' }}>
+                                                            {sheetData.length > 1 && (
+                                                                <div style={{ display: 'flex', gap: '0', borderBottom: '1px solid #ddd', flexWrap: 'wrap', flexShrink: 0, background: '#f5f5f5' }}>
+                                                                    {sheetData.map((sheet, i) => (
+                                                                        <button
+                                                                            key={i}
+                                                                            onClick={() => setActiveSheet(i)}
+                                                                            style={{
+                                                                                padding: '6px 14px', fontSize: '12px', fontWeight: 500, cursor: 'pointer',
+                                                                                background: activeSheet === i ? '#fff' : 'transparent', border: 'none',
+                                                                                borderBottom: activeSheet === i ? '2px solid #3b82f6' : '2px solid transparent',
+                                                                                color: activeSheet === i ? '#3b82f6' : '#666',
+                                                                            }}
+                                                                        >
+                                                                            {sheet.name}
+                                                                        </button>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {sheetData[activeSheet] && (
+                                                                <div style={{ overflowX: 'auto', overflowY: 'auto', flex: 1 }}>
+                                                                    <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: '12px', fontFamily: 'var(--font-mono)' }}>
+                                                                        <thead>
+                                                                            <tr>
+                                                                                {sheetData[activeSheet].headers.map((h, i) => (
+                                                                                    <th key={i} style={{
+                                                                                        padding: '6px 10px', textAlign: 'left', fontWeight: 600,
+                                                                                        background: '#f0f0f0', borderBottom: '2px solid #ddd',
+                                                                                        color: '#333', whiteSpace: 'nowrap', position: 'sticky', top: 0,
+                                                                                    }}>{h || `Col ${i + 1}`}</th>
                                                                                 ))}
                                                                             </tr>
-                                                                        ))}
-                                                                    </tbody>
-                                                                </table>
-                                                                {sheetData[activeSheet].truncated && (
-                                                                    <p style={{ padding: '8px 0', fontSize: '12px', color: 'var(--text-muted)', textAlign: 'center' }}>
-                                                                        Showing first 500 of {sheetData[activeSheet].totalRows} rows
-                                                                    </p>
-                                                                )}
-                                                            </div>
-                                                        )}
-                                                    </div>
-                                                )}
-                                                {/* DOCX native preview */}
-                                                {isDocx && docxLoading && (
-                                                    <div style={{ textAlign: 'center', padding: '32px' }}>
-                                                        <div className="spinner" style={{ marginBottom: '8px' }}></div>
-                                                        <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>Loading document...</p>
-                                                    </div>
-                                                )}
-                                                {isDocx && docxHtml && (
-                                                    <div
-                                                        className="docx-preview"
-                                                        style={{ fontSize: '14px', lineHeight: '1.7', color: 'var(--text-secondary)' }}
-                                                        dangerouslySetInnerHTML={{ __html: docxHtml }}
-                                                    />
-                                                )}
+                                                                        </thead>
+                                                                        <tbody>
+                                                                            {sheetData[activeSheet].rows.map((row, ri) => (
+                                                                                <tr key={ri} style={{ borderBottom: '1px solid #eee' }}>
+                                                                                    {row.map((cell, ci) => (
+                                                                                        <td key={ci} style={{
+                                                                                            padding: '4px 10px', color: '#444',
+                                                                                            whiteSpace: 'nowrap', maxWidth: '300px', overflow: 'hidden', textOverflow: 'ellipsis',
+                                                                                        }}>{cell != null ? String(cell) : ''}</td>
+                                                                                    ))}
+                                                                                </tr>
+                                                                            ))}
+                                                                        </tbody>
+                                                                    </table>
+                                                                    {sheetData[activeSheet].truncated && (
+                                                                        <p style={{ padding: '8px 0', fontSize: '12px', color: '#999', textAlign: 'center' }}>
+                                                                            Showing first 500 of {sheetData[activeSheet].totalRows} rows
+                                                                        </p>
+                                                                    )}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                    {/* DOCX native preview */}
+                                                    {isDocx && docxLoading && (
+                                                        <div style={{ textAlign: 'center', padding: '32px' }}>
+                                                            <div className="spinner" style={{ marginBottom: '8px' }}></div>
+                                                            <p style={{ color: '#666', fontSize: '13px' }}>Loading document...</p>
+                                                        </div>
+                                                    )}
+                                                    {isDocx && docxHtml && (
+                                                        <div
+                                                            className="docx-preview"
+                                                            dangerouslySetInnerHTML={{ __html: docxHtml }}
+                                                        />
+                                                    )}
+                                                </div>
                                             </div>
                                         )}
                                     </>

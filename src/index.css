@@ -812,11 +812,28 @@ body {
   border-bottom-color: var(--primary);
 }
 
+/* ── Native Preview Frame (XLSX, DOCX) ── */
+.native-preview-frame {
+  flex: 1;
+  background: #fff;
+  border: 1px solid #d1d5db;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
 /* ── DOCX Preview ──────────────────── */
+.docx-preview {
+  padding: 32px 40px;
+  font-size: 14px;
+  line-height: 1.7;
+  color: #333;
+  overflow-y: auto;
+  height: 100%;
+}
 .docx-preview p { margin: 0 0 12px; }
-.docx-preview h1, .docx-preview h2, .docx-preview h3 { color: var(--text-primary); margin: 16px 0 8px; }
+.docx-preview h1, .docx-preview h2, .docx-preview h3 { color: #111; margin: 16px 0 8px; }
 .docx-preview table { border-collapse: collapse; width: 100%; margin: 12px 0; }
-.docx-preview td, .docx-preview th { border: 1px solid var(--border-secondary); padding: 6px 10px; font-size: 13px; }
+.docx-preview td, .docx-preview th { border: 1px solid #ddd; padding: 6px 10px; font-size: 13px; color: #444; }
 .docx-preview img { max-width: 100%; border-radius: 4px; }
 
 .doc-text-content {
