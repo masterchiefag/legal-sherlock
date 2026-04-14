@@ -8,3 +8,4 @@ uploads/
 .env
 .DS_Store
 samples/
+logs/
