@@ -25,6 +25,7 @@ import {
 import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
 import { resolveThreadId, backfillThread } from '../lib/threading.js';
+import { getSetting } from '../lib/settings.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -112,7 +113,7 @@ const insertFile = db.prepare(`
 `);
 
 // Batched transaction wrapper
-const DB_BATCH_SIZE = 200;
+const DB_BATCH_SIZE = getSetting('import_db_batch_size') || 500;
 let batchBuffer = [];
 
 const flushBatch = db.transaction((ops) => {

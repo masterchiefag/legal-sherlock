@@ -9,6 +9,7 @@ import { fileURLToPath } from 'url';
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import { refreshInvestigationCounts } from '../lib/worker-helpers.js';
+import { getSetting } from '../lib/settings.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -734,10 +735,10 @@ async function main() {
             updateProgress.run(totalChatDocs, 50, 'extracting', jobId);
 
             const EXTRACT_WORKER = path.join(__dirname, '..', 'lib', 'extract-worker.js');
-            const EXTRACT_TIMEOUT = 15000;
-            const OCR_TIMEOUT = 120000;
+            const EXTRACT_TIMEOUT = (getSetting('extract_timeout') || 15) * 1000;
+            const OCR_TIMEOUT = (getSetting('extract_ocr_timeout') || 120) * 1000;
             const NODE_BIN = process.execPath;
-            const PHASE2_CONCURRENCY = 4;
+            const PHASE2_CONCURRENCY = getSetting('import_phase2_concurrency') || 4;
 
             function extractViaSubprocess(filePath, mimeType, mode = 'text') {
                 const timeout = mode === 'textocr' ? OCR_TIMEOUT : EXTRACT_TIMEOUT;

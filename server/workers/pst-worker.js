@@ -13,6 +13,7 @@ import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
 import { disableFtsTriggers, enableFtsTriggers, rebuildFtsIndex, dropBulkIndexes, recreateBulkIndexes, refreshInvestigationCounts, walCheckpoint } from '../lib/worker-helpers.js';
 import { resolveThreadId, backfillThread, updateCacheOnly, resolveThreadIdFromCache, initCache } from '../lib/threading-cached.js';
+import { getSetting } from '../lib/settings.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -60,11 +61,11 @@ function attIdentifier(parentIdentifier, attIndex) {
     return `${parentIdentifier}_${String(attIndex).padStart(3, '0')}`;
 }
 
-// Thread pool size for parallel email parsing
-const PARSE_CONCURRENCY = Math.max(2, Math.min(os.cpus().length - 1, 6));
-const PHASE2_CONCURRENCY = 4;
-const DB_BATCH_SIZE = 500; // Larger batches = fewer transactions = faster
-const MAX_ATTACHMENT_SIZE = 100 * 1024 * 1024; // 100MB — skip writing larger files to disk
+// Read operational settings from DB (live-configurable via admin UI)
+const PARSE_CONCURRENCY = getSetting('import_parse_concurrency') || Math.max(2, Math.min(os.cpus().length - 1, 6));
+const PHASE2_CONCURRENCY = getSetting('import_phase2_concurrency') || 4;
+const DB_BATCH_SIZE = getSetting('import_db_batch_size') || 500;
+const MAX_ATTACHMENT_SIZE = (getSetting('import_max_attachment_size_mb') || 100) * 1024 * 1024;
 
 // Initialize from existing job counts on resume so UI doesn't reset to 0
 const existingJob = resume
@@ -436,8 +437,8 @@ async function main() {
         // Use subprocess for extraction — mammoth/pdf-parse are CPU-bound and block the
         // event loop, making Promise.race timeouts useless. execFile has a real OS timeout.
         const EXTRACT_WORKER = path.join(__dirname, '..', 'lib', 'extract-worker.js');
-        const EXTRACT_TIMEOUT = 15000; // 15 seconds hard kill
-        const OCR_TIMEOUT = 120000; // 2 minutes for OCR (pdftoppm + tesseract)
+        const EXTRACT_TIMEOUT = (getSetting('extract_timeout') || 15) * 1000;
+        const OCR_TIMEOUT = (getSetting('extract_ocr_timeout') || 120) * 1000;
         const NODE_BIN = process.execPath;
 
         function extractViaSubprocess(filePath, mimeType, mode = 'text') {
