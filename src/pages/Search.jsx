@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { formatSize, getScoreColor } from '../utils/format';
 import { apiFetch, apiPost } from '../utils/api';
+import { buildSearchContextParams } from '../utils/searchContext';
 
 function Search({ activeInvestigationId, activeInvestigation, addToast }) {
     const [searchParams, setSearchParams] = useSearchParams();
@@ -99,6 +100,17 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
     };
 
     const navigate = useNavigate();
+
+    const buildDocUrl = (docId) => {
+        const ctx = buildSearchContextParams({
+            query, reviewStatus, docType, scoreFilter, dateFrom, dateTo,
+            hideDuplicates, latestThreadOnly, custodianFilter, ocrAppliedFilter,
+            batchIdFilter, batchNumLabel, page: pagination?.page, pageSize,
+            investigationId: activeInvestigationId,
+        });
+        const qs = ctx.toString();
+        return `/documents/${docId}${qs ? `?${qs}` : ''}`;
+    };
 
     // Load documents on mount — restore page from URL if present
     useEffect(() => {
@@ -1137,7 +1149,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
                                     <div
                                         key={r.id}
                                         className="search-result-card"
-                                        onClick={() => navigate(`/documents/${r.id}${query ? `?q=${encodeURIComponent(query)}` : ''}`)}
+                                        onClick={() => navigate(buildDocUrl(r.id))}
                                         style={selectedIds.has(r.id) ? { borderColor: 'var(--primary)', background: 'var(--bg-tertiary)' } : {}}
                                     >
                                         <div className="flex items-center gap-8">
@@ -1278,7 +1290,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
                                             <tr
                                                 key={r.id}
                                                 className={`results-table-row${selectedIds.has(r.id) ? ' selected' : ''}`}
-                                                onClick={() => navigate(`/documents/${r.id}${query ? `?q=${encodeURIComponent(query)}` : ''}`)}
+                                                onClick={() => navigate(buildDocUrl(r.id))}
                                             >
                                                 <td onClick={e => e.stopPropagation()}>
                                                     <input
