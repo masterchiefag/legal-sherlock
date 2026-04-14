@@ -10,6 +10,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
     const [pagination, setPagination] = useState(null);
     const [loading, setLoading] = useState(false);
     const [searched, setSearched] = useState(false);
+    const [pageSize, setPageSize] = useState(() => parseInt(searchParams.get('per_page')) || 25);
 
     // Filters
     const [reviewStatus, setReviewStatus] = useState(searchParams.get('status') || '');
@@ -121,7 +122,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
         setSearched(true);
         setSelectedIds(new Set());
 
-        const apiParams = new URLSearchParams({ page, limit: 15 });
+        const apiParams = new URLSearchParams({ page, limit: pageSize });
         if (query.trim()) apiParams.set('q', query);
         if (reviewStatus) apiParams.set('review_status', reviewStatus);
         if (docType) apiParams.set('doc_type', docType);
@@ -161,6 +162,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
         if (ocrAppliedFilter) urlParams.ocr_applied = ocrAppliedFilter;
         if (batchIdFilter) { urlParams.batch_id = batchIdFilter; urlParams.batch_num = batchNumLabel; }
         if (page > 1) urlParams.page = String(page);
+        if (pageSize !== 25) urlParams.per_page = String(pageSize);
         setSearchParams(urlParams, { replace: true });
 
         try {
@@ -174,7 +176,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
         }
 
         setLoading(false);
-    }, [query, reviewStatus, docType, scoreFilter, dateFrom, dateTo, hideDuplicates, latestThreadOnly, custodianFilter, ocrAppliedFilter, batchIdFilter, hasActiveFilters, setSearchParams]);
+    }, [query, reviewStatus, docType, scoreFilter, dateFrom, dateTo, hideDuplicates, latestThreadOnly, custodianFilter, ocrAppliedFilter, batchIdFilter, hasActiveFilters, pageSize, setSearchParams]);
 
     const handleKeyDown = (e) => {
         if (e.key === 'Enter') doSearch();
@@ -800,14 +802,14 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
                     )}
                     {results.length > 0 && (
                         <>
-                            <button className="btn btn-secondary btn-sm" style={{ marginLeft: 'auto' }} onClick={toggleSummarizePanel}>
+                            <button className="btn btn-secondary btn-sm" disabled title="Coming soon" style={{ marginLeft: 'auto', opacity: 0.5, cursor: 'not-allowed' }}>
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: '14px', height: '14px', marginRight: '5px' }}>
                                     <line x1="17" y1="10" x2="3" y2="10" /><line x1="21" y1="6" x2="3" y2="6" />
                                     <line x1="21" y1="14" x2="3" y2="14" /><line x1="17" y1="18" x2="3" y2="18" />
                                 </svg>
                                 Batch Summarize
                             </button>
-                            <button className="btn btn-secondary btn-sm" onClick={toggleBatchPanel}>
+                            <button className="btn btn-secondary btn-sm" disabled title="Coming soon" style={{ opacity: 0.5, cursor: 'not-allowed' }}>
                                 <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: '14px', height: '14px', marginRight: '5px' }}>
                                     <polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"></polygon>
                                 </svg>
@@ -1095,10 +1097,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
                     ) : results.length > 0 ? (
                         <>
                             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: '16px' }}>
-                                <div className="text-sm text-muted">
-                                    {pagination.total} result(s){query.trim() ? <> for "<strong style={{ color: 'var(--text-primary)' }}>{query}</strong>"</> : ' (filtered)'}
-                                </div>
-                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
                                     <label style={{ display: 'flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '13px', color: 'var(--text-secondary)', userSelect: 'none' }}>
                                         <input
                                             type="checkbox"
@@ -1109,6 +1108,11 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
                                         />
                                         {selectedIds.size > 0 ? `${selectedIds.size} selected` : 'Select all'}
                                     </label>
+                                    <span className="text-sm text-muted">
+                                        {pagination.total} result(s){query.trim() ? <> for "<strong style={{ color: 'var(--text-primary)' }}>{query}</strong>"</> : ' (filtered)'}
+                                    </span>
+                                </div>
+                                <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
                                     <button className="btn btn-ghost btn-sm" onClick={exportCsv} title="Export results to CSV" style={{ display: 'flex', alignItems: 'center', gap: '5px' }}>
                                         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" style={{ width: '14px', height: '14px' }}>
                                             <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4" />
@@ -1313,13 +1317,26 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
                                 </table>
                             </div>
                             )}
-                            {pagination.pages > 1 && (
-                                <div className="pagination">
-                                    <button className="pagination-btn" disabled={pagination.page <= 1} onClick={() => doSearch(pagination.page - 1)}>← Previous</button>
-                                    <span className="pagination-info">Page {pagination.page} of {pagination.pages}</span>
-                                    <button className="pagination-btn" disabled={pagination.page >= pagination.pages} onClick={() => doSearch(pagination.page + 1)}>Next →</button>
-                                </div>
-                            )}
+                            <div className="pagination" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '12px' }}>
+                                {pagination.pages > 1 && (
+                                    <>
+                                        <button className="pagination-btn" disabled={pagination.page <= 1} onClick={() => doSearch(pagination.page - 1)}>← Previous</button>
+                                        <span className="pagination-info">Page {pagination.page} of {pagination.pages}</span>
+                                        <button className="pagination-btn" disabled={pagination.page >= pagination.pages} onClick={() => doSearch(pagination.page + 1)}>Next →</button>
+                                    </>
+                                )}
+                                <label style={{ display: 'flex', alignItems: 'center', gap: '6px', fontSize: '12px', color: 'var(--text-secondary)', marginLeft: pagination.pages > 1 ? '12px' : '0' }}>
+                                    Show
+                                    <select
+                                        value={pageSize}
+                                        onChange={e => { setPageSize(Number(e.target.value)); setShouldRefresh(n => n + 1); }}
+                                        style={{ padding: '4px 6px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '12px' }}
+                                    >
+                                        {[15, 25, 50, 100].map(n => <option key={n} value={n}>{n}</option>)}
+                                    </select>
+                                    per page
+                                </label>
+                            </div>
                         </>
                     ) : (
                         <div className="empty-state">
