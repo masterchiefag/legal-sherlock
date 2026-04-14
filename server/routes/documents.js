@@ -790,6 +790,67 @@ router.get('/', (req, res) => {
     }
 });
 
+// Get XLSX/XLS sheet data for native preview
+router.get('/:id/sheets', async (req, res) => {
+    try {
+        const doc = db.prepare('SELECT filename, original_name FROM documents WHERE id = ?').get(req.params.id);
+        if (!doc) return res.status(404).json({ error: 'Document not found' });
+        if (!doc.filename) return res.status(404).json({ error: 'File not available on disk' });
+
+        const ext = doc.original_name?.split('.').pop().toLowerCase();
+        if (!['xls', 'xlsx'].includes(ext)) {
+            return res.status(400).json({ error: 'Not a spreadsheet file' });
+        }
+
+        const filePath = path.join(UPLOADS_DIR, doc.filename);
+        if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found on disk' });
+
+        const XLSX = await import('xlsx');
+        const workbook = XLSX.readFile(filePath);
+        const MAX_ROWS = 500;
+        const MAX_COLS = 100;
+
+        const sheets = workbook.SheetNames.map(name => {
+            const sheet = workbook.Sheets[name];
+            const raw = XLSX.utils.sheet_to_json(sheet, { header: 1 });
+            const headers = (raw[0] || []).slice(0, MAX_COLS).map(h => h != null ? String(h) : '');
+            const rows = raw.slice(1, MAX_ROWS + 1).map(row =>
+                Array.from({ length: headers.length }, (_, i) => row[i] != null ? row[i] : '')
+            );
+            return { name, headers, rows, truncated: raw.length - 1 > MAX_ROWS, totalRows: raw.length - 1 };
+        });
+
+        res.json({ sheets });
+    } catch (err) {
+        console.error('Error parsing spreadsheet:', err);
+        res.status(500).json({ error: 'Failed to parse spreadsheet' });
+    }
+});
+
+// Get DOCX HTML preview via mammoth
+router.get('/:id/preview', async (req, res) => {
+    try {
+        const doc = db.prepare('SELECT filename, original_name FROM documents WHERE id = ?').get(req.params.id);
+        if (!doc) return res.status(404).json({ error: 'Document not found' });
+        if (!doc.filename) return res.status(404).json({ error: 'File not available on disk' });
+
+        const ext = doc.original_name?.split('.').pop().toLowerCase();
+        if (ext !== 'docx') {
+            return res.status(400).json({ error: 'Not a DOCX file' });
+        }
+
+        const filePath = path.join(UPLOADS_DIR, doc.filename);
+        if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found on disk' });
+
+        const mammoth = await import('mammoth');
+        const result = await mammoth.default.convertToHtml({ path: filePath });
+        res.json({ html: result.value });
+    } catch (err) {
+        console.error('Error converting DOCX:', err);
+        res.status(500).json({ error: 'Failed to convert document' });
+    }
+});
+
 // Get single document with thread + attachments
 router.get('/:id', (req, res) => {
     try {
