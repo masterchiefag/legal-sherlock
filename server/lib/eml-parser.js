@@ -119,6 +119,20 @@ export async function parseEml(filePathOrBuffer) {
     const cc = parsed.cc ? formatAddresses(Array.isArray(parsed.cc) ? parsed.cc : [parsed.cc]) : '';
     const bcc = parsed.bcc ? formatAddresses(Array.isArray(parsed.bcc) ? parsed.bcc : [parsed.bcc]) : '';
 
+    const warnings = [];
+
+    let emailDate = null;
+    if (parsed.date) {
+        const d = new Date(parsed.date);
+        if (isNaN(d.getTime())) {
+            console.warn(`[eml-parser] Invalid date "${parsed.date}" in email: ${parsed.subject || '(no subject)'}`);
+            emailDate = String(parsed.date);
+            warnings.push({ type: 'invalid_date', raw: String(parsed.date) });
+        } else {
+            emailDate = d.toISOString();
+        }
+    }
+
     return {
         messageId: cleanId(parsed.messageId),
         inReplyTo: cleanId(parsed.inReplyTo),
@@ -128,7 +142,7 @@ export async function parseEml(filePathOrBuffer) {
         cc,
         bcc,
         subject: parsed.subject || '(no subject)',
-        date: parsed.date ? new Date(parsed.date).toISOString() : null,
+        date: emailDate,
         textBody: parsed.text || stripHtml(parsed.html) || '',
         htmlBody: parsed.html || '',
         // Transport metadata
@@ -139,6 +153,7 @@ export async function parseEml(filePathOrBuffer) {
         serverInfo,
         deliveryDate,
         attachments,
+        _warnings: warnings,
     };
 }
 
