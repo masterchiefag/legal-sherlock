@@ -8,7 +8,7 @@ import { fileURLToPath } from 'url';
 import db from './db.js';
 import { authenticate, requireAuth } from './middleware/auth.js';
 import { withInvestigationDb } from './middleware/investigation-db.js';
-import { closeAll as closeAllInvestigationDbs, checkpointAll as checkpointAllInvestigationDbs } from './lib/investigation-db.js';
+import { closeAll as closeAllInvestigationDbs, checkpointAll as checkpointAllInvestigationDbs, listInvestigationDbs, getInvestigationDb } from './lib/investigation-db.js';
 import authRouter from './routes/auth.js';
 import usersRouter from './routes/users.js';
 import documentsRouter from './routes/documents.js';
@@ -57,6 +57,39 @@ try {
     }
 } catch (err) {
     console.warn('✦ Startup cleanup: could not scan tmpdir:', err.message);
+}
+
+// ═══════════════════════════════════════════════════
+// Startup cleanup: mark stuck import jobs as failed across all investigation DBs
+// ═══════════════════════════════════════════════════
+try {
+    const invIds = listInvestigationDbs();
+    let totalStuck = 0;
+    for (const invId of invIds) {
+        try {
+            const { db: invDb } = getInvestigationDb(invId);
+            const stuckJobs = invDb.prepare(
+                "SELECT id, filename, total_emails, total_attachments FROM import_jobs WHERE status IN ('processing', 'pending')"
+            ).all();
+            if (stuckJobs.length > 0) {
+                const markFailed = invDb.prepare(
+                    "UPDATE import_jobs SET status = 'failed', completed_at = datetime('now') WHERE id = ?"
+                );
+                for (const job of stuckJobs) {
+                    markFailed.run(job.id);
+                    console.log(`✦ Startup: marked stuck job ${job.filename} (${job.id}) as failed in investigation ${invId}`);
+                }
+                totalStuck += stuckJobs.length;
+            }
+        } catch (err) {
+            console.warn(`✦ Startup: failed to check stuck jobs for investigation ${invId}:`, err.message);
+        }
+    }
+    if (totalStuck > 0) {
+        console.log(`✦ Startup: marked ${totalStuck} stuck import job(s) as failed`);
+    }
+} catch (err) {
+    console.warn('✦ Startup: could not scan for stuck jobs:', err.message);
 }
 
 const app = express();
