@@ -17,7 +17,7 @@ export function withInvestigationDb(req, res, next) {
         req.body?.investigation_id;
 
     if (!investigationId) {
-        return next();
+        return res.status(400).json({ error: 'investigation_id is required' });
     }
 
     try {
