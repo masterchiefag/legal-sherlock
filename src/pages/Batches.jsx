@@ -56,7 +56,7 @@ function Batches({ activeInvestigationId, activeInvestigation, addToast, user })
     const loadBatchDetail = async (batch) => {
         setSelectedBatch(batch);
         try {
-            const res = await apiFetch(`/api/batches/${batch.id}`);
+            const res = await apiFetch(`/api/batches/${batch.id}?investigation_id=${activeInvestigationId}`);
             const data = await res.json();
             setSelectedBatch(data.batch);
         } catch (err) {
@@ -67,7 +67,7 @@ function Batches({ activeInvestigationId, activeInvestigation, addToast, user })
 
     const handleAssign = async (batchId, assigneeId) => {
         try {
-            const res = await apiPatch(`/api/batches/${batchId}/assign`, { assignee_id: assigneeId });
+            const res = await apiPatch(`/api/batches/${batchId}/assign?investigation_id=${activeInvestigationId}`, { assignee_id: assigneeId });
             const data = await res.json();
             if (!res.ok) { addToast(data.error || 'Failed to assign', 'error'); return; }
             addToast('Batch assigned successfully', 'success');
@@ -82,7 +82,7 @@ function Batches({ activeInvestigationId, activeInvestigation, addToast, user })
 
     const handleStatusChange = async (batchId, status) => {
         try {
-            const res = await apiPatch(`/api/batches/${batchId}/status`, { status });
+            const res = await apiPatch(`/api/batches/${batchId}/status?investigation_id=${activeInvestigationId}`, { status });
             if (!res.ok) { addToast('Failed to update status', 'error'); return; }
             addToast(`Batch marked as ${status}`, 'success');
             loadBatches();
@@ -97,7 +97,7 @@ function Batches({ activeInvestigationId, activeInvestigation, addToast, user })
     const handleDelete = async (batchId) => {
         if (!confirm('Delete this batch? Documents will not be affected.')) return;
         try {
-            const res = await apiDelete(`/api/batches/${batchId}`);
+            const res = await apiDelete(`/api/batches/${batchId}?investigation_id=${activeInvestigationId}`);
             if (!res.ok) { addToast('Failed to delete batch', 'error'); return; }
             addToast('Batch deleted', 'success');
             if (selectedBatch?.id === batchId) setSelectedBatch(null);
