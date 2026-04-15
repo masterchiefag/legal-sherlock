@@ -43,7 +43,7 @@ function ClassificationLogs({ activeInvestigationId }) {
 
     const loadPrompts = async () => {
         try {
-            const res = await apiFetch('/api/classify/compare/prompts');
+            const res = await apiFetch(`/api/classify/compare/prompts?investigation_id=${activeInvestigationId}`);
             const data = await res.json();
             setPrompts(data.prompts || []);
             if (data.prompts?.length > 0 && !selectedPrompt) {
@@ -59,7 +59,7 @@ function ClassificationLogs({ activeInvestigationId }) {
         if (!prompt) return;
         setCompLoading(true);
         try {
-            const res = await apiFetch(`/api/classify/compare?prompt=${encodeURIComponent(prompt)}`);
+            const res = await apiFetch(`/api/classify/compare?prompt=${encodeURIComponent(prompt)}&investigation_id=${activeInvestigationId}`);
             const data = await res.json();
             setComparison(data);
         } catch (err) {
