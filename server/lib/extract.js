@@ -200,7 +200,22 @@ export async function extractMetadata(filePath, mimeType) {
         console.error(`Metadata extraction failed for ${filePath}:`, err.message);
     }
 
+    // Sanitize: reject dates before 1970 (bogus metadata from Aspose, etc.)
+    sanitizeMetaDates(meta, filePath);
+
     return meta;
+}
+
+function sanitizeMetaDates(meta, filePath) {
+    for (const field of ['createdAt', 'modifiedAt', 'printedAt', 'lastAccessedAt']) {
+        if (meta[field]) {
+            const ts = new Date(meta[field]).getTime();
+            if (isNaN(ts) || ts < 0) {
+                console.log(`[extractMetadata] Rejecting bogus ${field} "${meta[field]}" for ${filePath}`);
+                meta[field] = null;
+            }
+        }
+    }
 }
 
 /**
@@ -228,6 +243,28 @@ async function extractPdfMetadata(filePath, meta) {
         meta.modifiedAt = parsePdfDate(info.ModDate);
     }
 
+    // XMP metadata fallback for bogus/missing info dates (e.g. Aspose sets ModDate to 1900-01-01)
+    if (!meta.createdAt) {
+        const xmpCreated = pdfMeta['xmp:createdate'] || pdfMeta['xmp:metadatadate'];
+        if (xmpCreated) {
+            const parsed = parsePdfDate(xmpCreated);
+            if (parsed) {
+                console.log(`extractPdfMetadata: using XMP fallback for createdAt: ${xmpCreated}`);
+                meta.createdAt = parsed;
+            }
+        }
+    }
+    if (!meta.modifiedAt) {
+        const xmpModified = pdfMeta['pdfx:sourcemodified'] || pdfMeta['xmp:modifydate'] || pdfMeta['xmp:metadatadate'];
+        if (xmpModified) {
+            const parsed = parsePdfDate(xmpModified);
+            if (parsed) {
+                console.log(`extractPdfMetadata: using XMP fallback for modifiedAt: ${xmpModified}`);
+                meta.modifiedAt = parsed;
+            }
+        }
+    }
+
     return meta;
 }
 
@@ -238,27 +275,40 @@ async function extractPdfMetadata(filePath, meta) {
 function parsePdfDate(pdfDate) {
     if (!pdfDate) return null;
 
+    let result = null;
+
     // Already a valid date string
     const direct = new Date(pdfDate);
-    if (!isNaN(direct.getTime())) return direct.toISOString();
+    if (!isNaN(direct.getTime())) result = direct.toISOString();
 
     // Handle D: prefix format
-    const match = pdfDate.match(
-        /D:(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})([+-Z])?(\d{2})?'?(\d{2})?'?/
-    );
-    if (match) {
-        const [, Y, M, D, h, m, s, sign, tzH, tzM] = match;
-        let iso = `${Y}-${M}-${D}T${h}:${m}:${s}`;
-        if (sign === 'Z' || !sign) {
-            iso += 'Z';
-        } else {
-            iso += `${sign}${tzH || '00'}:${tzM || '00'}`;
+    if (!result) {
+        const match = pdfDate.match(
+            /D:(\d{4})(\d{2})(\d{2})(\d{2})(\d{2})(\d{2})([+-Z])?(\d{2})?'?(\d{2})?'?/
+        );
+        if (match) {
+            const [, Y, M, D, h, m, s, sign, tzH, tzM] = match;
+            let iso = `${Y}-${M}-${D}T${h}:${m}:${s}`;
+            if (sign === 'Z' || !sign) {
+                iso += 'Z';
+            } else {
+                iso += `${sign}${tzH || '00'}:${tzM || '00'}`;
+            }
+            const d = new Date(iso);
+            if (!isNaN(d.getTime())) result = d.toISOString();
         }
-        const d = new Date(iso);
-        if (!isNaN(d.getTime())) return d.toISOString();
     }
 
-    return pdfDate; // Return raw string as fallback
+    // Reject bogus dates before 1970 (e.g. Aspose sets ModDate to 1900-01-01)
+    if (result) {
+        const ts = new Date(result).getTime();
+        if (ts < 0) {
+            console.log(`parsePdfDate: rejecting pre-1970 date "${pdfDate}" -> ${result}`);
+            return null;
+        }
+    }
+
+    return result;
 }
 
 /**

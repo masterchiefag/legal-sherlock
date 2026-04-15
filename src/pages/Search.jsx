@@ -11,7 +11,10 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
     const [pagination, setPagination] = useState(null);
     const [loading, setLoading] = useState(false);
     const [searched, setSearched] = useState(false);
-    const [pageSize, setPageSize] = useState(() => parseInt(searchParams.get('per_page')) || 25);
+    const [pageSize, setPageSize] = useState(() => {
+        const pp = searchParams.get('per_page');
+        return pp !== null ? parseInt(pp) : 25;
+    });
 
     // Filters
     const [reviewStatus, setReviewStatus] = useState(searchParams.get('status') || '');
@@ -57,7 +60,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
     const [creatingBatches, setCreatingBatches] = useState(false);
 
     // Table view
-    const [viewMode, setViewMode] = useState('cards'); // 'cards' or 'table'
+    const [viewMode, setViewMode] = useState('table'); // 'cards' or 'table'
     const [sortField, setSortField] = useState(null);
     const [sortDir, setSortDir] = useState('asc');
     const [columnFilters, setColumnFilters] = useState({});
@@ -1290,7 +1293,6 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
                                             <tr
                                                 key={r.id}
                                                 className={`results-table-row${selectedIds.has(r.id) ? ' selected' : ''}`}
-                                                onClick={() => navigate(buildDocUrl(r.id))}
                                             >
                                                 <td onClick={e => e.stopPropagation()}>
                                                     <input
@@ -1301,7 +1303,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
                                                     />
                                                 </td>
                                                 <td><span className="type-cell">{getDocIcon(r)} {getFileExt(r)}</span></td>
-                                                <td><span className="docid-cell">{r.doc_identifier || '—'}</span></td>
+                                                <td><a href={buildDocUrl(r.id)} className="row-link" onClick={e => { e.preventDefault(); navigate(buildDocUrl(r.id)); }}><span className="docid-cell">{r.doc_identifier || '—'}</span></a></td>
                                                 <td className="name-cell" title={getDisplayName(r)}>{truncate(getDisplayName(r), 50)}</td>
                                                 <td title={getFrom(r)}>{truncate(getFrom(r).split('<')[0]?.trim(), 20) || '—'}</td>
                                                 <td>{getDocDate(r) || '—'}</td>
@@ -1345,6 +1347,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
                                         style={{ padding: '4px 6px', borderRadius: '4px', border: '1px solid var(--border)', background: 'var(--bg-secondary)', color: 'var(--text-primary)', fontSize: '12px' }}
                                     >
                                         {[15, 25, 50, 100].map(n => <option key={n} value={n}>{n}</option>)}
+                                        <option value={0}>All</option>
                                     </select>
                                     per page
                                 </label>
