@@ -53,6 +53,20 @@ export default function SystemSettings({ addToast }) {
     }
   };
 
+  const handleToggle = async (key, currentValue) => {
+    setSaving(key);
+    const newValue = currentValue === 'true' ? 'false' : 'true';
+    const res = await apiPut(`/api/settings/${key}`, { value: newValue });
+    if (res.ok) {
+      addToast('Setting updated', 'success');
+      fetchSettings();
+    } else {
+      const data = await res.json();
+      addToast(data.error || 'Failed to update', 'error');
+    }
+    setSaving(null);
+  };
+
   const handleKeyDown = (e, key) => {
     if (e.key === 'Enter') handleSave(key);
     if (e.key === 'Escape') setEditing(null);
@@ -106,7 +120,38 @@ export default function SystemSettings({ addToast }) {
                       <span style={{ fontWeight: 500 }}>{s.label}</span>
                     </td>
                     <td style={tdStyle}>
-                      {isEditing ? (
+                      {s.type === 'boolean' ? (
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <button
+                            onClick={() => handleToggle(s.key, s.value)}
+                            disabled={saving === s.key}
+                            style={{
+                              position: 'relative',
+                              width: 40, height: 22, borderRadius: 11,
+                              border: s.value === 'true' ? 'none' : '1px solid var(--text-tertiary)',
+                              background: s.value === 'true' ? '#3b82f6' : 'transparent',
+                              cursor: saving === s.key ? 'wait' : 'pointer',
+                              transition: 'background 0.2s, border 0.2s',
+                              padding: 0, flexShrink: 0,
+                            }}
+                            title={s.value === 'true' ? 'Click to disable' : 'Click to enable'}
+                          >
+                            <span style={{
+                              position: 'absolute', top: s.value === 'true' ? 2 : 1,
+                              left: s.value === 'true' ? 20 : 2,
+                              width: 18, height: 18, borderRadius: '50%',
+                              background: '#fff', transition: 'left 0.2s',
+                              boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                            }} />
+                          </button>
+                          <span style={{
+                            fontSize: '0.8rem', fontWeight: 500,
+                            color: s.value === 'true' ? '#3b82f6' : 'var(--text-tertiary)',
+                          }}>
+                            {s.value === 'true' ? 'Enabled' : 'Disabled'}
+                          </span>
+                        </div>
+                      ) : isEditing ? (
                         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
                           <input
                             type={s.type === 'number' ? 'number' : 'text'}
@@ -150,7 +195,7 @@ export default function SystemSettings({ addToast }) {
                       )}
                     </td>
                     <td style={{ ...tdStyle, color: 'var(--text-tertiary)', fontSize: '0.8rem' }}>
-                      {s.default_value} {s.unit}
+                      {s.type === 'boolean' ? (s.default_value === 'true' ? 'Enabled' : 'Disabled') : `${s.default_value} ${s.unit}`}
                     </td>
                     <td style={{ ...tdStyle, color: 'var(--text-secondary)', fontSize: '0.8rem' }}>
                       {s.description}

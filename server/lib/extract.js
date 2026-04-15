@@ -5,6 +5,7 @@ import path from 'path';
 // with sensible defaults. This avoids importing db.js/settings.js in subprocess
 // workers, which caused SQLITE_BUSY from concurrent write locks.
 const extractConfig = {
+    ocrEnabled: process.env.EXTRACT_OCR_ENABLED !== 'false', // default true
     maxFileSizeMb: Number(process.env.EXTRACT_MAX_FILE_SIZE_MB) || 50,
     ocrMinTextLength: Number(process.env.EXTRACT_OCR_MIN_TEXT_LENGTH) || 100,
     ocrDpi: process.env.EXTRACT_OCR_DPI || '100',
@@ -41,7 +42,7 @@ export async function extractText(filePath, mimeType) {
 
             // If pdf-parse returned very little text, the PDF is likely scanned/image-based.
             // Fall back to OCR: convert pages to images with pdftoppm, then run tesseract.
-            if (text.length < extractConfig.ocrMinTextLength) {
+            if (text.length < extractConfig.ocrMinTextLength && extractConfig.ocrEnabled) {
                 console.log(`[extractText] PDF has only ${text.length} chars of text — attempting OCR fallback for ${filePath}`);
                 const ocrStart = Date.now();
                 const ocrText = await ocrPdf(filePath);
@@ -51,6 +52,8 @@ export async function extractText(filePath, mimeType) {
                     return ocrText.trim();
                 }
                 console.log(`[extractText] OCR did not improve results for ${filePath}`);
+            } else if (text.length < extractConfig.ocrMinTextLength && !extractConfig.ocrEnabled) {
+                console.log(`[extractText] PDF has only ${text.length} chars — OCR disabled, skipping fallback for ${filePath}`);
             }
 
             return text;
@@ -444,7 +447,7 @@ export async function extractTextWithOcrInfo(filePath, mimeType) {
         const data = await pdfParse(buffer);
         const text = (data.text || '').trim();
 
-        if (text.length < extractConfig.ocrMinTextLength) {
+        if (text.length < extractConfig.ocrMinTextLength && extractConfig.ocrEnabled) {
             ocrInfo.attempted = true;
             const ocrStart = Date.now();
             const ocrText = await ocrPdf(filePath);

@@ -10,9 +10,9 @@ npm run dev:client   # Vite dev server only
 npm run dev:server   # Express server with --watch
 npm run build        # Production build (Vite)
 npm run preview      # Preview production build
+npm test             # Run tests (vitest run)
+npm run test:watch   # Watch mode
 ```
-
-No test framework or linter is configured.
 
 ## Tech Stack
 

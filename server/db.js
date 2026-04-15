@@ -766,6 +766,7 @@ const seedSettings = db.transaction((settings) => {
 });
 try {
   seedSettings([
+    { key: 'ocr_enabled', type: 'boolean', category: 'ocr', label: 'OCR Enabled', description: 'Enable OCR fallback for scanned/image-based PDFs. Disable for faster imports.', unit: '', default_value: 'true' },
     { key: 'ocr_dpi', type: 'number', category: 'ocr', label: 'OCR DPI', description: 'PDF-to-image resolution for OCR pipeline. Lower = faster, higher = more accurate.', unit: 'dpi', default_value: '100' },
     { key: 'ocr_pdftoppm_timeout', type: 'number', category: 'ocr', label: 'pdftoppm Timeout', description: 'Max time for PDF-to-image conversion per document.', unit: 'seconds', default_value: '60' },
     { key: 'ocr_tesseract_timeout', type: 'number', category: 'ocr', label: 'Tesseract Timeout', description: 'Max time for OCR per page.', unit: 'seconds', default_value: '60' },
