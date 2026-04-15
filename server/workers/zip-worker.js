@@ -34,6 +34,13 @@ const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
 
 const { jobId, filename, filepath, originalname, investigation_id, custodian } = workerData;
 
+// Set OCR-related env vars from DB settings so extractText() (called in-process) picks them up
+process.env.EXTRACT_MAX_FILE_SIZE_MB = String(getSetting('extract_max_file_size_mb') || 50);
+process.env.EXTRACT_OCR_MIN_TEXT_LENGTH = String(getSetting('ocr_min_text_length') || 100);
+process.env.EXTRACT_OCR_DPI = String(getSetting('ocr_dpi') || 100);
+process.env.EXTRACT_OCR_PDFTOPPM_TIMEOUT = String(getSetting('ocr_pdftoppm_timeout') || 60);
+process.env.EXTRACT_OCR_TESSERACT_TIMEOUT = String(getSetting('ocr_tesseract_timeout') || 60);
+
 // Ensure investigation subdirectory exists
 const INV_UPLOADS_DIR = path.join(UPLOADS_DIR, investigation_id);
 fs.mkdirSync(INV_UPLOADS_DIR, { recursive: true });
