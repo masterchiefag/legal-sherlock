@@ -121,26 +121,36 @@ export default function SystemSettings({ addToast }) {
                     </td>
                     <td style={tdStyle}>
                       {s.type === 'boolean' ? (
-                        <button
-                          onClick={() => handleToggle(s.key, s.value)}
-                          disabled={saving === s.key}
-                          style={{
-                            position: 'relative',
-                            width: 40, height: 22, borderRadius: 11, border: 'none',
-                            background: s.value === 'true' ? 'var(--accent)' : 'var(--border-color)',
-                            cursor: saving === s.key ? 'wait' : 'pointer',
-                            transition: 'background 0.2s',
-                            padding: 0,
-                          }}
-                          title={s.value === 'true' ? 'Enabled — click to disable' : 'Disabled — click to enable'}
-                        >
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <button
+                            onClick={() => handleToggle(s.key, s.value)}
+                            disabled={saving === s.key}
+                            style={{
+                              position: 'relative',
+                              width: 40, height: 22, borderRadius: 11,
+                              border: s.value === 'true' ? 'none' : '1px solid var(--text-tertiary)',
+                              background: s.value === 'true' ? '#3b82f6' : 'transparent',
+                              cursor: saving === s.key ? 'wait' : 'pointer',
+                              transition: 'background 0.2s, border 0.2s',
+                              padding: 0, flexShrink: 0,
+                            }}
+                            title={s.value === 'true' ? 'Click to disable' : 'Click to enable'}
+                          >
+                            <span style={{
+                              position: 'absolute', top: s.value === 'true' ? 2 : 1,
+                              left: s.value === 'true' ? 20 : 2,
+                              width: 18, height: 18, borderRadius: '50%',
+                              background: '#fff', transition: 'left 0.2s',
+                              boxShadow: '0 1px 3px rgba(0,0,0,0.3)',
+                            }} />
+                          </button>
                           <span style={{
-                            position: 'absolute', top: 2, left: s.value === 'true' ? 20 : 2,
-                            width: 18, height: 18, borderRadius: '50%',
-                            background: '#fff', transition: 'left 0.2s',
-                            boxShadow: '0 1px 3px rgba(0,0,0,0.2)',
-                          }} />
-                        </button>
+                            fontSize: '0.8rem', fontWeight: 500,
+                            color: s.value === 'true' ? '#3b82f6' : 'var(--text-tertiary)',
+                          }}>
+                            {s.value === 'true' ? 'Enabled' : 'Disabled'}
+                          </span>
+                        </div>
                       ) : isEditing ? (
                         <div style={{ display: 'flex', gap: 4, alignItems: 'center' }}>
                           <input
