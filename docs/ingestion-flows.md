@@ -254,7 +254,7 @@ Both endpoints use `selectedIndices` -- an array of integer indices into the sou
 
 ### Gotchas
 
-- The scan worker opens its own `better-sqlite3` connection (not using `server/db.js`). It connects directly to the DB file path.
+- The scan worker opens its own `better-sqlite3` connection to the main DB (not using the pool from `server/lib/investigation-db.js`). It connects directly to the DB file path.
 - `mmls` timeout is 60s; `fls` timeout is 300s (5 min) with 100MB buffer. Large images with millions of files may hit these limits.
 - `istat` timeout is 30s per file. Failed metadata lookups default to size=0 and null dates -- they don't fail the whole batch.
 - Cloud-only files (OneDrive/SharePoint placeholders) have `Sparse+Offline` NTFS flags. The file content on the disk image is typically a reparse point stub, not the actual file. Extracting via `icat` would yield garbage, so they are ingested as metadata-only records.
@@ -312,7 +312,7 @@ The `documents_fts` virtual table is kept in sync via two triggers (`documents_a
 3. `rebuildFtsIndex()` -- runs `INSERT INTO documents_fts(documents_fts) VALUES('rebuild')` to reindex everything
 4. `enableFtsTriggers()` -- recreates both triggers
 
-The trigger SQL in `worker-helpers.js` must stay in sync with the canonical definitions in `server/db.js`. If you add a column to the FTS table, update both places.
+The trigger SQL in `worker-helpers.js` must stay in sync with the canonical definitions in `server/lib/investigation-db.js`. If you add a column to the FTS table, update both places.
 
 ### Index Drop/Rebuild
 
@@ -433,9 +433,9 @@ Some workers (ZIP, PST) also maintain an in-memory `seenHashes` map for intra-ba
 
 ## Common Gotchas
 
-1. **Worker DB connections**: Workers must NOT set `journal_mode = WAL`. The main process already sets it, and re-setting in a worker thread causes a deadlock. Workers use `busy_timeout = 10000` to handle contention.
+1. **Worker DB connections**: Workers use `openWorkerDb(investigationId)` from `server/lib/investigation-db.js`. They must NOT set `journal_mode = WAL`. The pool already sets it when creating the DB, and re-setting in a worker thread causes a deadlock. Workers use `busy_timeout = 15000` to handle contention.
 
-2. **FTS trigger sync**: The FTS trigger SQL in `worker-helpers.js` must match `server/db.js`. If columns are added to `documents_fts`, both files need updating.
+2. **FTS trigger sync**: The FTS trigger SQL in `worker-helpers.js` must match `server/lib/investigation-db.js`. If columns are added to `documents_fts`, update both places.
 
 3. **Custodian initials inconsistency**: The PST worker and image-ingest-worker use 3-char initials (first 2 of first name + first of last). The ZIP worker uses 2-char initials (first of first + first of last). Direct upload uses the 3-char version.
 

@@ -8,7 +8,8 @@ import fsp from 'fs/promises';
 import crypto from 'crypto';
 import os from 'os';
 import { fileURLToPath } from 'url';
-import db from '../db.js';
+import mainDb from '../db.js';
+import { openWorkerDb } from '../lib/investigation-db.js';
 import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
 import { disableFtsTriggers, enableFtsTriggers, rebuildFtsIndex, dropBulkIndexes, recreateBulkIndexes, refreshInvestigationCounts, walCheckpoint, backfillDuplicateText } from '../lib/worker-helpers.js';
@@ -24,6 +25,9 @@ const EML_PARSE_WORKER = path.join(__dirname, 'eml-parse-worker.js');
 console.log('✦ DEBUG: workerData destructured');
 const { jobId, filename, filepath, originalname, investigation_id, custodian, resume, extractionOnly, preserveSource } = workerData;
 console.log('✦ DEBUG: constants initializing');
+
+// Open per-investigation DB (documents, import_jobs, FTS, etc.)
+const db = openWorkerDb(investigation_id);
 
 // Ensure investigation subdirectory exists
 const INV_UPLOADS_DIR = path.join(UPLOADS_DIR, investigation_id);
@@ -41,7 +45,7 @@ function getCustodianInitials(name) {
     return name.substring(0, 3).toUpperCase();
 }
 
-const investigation = db.prepare('SELECT short_code FROM investigations WHERE id = ?').get(investigation_id);
+const investigation = mainDb.prepare('SELECT short_code FROM investigations WHERE id = ?').get(investigation_id);
 const caseCode = investigation?.short_code || 'CASE';
 const custCode = getCustodianInitials(custodian);
 const docIdPrefix = `${caseCode}_${custCode}`;
@@ -314,7 +318,7 @@ async function main() {
         }
 
         // Initialize threading cache — avoids 3-5 DB SELECTs per email
-        initCache(investigation_id);
+        initCache(db, investigation_id);
 
         // Initialize counter from existing emails so resume doesn't overwrite
         if (resume) {
@@ -659,7 +663,7 @@ async function main() {
         console.log('✦ Finalization [1/5]: done — job marked as completed');
 
         console.log('✦ Finalization [2/5]: refreshing investigation counts...');
-        refreshInvestigationCounts(db, investigation_id);
+        refreshInvestigationCounts(mainDb, db, investigation_id);
         console.log('✦ Finalization [2/5]: done');
 
         console.log('✦ Finalization [3/5]: re-enabling FTS triggers...');
@@ -706,6 +710,7 @@ async function main() {
         rebuildFtsIndex(db);
         recreateBulkIndexes(db);
     } finally {
+        try { db.close(); } catch (_) {}
         try {
             fs.rmSync(tmpDir, { recursive: true, force: true });
             console.log('✦ PST Import: cleaned up temp directory');

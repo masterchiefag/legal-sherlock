@@ -1,6 +1,6 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import db from '../db.js';
+
 import { getProvider } from '../lib/llm-providers.js';
 import { LLM_LIMITS } from '../lib/config.js';
 import { requireRole } from '../middleware/auth.js';
@@ -13,7 +13,7 @@ const router = express.Router();
 // ═══════════════════════════════════════════════════
 // Limits are now managed centrally in lib/config.js
 
-function buildDocumentContent(doc, thread, attachments) {
+function buildDocumentContent(db, doc, thread, attachments) {
     let content = '';
 
     if (doc.doc_type === 'email' || doc.doc_type === 'chat') {
@@ -71,12 +71,12 @@ router.post('/jobs', requireRole('admin', 'reviewer'), (req, res) => {
         const provider = getProvider();
         const id = uuidv4();
 
-        db.prepare(`
+        req.invDb.prepare(`
             INSERT INTO summarization_jobs (id, investigation_id, prompt, model, provider, status, total_docs)
             VALUES (?, ?, ?, ?, ?, 'running', ?)
         `).run(id, investigationId || null, prompt.trim(), model || provider.modelName, provider.name, totalDocs || 0);
 
-        const job = db.prepare('SELECT * FROM summarization_jobs WHERE id = ?').get(id);
+        const job = req.invDb.prepare('SELECT * FROM summarization_jobs WHERE id = ?').get(id);
         res.json(job);
     } catch (err) {
         console.error('Create summarization job error:', err);
@@ -103,9 +103,9 @@ router.patch('/jobs/:jobId', requireRole('admin', 'reviewer'), (req, res) => {
         if (updates.length === 0) return res.status(400).json({ error: 'No updates provided' });
 
         params.push(req.params.jobId);
-        db.prepare(`UPDATE summarization_jobs SET ${updates.join(', ')} WHERE id = ?`).run(...params);
+        req.invDb.prepare(`UPDATE summarization_jobs SET ${updates.join(', ')} WHERE id = ?`).run(...params);
 
-        const job = db.prepare('SELECT * FROM summarization_jobs WHERE id = ?').get(req.params.jobId);
+        const job = req.invDb.prepare('SELECT * FROM summarization_jobs WHERE id = ?').get(req.params.jobId);
         res.json(job);
     } catch (err) {
         console.error('Update summarization job error:', err);
@@ -121,11 +121,11 @@ router.get('/jobs', (req, res) => {
         const { investigation_id } = req.query;
         let jobs;
         if (investigation_id) {
-            jobs = db.prepare(
+            jobs = req.invReadDb.prepare(
                 'SELECT * FROM summarization_jobs WHERE investigation_id = ? ORDER BY started_at DESC'
             ).all(investigation_id);
         } else {
-            jobs = db.prepare(
+            jobs = req.invReadDb.prepare(
                 'SELECT * FROM summarization_jobs ORDER BY started_at DESC'
             ).all();
         }
@@ -144,7 +144,7 @@ router.get('/jobs/:jobId/results', (req, res) => {
         const { page = 1, limit = 50 } = req.query;
         const offset = (parseInt(page) - 1) * parseInt(limit);
 
-        const results = db.prepare(`
+        const results = req.invReadDb.prepare(`
             SELECT
                 s.id, s.document_id, s.summary, s.elapsed_seconds, s.created_at,
                 d.doc_identifier, d.email_date, d.email_from, d.email_to,
@@ -156,7 +156,7 @@ router.get('/jobs/:jobId/results', (req, res) => {
             LIMIT ? OFFSET ?
         `).all(req.params.jobId, parseInt(limit), offset);
 
-        const countRow = db.prepare('SELECT COUNT(*) as total FROM summaries WHERE job_id = ?').get(req.params.jobId);
+        const countRow = req.invReadDb.prepare('SELECT COUNT(*) as total FROM summaries WHERE job_id = ?').get(req.params.jobId);
 
         res.json({
             results,
@@ -185,22 +185,22 @@ router.post('/:documentId', requireRole('admin', 'reviewer'), async (req, res) =
             return res.status(400).json({ error: 'Prompt is required' });
         }
 
-        const doc = db.prepare('SELECT * FROM documents WHERE id = ?').get(documentId);
+        const doc = req.invReadDb.prepare('SELECT * FROM documents WHERE id = ?').get(documentId);
         if (!doc) return res.status(404).json({ error: 'Document not found' });
 
         // Fetch thread context
         let thread = [];
         if (doc.thread_id) {
-            thread = db.prepare(
+            thread = req.invReadDb.prepare(
                 "SELECT id, email_from, email_subject, email_date FROM documents WHERE thread_id = ? AND doc_type IN ('email', 'chat') AND investigation_id = ? ORDER BY email_date ASC"
             ).all(doc.thread_id, doc.investigation_id);
         }
 
         // Fetch attachments
-        const attachments = db.prepare('SELECT id, original_name FROM documents WHERE parent_id = ?').all(documentId);
+        const attachments = req.invReadDb.prepare('SELECT id, original_name FROM documents WHERE parent_id = ?').all(documentId);
 
         const systemPrompt = prompt.trim();
-        const documentContent = buildDocumentContent(doc, thread, attachments);
+        const documentContent = buildDocumentContent(req.invReadDb, doc, thread, attachments);
 
         const provider = getProvider();
         const activeModel = model || provider.modelName;
@@ -215,14 +215,14 @@ router.post('/:documentId', requireRole('admin', 'reviewer'), async (req, res) =
 
         // Save to DB
         const summaryId = uuidv4();
-        db.prepare(`
+        req.invDb.prepare(`
             INSERT INTO summaries (id, job_id, document_id, summary, provider, model, elapsed_seconds)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         `).run(summaryId, jobId || 'standalone', documentId, result.summary, provider.name, activeModel, parseFloat(elapsed));
 
         // Update job progress if part of a batch
         if (jobId) {
-            db.prepare(`
+            req.invDb.prepare(`
                 UPDATE summarization_jobs SET processed_docs = processed_docs + 1 WHERE id = ?
             `).run(jobId);
         }

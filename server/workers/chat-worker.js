@@ -9,24 +9,25 @@ import { fileURLToPath } from 'url';
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
 import { refreshInvestigationCounts, backfillDuplicateText } from '../lib/worker-helpers.js';
+import { openWorkerDb } from '../lib/investigation-db.js';
 import { getSetting } from '../lib/settings.js';
 
 const execFileAsync = promisify(execFile);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
-// Worker uses its own lightweight DB connection (NOT db.js which runs migrations + WAL checkpoint and deadlocks worker threads)
-const DB_PATH = path.join(__dirname, '..', '..', 'data', 'ediscovery.db');
-console.log('✦ Chat Worker: opening DB at', DB_PATH);
-const db = new Database(DB_PATH, { timeout: 15000 });
-// Don't set journal_mode here — it's already WAL from the main process,
-// and setting it again requires exclusive lock which deadlocks in worker threads.
-db.pragma('foreign_keys = ON');
-db.pragma('busy_timeout = 10000');
-console.log('✦ Chat Worker: DB connection ready');
+// Main DB connection for global table lookups (investigations, system_settings)
+const MAIN_DB_PATH = path.join(__dirname, '..', '..', 'data', 'ediscovery.db');
+const mainDb = new Database(MAIN_DB_PATH, { timeout: 15000 });
+mainDb.pragma('foreign_keys = ON');
+mainDb.pragma('busy_timeout = 10000');
+console.log('✦ Chat Worker: main DB connection ready');
 
 const { jobId, filename, filepath, originalname, investigation_id, custodian, zipPath, sqliteEntry } = workerData;
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
+
+// Open per-investigation DB (documents, import_jobs, FTS, etc.)
+const db = openWorkerDb(investigation_id);
 
 // Ensure investigation subdirectory exists
 const INV_UPLOADS_DIR = path.join(UPLOADS_DIR, investigation_id);
@@ -44,7 +45,7 @@ function getCustodianInitials(name) {
     return name.substring(0, 3).toUpperCase();
 }
 
-const investigation = db.prepare('SELECT short_code FROM investigations WHERE id = ?').get(investigation_id);
+const investigation = mainDb.prepare('SELECT short_code FROM investigations WHERE id = ?').get(investigation_id);
 const caseCode = investigation?.short_code || 'CASE';
 const custCode = getCustodianInitials(custodian);
 const docIdPrefix = `${caseCode}_${custCode}`;
@@ -897,7 +898,7 @@ async function main() {
         `).run(totalChatDocs, jobId);
 
         // Refresh precomputed investigation counts
-        refreshInvestigationCounts(db, investigation_id);
+        refreshInvestigationCounts(mainDb, db, investigation_id);
 
     } catch (err) {
         console.error("Chat worker fatal error:", err);
@@ -909,6 +910,8 @@ async function main() {
             WHERE id = ?
         `).run(JSON.stringify([{ error: err.message, fatal: true }]), jobId);
     } finally {
+        try { db.close(); } catch (_) {}
+        try { mainDb.close(); } catch (_) {}
         // Safety net — clean up anything not already deleted after Phase 1
         try {
             if (tempSqlitePath && fs.existsSync(tempSqlitePath)) fs.unlinkSync(tempSqlitePath);

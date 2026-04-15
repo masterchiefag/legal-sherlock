@@ -1,6 +1,6 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import db, { readDb } from '../db.js';
+import mainDb from '../db.js';
 import { requireRole } from '../middleware/auth.js';
 import { logAudit, ACTIONS } from '../lib/audit.js';
 
@@ -19,7 +19,7 @@ router.put('/documents/:docId/review', requireRole('admin', 'reviewer'), (req, r
 
         // Reviewers can only review documents in a batch assigned to them
         if (req.user.role !== 'admin') {
-            const assignedBatch = readDb.prepare(`
+            const assignedBatch = req.invReadDb.prepare(`
                 SELECT rb.id FROM review_batch_documents rbd
                 JOIN review_batches rb ON rbd.batch_id = rb.id
                 WHERE rbd.document_id = ? AND rb.assignee_id = ?
@@ -31,12 +31,13 @@ router.put('/documents/:docId/review', requireRole('admin', 'reviewer'), (req, r
         }
 
         const id = uuidv4();
-        db.prepare(`
+        req.invDb.prepare(`
       INSERT INTO document_reviews (id, document_id, status, notes, reviewer_id)
       VALUES (?, ?, ?, ?, ?)
     `).run(id, req.params.docId, status, notes || null, req.user.id);
+        console.log(`[reviews] doc ${req.params.docId.substring(0, 8)}... marked "${status}" by ${req.user.email}`);
 
-        logAudit(db, {
+        logAudit(mainDb, {
             userId: req.user.id,
             action: ACTIONS.REVIEW_UPDATE,
             resourceType: 'document',
@@ -45,7 +46,7 @@ router.put('/documents/:docId/review', requireRole('admin', 'reviewer'), (req, r
             ipAddress: req.ip,
         });
 
-        const review = db.prepare('SELECT * FROM document_reviews WHERE id = ?').get(id);
+        const review = req.invDb.prepare('SELECT * FROM document_reviews WHERE id = ?').get(id);
         res.json(review);
     } catch (err) {
         console.error(err);
@@ -56,7 +57,7 @@ router.put('/documents/:docId/review', requireRole('admin', 'reviewer'), (req, r
 // Get review history for a document
 router.get('/documents/:docId/review', (req, res) => {
     try {
-        const reviews = db.prepare(`
+        const reviews = req.invReadDb.prepare(`
       SELECT * FROM document_reviews
       WHERE document_id = ?
       ORDER BY reviewed_at DESC
@@ -77,6 +78,20 @@ router.get('/stats', (req, res) => {
     try {
         let { investigation_id } = req.query;
 
+        if (!req.invReadDb) {
+            return res.status(400).json({ error: 'investigation_id is required' });
+        }
+
+        // Non-admin must be a member of this investigation (investigation_members is main DB)
+        if (req.user.role !== 'admin') {
+            const membership = mainDb.prepare(
+                'SELECT 1 FROM investigation_members WHERE user_id = ? AND investigation_id = ?'
+            ).get(req.user.id, investigation_id);
+            if (!membership) {
+                return res.status(403).json({ error: 'Not a member of this investigation' });
+            }
+        }
+
         // Check cache
         const cacheKey = investigation_id || 'all';
         const cached = statsCache.get(cacheKey);
@@ -86,24 +101,13 @@ router.get('/stats', (req, res) => {
         }
 
         const t0 = Date.now();
+        const invReadDb = req.invReadDb;
 
-        // For non-admin without specific investigation, scope to accessible investigations
-        let invFilter, invParams;
-        if (investigation_id) {
-            invFilter = ' AND investigation_id = ?';
-            invParams = [investigation_id];
-        } else if (req.user.role !== 'admin') {
-            invFilter = ' AND investigation_id IN (SELECT investigation_id FROM investigation_members WHERE user_id = ?)';
-            invParams = [req.user.id];
-        } else {
-            invFilter = '';
-            invParams = [];
-        }
-
+        // All docs in the per-investigation DB belong to this investigation — no invFilter needed
         // Run all queries inside a single read transaction for consistent snapshot + reduced lock overhead
-        const computeStats = readDb.transaction(() => {
+        const computeStats = invReadDb.transaction(() => {
             // Single consolidated counts query (replaces 8 separate queries)
-            const counts = readDb.prepare(`
+            const counts = invReadDb.prepare(`
                 SELECT COUNT(*) as total_docs,
                     COALESCE(SUM(CASE WHEN status = 'ready' THEN 1 ELSE 0 END), 0) as ready_docs,
                     COALESCE(SUM(CASE WHEN is_duplicate = 0 THEN 1 ELSE 0 END), 0) as unique_doc_count,
@@ -112,63 +116,57 @@ router.get('/stats', (req, res) => {
                     COALESCE(SUM(size_bytes), 0) as total_size,
                     COALESCE(SUM(CASE WHEN is_duplicate = 1 THEN 1 ELSE 0 END), 0) as dupe_count,
                     COALESCE(SUM(CASE WHEN ocr_applied = 1 THEN 1 ELSE 0 END), 0) as ocr_doc_count
-                FROM documents WHERE 1=1${invFilter}
-            `).get(...invParams);
+                FROM documents
+            `).get();
             const tCounts = Date.now();
 
-            const reviewedDocs = readDb.prepare(`
+            const reviewedDocs = invReadDb.prepare(`
                 SELECT COUNT(DISTINCT dr.document_id) as count
                 FROM document_reviews dr
-                JOIN documents d ON d.id = dr.document_id
-                WHERE dr.status != 'pending'${investigation_id ? ' AND d.investigation_id = ?' : ''}
-            `).get(...invParams).count;
+                WHERE dr.status != 'pending'
+            `).get().count;
 
-            const statusCounts = readDb.prepare(`
+            const statusCounts = invReadDb.prepare(`
                 SELECT dr.status, COUNT(DISTINCT dr.document_id) as count
                 FROM document_reviews dr
-                JOIN documents d ON d.id = dr.document_id
                 WHERE dr.id IN (SELECT MAX(id) FROM document_reviews GROUP BY document_id)
-                ${investigation_id ? 'AND d.investigation_id = ?' : ''}
                 GROUP BY dr.status
-            `).all(...invParams);
+            `).all();
 
-            const tagCounts = readDb.prepare(`
-                SELECT t.name, t.color, COUNT(dt.document_id) as count
-                FROM tags t
-                LEFT JOIN document_tags dt ON dt.tag_id = t.id
-                ${investigation_id ? 'LEFT JOIN documents d ON d.id = dt.document_id' : ''}
-                ${investigation_id ? 'WHERE (d.investigation_id = ? OR dt.document_id IS NULL)' : ''}
-                GROUP BY t.id
+            // Tags: document_tags is in investigation DB with denormalized tag_name/tag_color
+            const tagCounts = invReadDb.prepare(`
+                SELECT dt.tag_name as name, dt.tag_color as color, COUNT(dt.document_id) as count
+                FROM document_tags dt
+                GROUP BY dt.tag_name, dt.tag_color
                 ORDER BY count DESC
-            `).all(...invParams);
+            `).all();
 
             // Merged type breakdown + size by doc type (single query)
-            const typeAndSize = readDb.prepare(`
+            const typeAndSize = invReadDb.prepare(`
                 SELECT doc_type, COUNT(*) as count,
                     COALESCE(SUM(size_bytes), 0) as total_size,
                     COALESCE(AVG(size_bytes), 0) as avg_size,
                     COALESCE(MAX(size_bytes), 0) as max_size
-                FROM documents WHERE 1=1${invFilter}
+                FROM documents
                 GROUP BY doc_type
-            `).all(...invParams);
+            `).all();
             const typeCounts = typeAndSize.map(r => ({ doc_type: r.doc_type, count: r.count }));
             const sizeByDocType = typeAndSize;
 
             // AI classification coverage
-            const classifiedCount = readDb.prepare(`
+            const classifiedCount = invReadDb.prepare(`
                 SELECT COUNT(DISTINCT c.document_id) as count
-                FROM classifications c JOIN documents d ON d.id = c.document_id
-                WHERE 1=1${investigation_id ? ' AND d.investigation_id = ?' : ''}
-            `).get(...invParams).count;
+                FROM classifications c
+            `).get().count;
             const tReviews = Date.now();
 
             // Top senders (top 10) — split comma-separated email_from for chats
-            const rawSenders = readDb.prepare(`
+            const rawSenders = invReadDb.prepare(`
                 SELECT email_from, COUNT(*) as count
-                FROM documents WHERE doc_type IN ('email', 'chat') AND email_from IS NOT NULL${invFilter}
+                FROM documents WHERE doc_type IN ('email', 'chat') AND email_from IS NOT NULL
                 GROUP BY email_from
                 ORDER BY count DESC LIMIT 100
-            `).all(...invParams);
+            `).all();
             const senderMap = new Map();
             for (const row of rawSenders) {
                 const senders = (row.email_from || '').split(/,(?=\s)/).map(s => s.trim()).filter(Boolean);
@@ -182,24 +180,24 @@ router.get('/stats', (req, res) => {
                 .slice(0, 10);
 
             // Import jobs for this investigation
-            const importJobs = investigation_id ? readDb.prepare(`
+            const importJobs = invReadDb.prepare(`
                 SELECT filename as original_name, status, total_emails, total_attachments, custodian, started_at, completed_at,
                        ocr_count, ocr_success, ocr_failed, ocr_time_ms
-                FROM import_jobs WHERE investigation_id = ?
+                FROM import_jobs
                 ORDER BY rowid DESC
-            `).all(investigation_id) : [];
+            `).all();
 
             // File extension breakdown via SQL (replaces 100K+ row fetch into JS)
-            const attachmentTypes = readDb.prepare(`
+            const attachmentTypes = invReadDb.prepare(`
                 SELECT file_ext(original_name) as ext, COUNT(*) as count,
                     SUM(CASE WHEN is_duplicate = 0 THEN 1 ELSE 0 END) as unique_count
-                FROM documents WHERE doc_type IN ('attachment', 'file')${invFilter}
+                FROM documents WHERE doc_type IN ('attachment', 'file')
                 GROUP BY ext ORDER BY count DESC LIMIT 20
-            `).all(...invParams);
+            `).all();
             const tExtensions = Date.now();
 
             // Custodian breakdown
-            const custodians = investigation_id ? readDb.prepare(`
+            const custodians = invReadDb.prepare(`
                 SELECT custodian as name,
                     COUNT(*) as document_count,
                     SUM(CASE WHEN is_duplicate = 0 THEN 1 ELSE 0 END) as unique_count,
@@ -210,24 +208,23 @@ router.get('/stats', (req, res) => {
                     SUM(CASE WHEN doc_type = 'file' THEN 1 ELSE 0 END) as file_count,
                     SUM(CASE WHEN is_duplicate = 1 THEN 1 ELSE 0 END) as duplicate_count,
                     COALESCE(SUM(size_bytes), 0) as total_size
-                FROM documents WHERE investigation_id = ? AND custodian IS NOT NULL
+                FROM documents WHERE custodian IS NOT NULL
                 GROUP BY custodian ORDER BY document_count DESC
-            `).all(investigation_id) : [];
+            `).all();
 
             // Batch custodian review/classify counts (replaces N+1 loop)
-            if (investigation_id && custodians.length > 0) {
-                const reviewedByCustodian = readDb.prepare(`
+            if (custodians.length > 0) {
+                const reviewedByCustodian = invReadDb.prepare(`
                     SELECT d.custodian, COUNT(DISTINCT dr.document_id) as count
                     FROM document_reviews dr JOIN documents d ON d.id = dr.document_id
-                    WHERE dr.status != 'pending' AND d.investigation_id = ?
+                    WHERE dr.status != 'pending'
                     GROUP BY d.custodian
-                `).all(investigation_id);
-                const classifiedByCustodian = readDb.prepare(`
+                `).all();
+                const classifiedByCustodian = invReadDb.prepare(`
                     SELECT d.custodian, COUNT(DISTINCT c.document_id) as count
                     FROM classifications c JOIN documents d ON d.id = c.document_id
-                    WHERE d.investigation_id = ?
                     GROUP BY d.custodian
-                `).all(investigation_id);
+                `).all();
                 const reviewMap = new Map(reviewedByCustodian.map(r => [r.custodian, r.count]));
                 const classifyMap = new Map(classifiedByCustodian.map(r => [r.custodian, r.count]));
                 for (const c of custodians) {
@@ -238,14 +235,14 @@ router.get('/stats', (req, res) => {
             const tCustodians = Date.now();
 
             // Communication pairs with LIMIT (reduces JS processing from thousands to 200 rows)
-            const rawPairs = readDb.prepare(`
+            const rawPairs = invReadDb.prepare(`
                 SELECT email_from, email_to, COUNT(*) as count
                 FROM documents WHERE doc_type IN ('email', 'chat')
-                    AND email_from IS NOT NULL AND email_to IS NOT NULL${invFilter}
+                    AND email_from IS NOT NULL AND email_to IS NOT NULL
                 GROUP BY email_from, email_to
                 HAVING COUNT(*) >= 2
                 ORDER BY count DESC LIMIT 200
-            `).all(...invParams);
+            `).all();
             const pairMap = new Map();
             for (const row of rawPairs) {
                 const senders = (row.email_from || '').split(/,(?=\s)/).map(s => s.trim()).filter(Boolean);
@@ -268,10 +265,10 @@ router.get('/stats', (req, res) => {
                 .slice(0, 20);
 
             // Date range
-            const dateRangeRow = readDb.prepare(`
+            const dateRangeRow = invReadDb.prepare(`
                 SELECT MIN(email_date) as earliest, MAX(email_date) as latest
-                FROM documents WHERE email_date IS NOT NULL${invFilter}
-            `).get(...invParams);
+                FROM documents WHERE email_date IS NOT NULL
+            `).get();
             let dateRange = null;
             if (dateRangeRow && dateRangeRow.earliest && dateRangeRow.latest) {
                 const earliest = new Date(dateRangeRow.earliest);
@@ -281,38 +278,36 @@ router.get('/stats', (req, res) => {
             }
 
             // Volume by month
-            const volumeByMonth = readDb.prepare(`
+            const volumeByMonth = invReadDb.prepare(`
                 SELECT STRFTIME('%Y-%m', email_date) as month, COUNT(*) as count
-                FROM documents WHERE email_date IS NOT NULL${invFilter}
+                FROM documents WHERE email_date IS NOT NULL
                 GROUP BY month ORDER BY month
-            `).all(...invParams);
+            `).all();
 
             // AI score distribution
-            const scoreDistribution = readDb.prepare(`
+            const scoreDistribution = invReadDb.prepare(`
                 SELECT c.score, COUNT(*) as count FROM classifications c
-                JOIN documents d ON d.id = c.document_id
                 WHERE c.id IN (SELECT MAX(id) FROM classifications GROUP BY document_id)
-                ${investigation_id ? 'AND d.investigation_id = ?' : ''}
                 GROUP BY c.score ORDER BY c.score
-            `).all(...invParams);
+            `).all();
 
             // Activity heatmap (day-of-week x hour)
-            const activityHeatmap = readDb.prepare(`
+            const activityHeatmap = invReadDb.prepare(`
                 SELECT CAST(STRFTIME('%w', email_date) AS INTEGER) as day_of_week,
                        CAST(STRFTIME('%H', email_date) AS INTEGER) as hour,
                        COUNT(*) as count
-                FROM documents WHERE email_date IS NOT NULL AND doc_type IN ('email', 'chat')${invFilter}
+                FROM documents WHERE email_date IS NOT NULL AND doc_type IN ('email', 'chat')
                 GROUP BY day_of_week, hour
-            `).all(...invParams);
+            `).all();
 
             // Thread depth distribution
-            const threadDepth = readDb.prepare(`
+            const threadDepth = invReadDb.prepare(`
                 SELECT thread_size as depth, COUNT(*) as count FROM (
                     SELECT thread_id, COUNT(*) as thread_size FROM documents
-                    WHERE thread_id IS NOT NULL AND doc_type = 'email'${invFilter}
+                    WHERE thread_id IS NOT NULL AND doc_type = 'email'
                     GROUP BY thread_id
                 ) GROUP BY thread_size ORDER BY thread_size
-            `).all(...invParams);
+            `).all();
 
             console.log(`[stats] counts: ${tCounts - t0}ms, reviews: ${tReviews - tCounts}ms, extensions: ${tExtensions - tReviews}ms, custodians: ${tCustodians - tExtensions}ms, total: ${Date.now() - t0}ms`);
 

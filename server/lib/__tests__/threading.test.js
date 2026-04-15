@@ -1,16 +1,8 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach } from 'vitest';
 import { createTestDb } from '../../test-utils/test-db.js';
 import { makeDocument, makeInvestigation, insertRecord } from '../../test-utils/fixtures.js';
 
-// Mock the db module so threading.js uses our test database
 let testDb;
-vi.mock('../../db.js', () => {
-  return {
-    default: {
-      prepare: (...args) => testDb.prepare(...args),
-    },
-  };
-});
 
 const { resolveThreadId, backfillThread } = await import('../threading.js');
 
@@ -24,7 +16,7 @@ describe('resolveThreadId', () => {
   });
 
   it('returns new UUID when no references exist', () => {
-    const threadId = resolveThreadId(null, null, null);
+    const threadId = resolveThreadId(testDb, null, null, null);
     expect(threadId).toBeDefined();
     expect(typeof threadId).toBe('string');
     expect(threadId.length).toBe(36); // UUID format
@@ -39,7 +31,7 @@ describe('resolveThreadId', () => {
     });
     insertRecord(testDb, 'documents', parent);
 
-    const threadId = resolveThreadId('child@example.com', 'parent@example.com', null);
+    const threadId = resolveThreadId(testDb, 'child@example.com', 'parent@example.com', null);
     expect(threadId).toBe('thread-1');
   });
 
@@ -54,6 +46,7 @@ describe('resolveThreadId', () => {
 
     // References has multiple IDs, ancestor is last (most recent in reverse walk)
     const threadId = resolveThreadId(
+      testDb,
       'new@example.com',
       null,
       'unknown@example.com ancestor@example.com'
@@ -73,7 +66,7 @@ describe('resolveThreadId', () => {
     insertRecord(testDb, 'documents', child);
 
     // Now the parent arrives late
-    const threadId = resolveThreadId('late-parent@example.com', null, null);
+    const threadId = resolveThreadId(testDb, 'late-parent@example.com', null, null);
     expect(threadId).toBe('thread-child');
   });
 
@@ -94,6 +87,7 @@ describe('resolveThreadId', () => {
     insertRecord(testDb, 'documents', ancestor);
 
     const threadId = resolveThreadId(
+      testDb,
       'new@example.com',
       'direct-parent@example.com',
       'ancestor@example.com'
@@ -112,7 +106,7 @@ describe('backfillThread', () => {
   });
 
   it('does nothing when no messageId or references', () => {
-    backfillThread('thread-1', null, null);
+    backfillThread(testDb, 'thread-1', null, null);
     // Just shouldn't throw
   });
 
@@ -128,7 +122,7 @@ describe('backfillThread', () => {
     insertRecord(testDb, 'documents', orphan);
 
     // Backfill should unify orphan under our thread
-    backfillThread('correct-thread', 'parent@example.com', null);
+    backfillThread(testDb, 'correct-thread', 'parent@example.com', null);
 
     const updated = testDb.prepare('SELECT thread_id FROM documents WHERE id = ?').get(orphan.id);
     expect(updated.thread_id).toBe('correct-thread');
@@ -153,7 +147,7 @@ describe('backfillThread', () => {
     insertRecord(testDb, 'documents', orphan1);
     insertRecord(testDb, 'documents', orphan2);
 
-    backfillThread('correct-thread', 'parent@example.com', null);
+    backfillThread(testDb, 'correct-thread', 'parent@example.com', null);
 
     const all = testDb.prepare('SELECT thread_id FROM documents').all();
     expect(all.every(d => d.thread_id === 'correct-thread')).toBe(true);
@@ -169,7 +163,7 @@ describe('backfillThread', () => {
     });
     insertRecord(testDb, 'documents', orphan);
 
-    backfillThread('new-thread', null, 'ref-id@example.com other@example.com');
+    backfillThread(testDb, 'new-thread', null, 'ref-id@example.com other@example.com');
 
     const updated = testDb.prepare('SELECT thread_id FROM documents WHERE id = ?').get(orphan.id);
     expect(updated.thread_id).toBe('new-thread');

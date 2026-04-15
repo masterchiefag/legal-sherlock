@@ -11,7 +11,7 @@ const REVIEW_OPTIONS = [
     { status: 'technical_issue', label: 'Technical Issue', color: '#f59e0b', key: 't' },
 ];
 
-function DocumentReview({ addToast, user }) {
+function DocumentReview({ addToast, user, activeInvestigationId }) {
     const { id } = useParams();
     const navigate = useNavigate();
     const [doc, setDoc] = useState(null);
@@ -26,6 +26,10 @@ function DocumentReview({ addToast, user }) {
     const [searchParams] = useSearchParams();
     const [textSearch, setTextSearch] = useState(() => searchParams.get('q') || '');
     const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+
+    // Resolve investigation ID: URL param (from search navigation) takes priority, then sidebar selection
+    const investigationId = searchParams.get('inv') || activeInvestigationId;
+    const invQuery = investigationId ? `investigation_id=${investigationId}` : '';
     const [showSourceInfo, setShowSourceInfo] = useState(false);
     const [viewerTab, setViewerTab] = useState('viewer');
 
@@ -50,8 +54,8 @@ function DocumentReview({ addToast, user }) {
     const loadDocument = useCallback(async () => {
         try {
             const [docRes, tagsRes] = await Promise.all([
-                apiFetch(`/api/documents/${id}`),
-                apiFetch('/api/tags'),
+                apiFetch(`/api/documents/${id}?${invQuery}`),
+                apiFetch(`/api/tags?${invQuery}`),
             ]);
             const docData = await docRes.json();
             const tagsData = await tagsRes.json();
@@ -71,14 +75,14 @@ function DocumentReview({ addToast, user }) {
             console.error('Failed to load document:', err);
         }
         setLoading(false);
-    }, [id]);
+    }, [id, invQuery]);
 
     useEffect(() => { setLoading(true); loadDocument(); loadClassifications(); }, [loadDocument]);
 
     // Check if reviewer can edit — must have doc in an assigned batch
     useEffect(() => {
         if (!user || user.role === 'admin') { setCanEdit(true); return; }
-        apiFetch(`/api/batches/check-access/${id}`)
+        apiFetch(`/api/batches/check-access/${id}?${invQuery}`)
             .then(r => r.json())
             .then(data => setCanEdit(data.can_edit))
             .catch(() => setCanEdit(false));
@@ -86,7 +90,7 @@ function DocumentReview({ addToast, user }) {
 
     const loadClassifications = useCallback(async () => {
         try {
-            const res = await apiFetch(`/api/classify/${id}`);
+            const res = await apiFetch(`/api/classify/${id}?${invQuery}`);
             const data = await res.json();
             if (data.classifications?.length > 0) {
                 setClassification(data.classifications[0]);
@@ -102,7 +106,7 @@ function DocumentReview({ addToast, user }) {
         } catch (err) {
             console.error('Failed to load classifications:', err);
         }
-    }, [id]);
+    }, [id, invQuery]);
 
     const handleClassify = async () => {
         if (!canEdit) { addToast('Assign the batch to yourself first', 'error'); return; }
@@ -110,7 +114,7 @@ function DocumentReview({ addToast, user }) {
         setClassifying(true);
         localStorage.setItem('sherlock_investigation_prompt', investigationPrompt);
         try {
-            const res = await apiFetch(`/api/classify/${id}`, {
+            const res = await apiFetch(`/api/classify/${id}?${invQuery}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ investigationPrompt: investigationPrompt.trim() }),
@@ -153,7 +157,7 @@ function DocumentReview({ addToast, user }) {
             setSheetsLoading(true);
             setSheetData(null);
             setActiveSheet(0);
-            apiFetch(`/api/documents/${id}/sheets`)
+            apiFetch(`/api/documents/${id}/sheets?${invQuery}`)
                 .then(r => r.json())
                 .then(data => { setSheetData(data.sheets); setSheetsLoading(false); })
                 .catch(() => setSheetsLoading(false));
@@ -161,7 +165,7 @@ function DocumentReview({ addToast, user }) {
         if (docExt === 'docx') {
             setDocxLoading(true);
             setDocxHtml(null);
-            apiFetch(`/api/documents/${id}/preview`)
+            apiFetch(`/api/documents/${id}/preview?${invQuery}`)
                 .then(r => r.json())
                 .then(data => { setDocxHtml(data.html); setDocxLoading(false); })
                 .catch(() => setDocxLoading(false));
@@ -188,7 +192,7 @@ function DocumentReview({ addToast, user }) {
         if (!canEdit) { addToast('Assign the batch to yourself first', 'error'); return; }
         setSaving(true);
         try {
-            const res = await apiFetch(`/api/reviews/documents/${id}/review`, {
+            const res = await apiFetch(`/api/reviews/documents/${id}/review?${invQuery}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ status, notes }),
@@ -208,7 +212,7 @@ function DocumentReview({ addToast, user }) {
         if (!canEdit) { addToast('Assign the batch to yourself first', 'error'); return; }
         setSaving(true);
         try {
-            await apiFetch(`/api/reviews/documents/${id}/review`, {
+            await apiFetch(`/api/reviews/documents/${id}/review?${invQuery}`, {
                 method: 'PUT',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ status: reviewStatus, notes }),
@@ -226,9 +230,9 @@ function DocumentReview({ addToast, user }) {
         const hasTag = doc.tags?.some(t => t.id === tagId);
         try {
             if (hasTag) {
-                await apiFetch(`/api/tags/documents/${id}/tags/${tagId}`, { method: 'DELETE' });
+                await apiFetch(`/api/tags/documents/${id}/tags/${tagId}?${invQuery}`, { method: 'DELETE' });
             } else {
-                await apiFetch(`/api/tags/documents/${id}/tags`, {
+                await apiFetch(`/api/tags/documents/${id}/tags?${invQuery}`, {
                     method: 'POST',
                     headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ tag_id: tagId }),
@@ -246,7 +250,7 @@ function DocumentReview({ addToast, user }) {
         const colors = ['#3b82f6', '#10b981', '#f59e0b', '#ef4444', '#8b5cf6', '#ec4899', '#06b6d4', '#84cc16'];
         const color = colors[Math.floor(Math.random() * colors.length)];
         try {
-            const res = await apiFetch('/api/tags', {
+            const res = await apiFetch(`/api/tags?${invQuery}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name: newTagName.trim(), color }),
@@ -254,7 +258,7 @@ function DocumentReview({ addToast, user }) {
             if (res.ok) {
                 setNewTagName('');
                 setShowNewTag(false);
-                const tagsRes = await apiFetch('/api/tags');
+                const tagsRes = await apiFetch(`/api/tags?${invQuery}`);
                 setAllTags(await tagsRes.json());
                 addToast('Tag created', 'success');
             } else {
@@ -273,7 +277,7 @@ function DocumentReview({ addToast, user }) {
 
     const confirmDelete = async () => {
         try {
-            await apiFetch(`/api/documents/${id}`, { method: 'DELETE' });
+            await apiFetch(`/api/documents/${id}?${invQuery}`, { method: 'DELETE' });
             addToast('Document deleted', 'success');
             navigate('/search');
         } catch (err) {

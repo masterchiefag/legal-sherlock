@@ -1,12 +1,14 @@
 import { v4 as uuidv4 } from 'uuid';
-import db from '../db.js';
 
 /**
  * Cached threading resolver — keeps message_id → thread_id mappings in memory
  * to avoid repeated DB lookups during bulk import.
  *
- * Call initCache() before bulk import, then use resolveThreadId/backfillThread as normal.
- * The cache is populated from existing DB data and updated as new emails are processed.
+ * Call initCache(db, investigationId) before bulk import, then use
+ * resolveThreadId/backfillThread as normal.  The cache is populated from
+ * existing DB data and updated as new emails are processed.
+ *
+ * The db parameter is the per-investigation database connection.
  */
 
 // In-memory caches
@@ -14,19 +16,23 @@ const msgIdToThreadId = new Map();   // message_id → thread_id
 const inReplyToIndex = new Map();    // in_reply_to → thread_id
 const referencesIndex = new Map();   // message_id referenced by others → thread_id
 
-// Prepared statements (created once)
+// Prepared statements (created once per initCache call)
 let stmtLookupByMsgId;
 let stmtLookupByInReplyTo;
-let stmtLookupByReferences;
 let stmtOrphans;
 let stmtUnifyThread;
 let stmtUnifySingle;
 
-export function initCache(investigationId) {
+export function initCache(db, investigationId) {
+    // Clear previous cache
+    msgIdToThreadId.clear();
+    inReplyToIndex.clear();
+    referencesIndex.clear();
+
     // Pre-populate cache from existing emails in this investigation
     const existing = db.prepare(
-        "SELECT message_id, in_reply_to, email_references, thread_id FROM documents WHERE investigation_id = ? AND doc_type = 'email' AND message_id IS NOT NULL"
-    ).all(investigationId);
+        "SELECT message_id, in_reply_to, email_references, thread_id FROM documents WHERE doc_type = 'email' AND message_id IS NOT NULL"
+    ).all();
 
     for (const row of existing) {
         if (row.message_id) msgIdToThreadId.set(row.message_id, row.thread_id);

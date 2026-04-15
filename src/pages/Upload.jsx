@@ -20,7 +20,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
     // Load recent jobs for this investigation on mount
     useEffect(() => {
         if (!activeInvestigationId) return;
-        apiFetch(`/api/documents/jobs/recent/${activeInvestigationId}`)
+        apiFetch(`/api/documents/jobs/recent/${activeInvestigationId}?investigation_id=${activeInvestigationId}`)
             .then(r => r.json())
             .then(data => {
                 const jobs = data.jobs || [];
@@ -40,7 +40,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
 
     const pollJobStatus = async (jobId) => {
         try {
-            const res = await apiFetch(`/api/documents/jobs/${jobId}`);
+            const res = await apiFetch(`/api/documents/jobs/${jobId}?investigation_id=${activeInvestigationId}`);
             if (res.ok) {
                 const job = await res.json();
                 setActiveJob(job);
@@ -207,7 +207,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
     const finalizeJob = async (jobId) => {
         setFinalizing(true);
         try {
-            const res = await apiFetch(`/api/documents/jobs/${jobId}/finalize`, { method: 'POST' });
+            const res = await apiFetch(`/api/documents/jobs/${jobId}/finalize?investigation_id=${activeInvestigationId}`, { method: 'POST' });
             const data = await res.json();
             if (res.ok) {
                 setActiveJob(data);
@@ -224,7 +224,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
 
     const resumeJob = async (jobId) => {
         try {
-            const res = await apiFetch(`/api/documents/jobs/${jobId}/resume`, { method: 'POST' });
+            const res = await apiFetch(`/api/documents/jobs/${jobId}/resume?investigation_id=${activeInvestigationId}`, { method: 'POST' });
             const data = await res.json();
             if (res.ok) {
                 addToast('Import resumed', 'info');

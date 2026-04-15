@@ -113,8 +113,7 @@ export function buildSearchFilter(params, user) {
         const placeholders = tagList.map(() => '?').join(',');
         filterWhere += ` AND d.id IN (
             SELECT dt.document_id FROM document_tags dt
-            JOIN tags t ON dt.tag_id = t.id
-            WHERE t.name IN (${placeholders})
+            WHERE dt.tag_name IN (${placeholders})
         )`;
         filterParams.push(...tagList);
     }

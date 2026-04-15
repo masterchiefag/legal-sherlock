@@ -151,23 +151,41 @@ export function recreateBulkIndexes(db) {
 
 /**
  * Refresh the precomputed document-type counts on an investigation row.
+ * Reads from the per-investigation DB and writes to the main DB.
  *
- * @param {import('better-sqlite3').Database} db
+ * @param {import('better-sqlite3').Database} mainDb  Main (global) DB connection
+ * @param {import('better-sqlite3').Database} invDb   Per-investigation DB connection
  * @param {string} investigationId  UUID of the investigation to refresh
  * @returns {boolean} true on success
  */
-export function refreshInvestigationCounts(db, investigationId) {
+export function refreshInvestigationCounts(mainDb, invDb, investigationId) {
     try {
-        db.prepare(`
+        const counts = invDb.prepare(`
+            SELECT
+                COUNT(*) as document_count,
+                SUM(CASE WHEN doc_type = 'email' THEN 1 ELSE 0 END) as email_count,
+                SUM(CASE WHEN doc_type = 'attachment' THEN 1 ELSE 0 END) as attachment_count,
+                SUM(CASE WHEN doc_type = 'chat' THEN 1 ELSE 0 END) as chat_count,
+                SUM(CASE WHEN doc_type = 'file' THEN 1 ELSE 0 END) as file_count
+            FROM documents
+        `).get();
+        mainDb.prepare(`
             UPDATE investigations SET
-                document_count  = (SELECT COUNT(*) FROM documents WHERE investigation_id = $id),
-                email_count     = (SELECT COUNT(*) FROM documents WHERE investigation_id = $id AND doc_type = 'email'),
-                attachment_count = (SELECT COUNT(*) FROM documents WHERE investigation_id = $id AND doc_type = 'attachment'),
-                chat_count      = (SELECT COUNT(*) FROM documents WHERE investigation_id = $id AND doc_type = 'chat'),
-                file_count      = (SELECT COUNT(*) FROM documents WHERE investigation_id = $id AND doc_type = 'file')
-            WHERE id = $id
-        `).run({ id: investigationId });
-        console.log('✦ Worker: investigation counts refreshed');
+                document_count = ?,
+                email_count = ?,
+                attachment_count = ?,
+                chat_count = ?,
+                file_count = ?
+            WHERE id = ?
+        `).run(
+            counts.document_count || 0,
+            counts.email_count || 0,
+            counts.attachment_count || 0,
+            counts.chat_count || 0,
+            counts.file_count || 0,
+            investigationId
+        );
+        console.log(`✦ Worker: investigation counts refreshed — ${counts.document_count || 0} docs (${counts.email_count || 0} email, ${counts.attachment_count || 0} attach, ${counts.chat_count || 0} chat, ${counts.file_count || 0} file)`);
         return true;
     } catch (err) {
         console.error('✦ Worker: failed to refresh investigation counts —', err.message);

@@ -19,24 +19,29 @@ import { fileURLToPath } from 'url';
 import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
 import { disableFtsTriggers, enableFtsTriggers, rebuildFtsIndex, dropBulkIndexes, recreateBulkIndexes, refreshInvestigationCounts, walCheckpoint, backfillDuplicateText } from '../lib/worker-helpers.js';
+import { openWorkerDb } from '../lib/investigation-db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const DB_PATH = path.join(__dirname, '..', '..', 'data', 'ediscovery.db');
+const MAIN_DB_PATH = path.join(__dirname, '..', '..', 'data', 'ediscovery.db');
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
 
-// Worker DB connection (don't set WAL — already set by main process)
-const db = new Database(DB_PATH, { timeout: 15000 });
-db.pragma('foreign_keys = ON');
-db.pragma('busy_timeout = 10000');
+// Main DB connection for global tables (image_jobs, investigations, system_settings)
+const mainDb = new Database(MAIN_DB_PATH, { timeout: 15000 });
+mainDb.pragma('foreign_keys = ON');
+mainDb.pragma('busy_timeout = 10000');
 
 const { jobId, imagePath, selectedFiles, investigationId, custodian } = workerData;
 
+// Open per-investigation DB (documents, FTS, etc.)
+const db = openWorkerDb(investigationId);
+
 // Set OCR-related env vars from DB settings so extractText() (called in-process) picks them up
 {
-    const rows = db.prepare('SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?, ?)').all(
-        'extract_max_file_size_mb', 'ocr_min_text_length', 'ocr_dpi', 'ocr_pdftoppm_timeout', 'ocr_tesseract_timeout'
+    const rows = mainDb.prepare('SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?, ?, ?)').all(
+        'ocr_enabled', 'extract_max_file_size_mb', 'ocr_min_text_length', 'ocr_dpi', 'ocr_pdftoppm_timeout', 'ocr_tesseract_timeout'
     );
     const s = Object.fromEntries(rows.map(r => [r.key, r.value]));
+    process.env.EXTRACT_OCR_ENABLED = String(s.ocr_enabled ?? 'true');
     process.env.EXTRACT_MAX_FILE_SIZE_MB = String(s.extract_max_file_size_mb || 50);
     process.env.EXTRACT_OCR_MIN_TEXT_LENGTH = String(s.ocr_min_text_length || 100);
     process.env.EXTRACT_OCR_DPI = String(s.ocr_dpi || 100);
@@ -51,7 +56,7 @@ fs.mkdirSync(INV_UPLOADS_DIR, { recursive: true });
 // ═══════════════════════════════════════════════════
 // Job update
 // ═══════════════════════════════════════════════════
-const updateJob = db.prepare(
+const updateJob = mainDb.prepare(
     `UPDATE image_jobs SET status = ?, phase = ?, progress_percent = ?, result_data = ?, error_log = ?,
      completed_at = CASE WHEN ? IN ('completed', 'failed') THEN datetime('now') ELSE completed_at END
      WHERE id = ?`
@@ -73,7 +78,7 @@ function getCustodianInitials(name) {
     return name.substring(0, 3).toUpperCase();
 }
 
-const investigation = db.prepare('SELECT short_code FROM investigations WHERE id = ?').get(investigationId);
+const investigation = mainDb.prepare('SELECT short_code FROM investigations WHERE id = ?').get(investigationId);
 const caseCode = investigation?.short_code || 'CASE';
 const custCode = getCustodianInitials(custodian);
 const docIdPrefix = `${caseCode}_${custCode}`;
@@ -484,7 +489,7 @@ async function main() {
         rebuildFtsIndex(db);
         recreateBulkIndexes(db);
         walCheckpoint(db);
-        refreshInvestigationCounts(db, investigationId);
+        refreshInvestigationCounts(mainDb, db, investigationId);
 
         // ═══════════════════════════════════════════════════
         // Done
@@ -510,7 +515,8 @@ async function main() {
         recreateBulkIndexes(db);
         // Cleanup temp dir
         try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (_) {}
-        db.close();
+        try { db.close(); } catch (_) {}
+        try { mainDb.close(); } catch (_) {}
     }
 }
 
