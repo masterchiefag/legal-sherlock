@@ -91,7 +91,11 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
     };
 
     const uploadFiles = () => {
-        if (files.length === 0) return;
+        if (files.length === 0 || !custodian.trim()) return;
+        if (!activeInvestigationId) {
+            addToast('Select an investigation before uploading', 'error');
+            return;
+        }
 
         setUploading(true);
         setUploadProgress(0);
@@ -99,12 +103,12 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
 
         const formData = new FormData();
         formData.append('investigation_id', activeInvestigationId);
-        if (custodian.trim()) formData.append('custodian', custodian.trim());
+        formData.append('custodian', custodian.trim());
         files.forEach(f => formData.append('files', f));
 
         try {
             const xhr = new XMLHttpRequest();
-            xhr.open('POST', '/api/documents/upload', true);
+            xhr.open('POST', `/api/documents/upload?investigation_id=${activeInvestigationId}`, true);
             const authToken = getAuthHeader(); if (authToken) xhr.setRequestHeader('Authorization', authToken);
 
             xhr.upload.onprogress = (e) => {
@@ -258,13 +262,17 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
     };
 
     const importLocalPath = async () => {
-        if (!localPath.trim()) return;
+        if (!localPath.trim() || !custodian.trim()) return;
+        if (!activeInvestigationId) {
+            addToast('Select an investigation before importing', 'error');
+            return;
+        }
         setLocalImporting(true);
         try {
-            const res = await apiPost('/api/documents/import-local', {
+            const res = await apiPost(`/api/documents/import-local?investigation_id=${activeInvestigationId}`, {
                 path: localPath.trim(),
                 investigation_id: activeInvestigationId,
-                custodian: custodian.trim() || undefined,
+                custodian: custodian.trim(),
             });
             const data = await res.json();
             if (res.status === 202 && data.jobId) {
@@ -291,13 +299,16 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
         );
     }
 
+    const isIngesting = activeJob && (activeJob.status === 'processing' || activeJob.status === 'pending');
+    const custodianMissing = !custodian.trim();
+
     return (
-        <div className="fade-in" style={{ maxWidth: '800px' }}>
+        <div className="fade-in">
             {/* Failed Jobs — Resume */}
             {failedJobs.length > 0 && (!activeJob || activeJob.status === 'completed') && (
-                <div className="mb-24">
+                <div className="mb-16">
                     {failedJobs.map(job => (
-                        <div key={job.id} className="p-16 mb-12" style={{ background: 'var(--bg-secondary)', borderRadius: '12px', border: '1px solid var(--warning)', borderLeftWidth: '4px' }}>
+                        <div key={job.id} className="p-12 mb-8" style={{ background: 'var(--bg-secondary)', borderRadius: '12px', border: '1px solid var(--warning)', borderLeftWidth: '4px' }}>
                             <div className="flex items-center justify-between">
                                 <div>
                                     <div className="flex items-center gap-8">
@@ -325,9 +336,9 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
             )}
 
             {/* Custodian */}
-            <div className="input-group mb-16" style={{ maxWidth: '400px' }}>
+            <div className="mb-16" style={{ maxWidth: '500px' }}>
                 <label style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '6px', display: 'block' }}>
-                    Custodian <span style={{ fontWeight: 400, color: 'var(--text-muted)' }}>(optional)</span>
+                    Custodian <span style={{ color: 'var(--error)' }}>*</span>
                 </label>
                 <input
                     type="text"
@@ -335,110 +346,119 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                     placeholder="e.g. John Doe"
                     value={custodian}
                     onChange={(e) => setCustodian(e.target.value)}
-                    style={{ fontSize: '14px' }}
+                    style={{ fontSize: '14px', ...(custodianMissing && (files.length > 0 || localPath.trim()) ? { outline: '2px solid var(--error)', outlineOffset: '-1px' } : {}) }}
                 />
-                <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '4px' }}>
-                    Person whose data is being uploaded. Applied to all documents in this upload.
-                </p>
+                {custodianMissing && (files.length > 0 || localPath.trim()) && (
+                    <p style={{ fontSize: '11px', color: 'var(--error)', marginTop: '4px' }}>
+                        Custodian name is required before uploading or importing.
+                    </p>
+                )}
             </div>
 
-            {/* Dropzone */}
-            <div
-                className={`dropzone ${dragActive ? 'active' : ''}`}
-                onDragEnter={handleDrag}
-                onDragLeave={handleDrag}
-                onDragOver={handleDrag}
-                onDrop={handleDrop}
-                onClick={() => inputRef.current?.click()}
-            >
-                <input
-                    ref={inputRef}
-                    type="file"
-                    multiple
-                    accept=".pdf,.docx,.doc,.xls,.xlsx,.txt,.csv,.md,.eml,.pst,.ost,.sqlite,.db,.zip"
-                    onChange={(e) => handleFiles(e.target.files)}
-                    style={{ display: 'none' }}
-                />
-                <svg className="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
-                    <path d="M7 18a4.6 4.4 0 0 1-.7-8.8c.3-2.9 2.8-5.2 5.7-5.2 2.5 0 4.7 1.7 5.4 4 2.4.3 4.1 2.3 4.1 4.7A4.6 4.6 0 0 1 17 18" />
-                    <polyline points="15 13 12 10 9 13" />
-                    <line x1="12" y1="10" x2="12" y2="20" />
-                </svg>
-                <p className="dropzone-text">
-                    <strong>Drop files here</strong> or click to browse
-                </p>
-                <p className="dropzone-sub">
-                    Supports PDF, DOCX, DOC, XLS, XLSX, TXT, CSV, EML, PST, ZIP, SQLite
-                </p>
-                <p className="dropzone-sub" style={{ fontSize: '11px', marginTop: '4px', color: 'var(--text-muted)' }}>
-                    💡 For large PST files, keep your laptop awake during import (run <code>caffeinate -i</code> in Terminal)
-                </p>
-            </div>
-
-            {/* Local Path Import */}
-            <div className="mt-16 p-16" style={{ background: 'var(--bg-secondary)', borderRadius: '12px', border: '1px solid var(--border-secondary)' }}>
-                <div className="flex items-center gap-8 mb-12">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+            {/* Upload / Import — side by side */}
+            <div className="flex gap-0 items-stretch" style={{ minHeight: '180px' }}>
+                {/* Dropzone */}
+                <div
+                    className={`dropzone ${dragActive ? 'active' : ''}`}
+                    onDragEnter={handleDrag}
+                    onDragLeave={handleDrag}
+                    onDragOver={handleDrag}
+                    onDrop={handleDrop}
+                    onClick={() => inputRef.current?.click()}
+                    style={{ flex: '0 0 40%', display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', margin: 0 }}
+                >
+                    <input
+                        ref={inputRef}
+                        type="file"
+                        multiple
+                        accept=".pdf,.docx,.doc,.xls,.xlsx,.txt,.csv,.md,.eml,.pst,.ost,.sqlite,.db,.zip"
+                        onChange={(e) => handleFiles(e.target.files)}
+                        style={{ display: 'none' }}
+                    />
+                    <svg className="dropzone-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
+                        <path d="M7 18a4.6 4.4 0 0 1-.7-8.8c.3-2.9 2.8-5.2 5.7-5.2 2.5 0 4.7 1.7 5.4 4 2.4.3 4.1 2.3 4.1 4.7A4.6 4.6 0 0 1 17 18" />
+                        <polyline points="15 13 12 10 9 13" />
+                        <line x1="12" y1="10" x2="12" y2="20" />
                     </svg>
-                    <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)' }}>
-                        Import PST/OST from local path
-                    </span>
-                    <span style={{ fontSize: '11px', color: 'var(--text-muted)', fontWeight: 400 }}>
-                        — skips upload, reads directly from disk
-                    </span>
+                    <p className="dropzone-text">
+                        <strong>Drop files here</strong> or click to browse
+                    </p>
+                    <p className="dropzone-sub" style={{ fontSize: '11px' }}>
+                        PDF, DOCX, DOC, XLS, XLSX, TXT, CSV, EML, PST, ZIP, SQLite
+                    </p>
                 </div>
-                <div className="flex gap-8 items-end">
-                    <div style={{ flex: 1 }}>
+
+                {/* Or divider */}
+                <div className="flex items-center" style={{ padding: '0 20px' }}>
+                    <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-muted)', textTransform: 'uppercase', letterSpacing: '1px' }}>or</span>
+                </div>
+
+                {/* Local Path Import */}
+                <div style={{ flex: 1, background: 'var(--bg-secondary)', borderRadius: '12px', border: '1px solid var(--border-secondary)', padding: '20px', display: 'flex', flexDirection: 'column', justifyContent: 'center' }}>
+                    <div className="flex items-center gap-8 mb-12">
+                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                            <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z" />
+                        </svg>
+                        <span style={{ fontSize: '13px', fontWeight: 600, color: 'var(--text-secondary)' }}>
+                            Import from local path
+                        </span>
+                    </div>
+                    <p style={{ fontSize: '11px', color: 'var(--text-muted)', margin: '0 0 12px' }}>
+                        For large PST/OST files on external drives. Reads directly from disk.
+                    </p>
+                    <div className="flex gap-8 items-center">
                         <input
                             type="text"
                             className="input"
                             placeholder="/Volumes/External/mailbox.pst"
                             value={localPath}
                             onChange={(e) => setLocalPath(e.target.value)}
-                            onKeyDown={(e) => e.key === 'Enter' && importLocalPath()}
-                            style={{ fontSize: '14px', fontFamily: 'var(--font-mono, monospace)' }}
+                            onKeyDown={(e) => e.key === 'Enter' && !custodianMissing && importLocalPath()}
+                            style={{ fontSize: '13px', fontFamily: 'var(--font-mono, monospace)', flex: 1 }}
                         />
+                        <button
+                            className="btn btn-primary"
+                            onClick={importLocalPath}
+                            disabled={localImporting || !localPath.trim() || custodianMissing}
+                            title={custodianMissing ? 'Custodian name is required' : ''}
+                        >
+                            {localImporting ? (
+                                <><div className="spinner"></div> Starting...</>
+                            ) : (
+                                'Import'
+                            )}
+                        </button>
                     </div>
-                    <button
-                        className="btn btn-primary"
-                        onClick={importLocalPath}
-                        disabled={localImporting || !localPath.trim()}
-                    >
-                        {localImporting ? (
-                            <><div className="spinner"></div> Starting...</>
-                        ) : (
-                            'Import'
-                        )}
-                    </button>
                 </div>
-                <p style={{ fontSize: '11px', color: 'var(--text-muted)', marginTop: '6px' }}>
-                    For large PST files on external drives. The source file will not be modified or deleted.
-                </p>
             </div>
 
             {/* Selected Files */}
             {files.length > 0 && (
-                <div className="file-list">
+                <div className="file-list" style={{ maxWidth: '40%' }}>
                     <div className="flex items-center justify-between mb-8">
                         <span className="text-sm text-muted">{files.length} file(s) selected</span>
-                        <button className="btn btn-primary" onClick={uploadFiles} disabled={uploading}>
-                            {uploading ? (
-                                <>
-                                    <div className="spinner"></div>
-                                    Uploading {uploadProgress}%
-                                </>
-                            ) : (
-                                <>
-                                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
-                                        <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
-                                        <polyline points="17 8 12 3 7 8" />
-                                        <line x1="12" y1="3" x2="12" y2="15" />
-                                    </svg>
-                                    Upload All
-                                </>
+                        <div className="flex items-center gap-8">
+                            {custodianMissing && (
+                                <span style={{ fontSize: '12px', color: 'var(--error)' }}>Enter custodian name</span>
                             )}
-                        </button>
+                            <button className="btn btn-primary" onClick={uploadFiles} disabled={uploading || custodianMissing}>
+                                {uploading ? (
+                                    <>
+                                        <div className="spinner"></div>
+                                        Uploading {uploadProgress}%
+                                    </>
+                                ) : (
+                                    <>
+                                        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                                            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                                            <polyline points="17 8 12 3 7 8" />
+                                            <line x1="12" y1="3" x2="12" y2="15" />
+                                        </svg>
+                                        Upload All
+                                    </>
+                                )}
+                            </button>
+                        </div>
                     </div>
                     
                     {uploading && (
@@ -469,15 +489,15 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
 
             {/* Background Job Progress */}
             {activeJob && (
-                <div className="mt-24" style={{ background: 'var(--bg-secondary)', borderRadius: '12px', border: '1px solid var(--border-secondary)', padding: '20px 24px' }}>
-                    <div className="flex items-center justify-between mb-16">
+                <div className="mt-16" style={{ background: 'var(--bg-secondary)', borderRadius: '12px', border: '1px solid var(--border-secondary)', padding: '16px 20px' }}>
+                    <div className="flex items-center justify-between mb-12">
                         <div className="flex items-center gap-12">
                             {activeJob.status === 'processing' || activeJob.status === 'pending' ? (
                                 <div className="spinner"></div>
                             ) : activeJob.status === 'completed' ? (
                                 <div style={{ color: 'var(--success)', fontSize: '20px' }}>✓</div>
                             ) : (
-                                <div style={{ color: 'var(--danger)', fontSize: '20px' }}>⚠</div>
+                                <div style={{ color: 'var(--error)', fontSize: '20px' }}>⚠</div>
                             )}
                             <div>
                                 <h3 className="text-md fw-bold m-0 text-primary">{getJobLabel(activeJob)}: {activeJob.filename || 'Archive'}</h3>
@@ -591,7 +611,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                                     )}
                                 </div>
                             )}
-                            <div className="flex gap-24 mt-16" style={{ borderTop: '1px solid var(--border-secondary)', paddingTop: '16px' }}>
+                            <div className="flex gap-24 mt-12" style={{ borderTop: '1px solid var(--border-secondary)', paddingTop: '12px', flexWrap: 'wrap' }}>
                                 <div>
                                     <p className="text-xs text-muted m-0 uppercase tracking-wide">
                                         {getJobType(activeJob) === 'chat' ? 'Chats Imported' : 'Emails Imported'}
@@ -634,7 +654,7 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                                         </p>
                                         <p className="text-xs text-muted m-0">
                                             {(activeJob.ocr_time_ms / 1000).toFixed(1)}s
-                                            {activeJob.ocr_failed > 0 && <span style={{ color: 'var(--danger)' }}> · {activeJob.ocr_failed} failed</span>}
+                                            {activeJob.ocr_failed > 0 && <span style={{ color: 'var(--error)' }}> · {activeJob.ocr_failed} failed</span>}
                                         </p>
                                     </div>
                                 )}
@@ -642,19 +662,59 @@ function Upload({ activeInvestigationId, activeInvestigation, addToast }) {
                         </>
                     )}
 
-                    {activeJob.error_log && JSON.parse(activeJob.error_log).length > 0 && (
-                        <div className="mt-16 p-12" style={{ background: 'var(--bg-tertiary)', borderRadius: '8px', color: 'var(--danger)', fontSize: '13px' }}>
-                            <strong>Engine Errors Encountered:</strong>
-                            <ul className="m-0 mt-8 pl-16">
-                                {JSON.parse(activeJob.error_log).slice(0, 5).map((err, i) => (
-                                    <li key={i}>{err.subject ? `[${err.subject}]: ` : ''}{err.error}</li>
-                                ))}
-                                {JSON.parse(activeJob.error_log).length > 5 && (
-                                    <li className="text-muted italic">...and {JSON.parse(activeJob.error_log).length - 5} more errors.</li>
+                    {activeJob.error_log && (() => {
+                        const entries = JSON.parse(activeJob.error_log);
+                        if (entries.length === 0) return null;
+                        const warnings = entries.filter(e => e.type);
+                        const errors = entries.filter(e => !e.type);
+
+                        // Group warnings by type
+                        const warningGroups = {};
+                        for (const w of warnings) {
+                            if (!warningGroups[w.type]) warningGroups[w.type] = { count: 0, sample: w };
+                            warningGroups[w.type].count++;
+                        }
+
+                        const warningLabels = {
+                            invalid_date: 'Invalid date',
+                        };
+
+                        return (
+                            <>
+                                {Object.keys(warningGroups).length > 0 && (
+                                    <div className="mt-12 p-12" style={{ background: 'var(--bg-tertiary)', borderRadius: '8px', fontSize: '13px' }}>
+                                        <strong style={{ color: 'var(--warning, #eab308)' }}>Warnings:</strong>
+                                        <ul className="m-0 mt-8 pl-16" style={{ color: 'var(--text-secondary)' }}>
+                                            {Object.entries(warningGroups).map(([type, { count, sample }]) => (
+                                                <li key={type}>
+                                                    <strong>{warningLabels[type] || type}</strong> — {count} document{count !== 1 ? 's' : ''}
+                                                    {sample.raw && <span className="text-muted"> (e.g. "{sample.raw.length > 50 ? sample.raw.slice(0, 50) + '...' : sample.raw}")</span>}
+                                                    {sample.docId && (
+                                                        <a href={`/documents/${sample.docId}`} style={{ marginLeft: '8px', color: 'var(--accent-primary)', fontSize: '12px' }}>
+                                                            View sample
+                                                        </a>
+                                                    )}
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    </div>
                                 )}
-                            </ul>
-                        </div>
-                    )}
+                                {errors.length > 0 && (
+                                    <div className="mt-12 p-12" style={{ background: 'var(--bg-tertiary)', borderRadius: '8px', color: 'var(--error)', fontSize: '13px' }}>
+                                        <strong>Engine Errors Encountered:</strong>
+                                        <ul className="m-0 mt-8 pl-16">
+                                            {errors.slice(0, 5).map((err, i) => (
+                                                <li key={i}>{err.subject ? `[${err.subject}]: ` : ''}{err.error}</li>
+                                            ))}
+                                            {errors.length > 5 && (
+                                                <li className="text-muted italic">...and {errors.length - 5} more errors.</li>
+                                            )}
+                                        </ul>
+                                    </div>
+                                )}
+                            </>
+                        );
+                    })()}
                 </div>
             )}
 
