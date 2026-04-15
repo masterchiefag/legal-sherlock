@@ -9,7 +9,9 @@ router.get('/', (req, res) => {
         const t0 = Date.now();
         const { q = '', page = 1, limit = 20 } = req.query;
 
-        const offset = (parseInt(page) - 1) * parseInt(limit);
+        const parsedLimit = parseInt(limit);
+        const fetchAll = parsedLimit === 0;
+        const offset = fetchAll ? 0 : (parseInt(page) - 1) * parsedLimit;
 
         const hasQuery = q.trim().length > 0;
         const ftsQuery = hasQuery ? parseQuery(q) : '';
@@ -67,11 +69,11 @@ router.get('/', (req, res) => {
             WHERE documents_fts MATCH ?
             ${filterWhere}
             ORDER BY rank
-            LIMIT ? OFFSET ?
+            ${fetchAll ? '' : 'LIMIT ? OFFSET ?'}
           )
           SELECT ${enrichSelect} FROM page d
           ORDER BY d._rank
-        `).all(ftsQuery, ...filterParams, parseInt(limit), offset);
+        `).all(ftsQuery, ...filterParams, ...(fetchAll ? [] : [parsedLimit, offset]));
         } else {
             // Filter-only (no search query)
             countRow = req.invReadDb.prepare(`
@@ -93,11 +95,11 @@ router.get('/', (req, res) => {
             FROM documents d
             WHERE 1=1 ${filterWhere}
             ORDER BY COALESCE(d.email_date, d.doc_created_at, d.doc_modified_at, d.uploaded_at) DESC
-            LIMIT ? OFFSET ?
+            ${fetchAll ? '' : 'LIMIT ? OFFSET ?'}
           )
           SELECT ${enrichSelect} FROM page d
           ORDER BY COALESCE(d.email_date, d.doc_created_at, d.doc_modified_at, d.uploaded_at) DESC
-        `).all(...filterParams, parseInt(limit), offset);
+        `).all(...filterParams, ...(fetchAll ? [] : [parsedLimit, offset]));
         }
 
         for (const r of results) {
@@ -111,10 +113,10 @@ router.get('/', (req, res) => {
             results,
             query: q,
             pagination: {
-                page: parseInt(page),
-                limit: parseInt(limit),
+                page: fetchAll ? 1 : parseInt(page),
+                limit: fetchAll ? countRow.total : parsedLimit,
                 total: countRow.total,
-                pages: Math.ceil(countRow.total / parseInt(limit)),
+                pages: fetchAll ? 1 : Math.ceil(countRow.total / parsedLimit),
             },
         };
         console.log(`[search] type=${useFts ? 'fts' : 'filter'}, q="${q}", total=${countRow.total}, time=${Date.now() - t0}ms`);

@@ -1322,6 +1322,10 @@ body {
 .results-table-row.selected {
   background: color-mix(in srgb, var(--primary) 8%, var(--bg-primary));
 }
+.row-link {
+  color: inherit;
+  text-decoration: none;
+}
 .type-cell {
   display: flex;
   align-items: center;
