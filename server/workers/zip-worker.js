@@ -17,7 +17,8 @@ import fs from 'fs';
 import fsp from 'fs/promises';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
-import db from '../db.js';
+import mainDb from '../db.js';
+import { openWorkerDb } from '../lib/investigation-db.js';
 import {
     disableFtsTriggers, enableFtsTriggers, rebuildFtsIndex,
     refreshInvestigationCounts, walCheckpoint, backfillDuplicateText
@@ -33,6 +34,9 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
 
 const { jobId, filename, filepath, originalname, investigation_id, custodian } = workerData;
+
+// Open per-investigation DB (documents, import_jobs, FTS, etc.)
+const db = openWorkerDb(investigation_id);
 
 // Set OCR-related env vars from DB settings so extractText() (called in-process) picks them up
 process.env.EXTRACT_MAX_FILE_SIZE_MB = String(getSetting('extract_max_file_size_mb') || 50);
@@ -55,7 +59,7 @@ function getCustodianInitials(name) {
     return name.substring(0, 2).toUpperCase();
 }
 
-const investigation = db.prepare('SELECT short_code FROM investigations WHERE id = ?').get(investigation_id);
+const investigation = mainDb.prepare('SELECT short_code FROM investigations WHERE id = ?').get(investigation_id);
 const caseCode = investigation?.short_code || 'CASE';
 const custCode = getCustodianInitials(custodian);
 const docIdPrefix = `${caseCode}_${custCode}`;
@@ -242,8 +246,8 @@ async function processEmlEntry(zipPath, entry) {
         const recipientCount = countAddrs(eml.to) + countAddrs(eml.cc) + countAddrs(eml.bcc);
 
         // Threading
-        const threadId = resolveThreadId(eml.messageId, eml.inReplyTo, eml.references);
-        backfillThread(threadId, eml.messageId, eml.references);
+        const threadId = resolveThreadId(db, eml.messageId, eml.inReplyTo, eml.references);
+        backfillThread(db, threadId, eml.messageId, eml.references);
 
         // Folder path from ZIP structure
         const folderPath = path.dirname(entry.path) === '.' ? '/' : '/' + path.dirname(entry.path);
@@ -470,7 +474,7 @@ async function main() {
         console.log(`✦ ZIP Import complete: ${totalEmails} emails, ${totalFiles} files, ${totalAttachments} attachments`);
 
         // Refresh precomputed investigation counts
-        refreshInvestigationCounts(db, investigation_id);
+        refreshInvestigationCounts(mainDb, db, investigation_id);
 
         // Rebuild FTS (heavy — scans all docs across all investigations)
         enableFtsTriggers(db);
@@ -499,6 +503,8 @@ async function main() {
         // Best-effort FTS recovery
         enableFtsTriggers(db);
         rebuildFtsIndex(db);
+    } finally {
+        try { db.close(); } catch (_) {}
     }
 }
 
