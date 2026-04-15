@@ -37,6 +37,7 @@ function evictOldest() {
         }
     }
     if (oldestKey) {
+        console.log(`[inv-db] pool evicting ${oldestKey.substring(0, 8)}... (pool full at ${MAX_POOL_SIZE})`);
         const entry = pool.get(oldestKey);
         try { entry.db.close(); } catch (_) {}
         try { entry.readDb.close(); } catch (_) {}
@@ -76,11 +77,13 @@ export function getInvestigationDb(investigationId) {
     });
 
     if (isNew) {
+        console.log(`[inv-db] creating NEW investigation DB: ${investigationId.substring(0, 8)}... at ${dbPath}`);
         initSchema(db);
     } else {
         runMigrations(db);
     }
 
+    console.log(`[inv-db] pool open: ${investigationId.substring(0, 8)}... (${isNew ? 'new' : 'existing'}, pool size: ${pool.size + 1}/${MAX_POOL_SIZE})`);
     const readDb = new Database(dbPath, { readonly: true });
     readDb.pragma('journal_mode = WAL');
     readDb.pragma('busy_timeout = 1000');
@@ -106,6 +109,8 @@ export function openWorkerDb(investigationId) {
     const dbPath = getInvestigationDbPath(investigationId);
     const isNew = !fs.existsSync(dbPath);
 
+    console.log(`[inv-db] worker opening: ${investigationId.substring(0, 8)}... (${isNew ? 'new DB' : 'existing'})`);
+
     const db = new Database(dbPath, { timeout: 15000 });
     db.pragma('foreign_keys = ON');
     db.pragma('busy_timeout = 15000');
@@ -119,6 +124,7 @@ export function openWorkerDb(investigationId) {
     });
 
     if (isNew) {
+        console.log(`[inv-db] creating NEW investigation DB (worker): ${investigationId.substring(0, 8)}... at ${dbPath}`);
         initSchema(db);
     } else {
         runMigrations(db);
@@ -140,6 +146,7 @@ export function getInvestigationDbPath(investigationId) {
 export function closeInvestigationDb(investigationId) {
     const entry = pool.get(investigationId);
     if (entry) {
+        console.log(`[inv-db] pool closing: ${investigationId.substring(0, 8)}...`);
         try { entry.db.close(); } catch (_) {}
         try { entry.readDb.close(); } catch (_) {}
         pool.delete(investigationId);
@@ -150,6 +157,7 @@ export function closeInvestigationDb(investigationId) {
  * Close all pooled connections (for graceful shutdown).
  */
 export function closeAll() {
+    console.log(`[inv-db] closing all pooled connections (${pool.size} open)`);
     for (const [id, entry] of pool) {
         try { entry.db.close(); } catch (_) {}
         try { entry.readDb.close(); } catch (_) {}
@@ -163,11 +171,15 @@ export function closeAll() {
 export function deleteInvestigationDb(investigationId) {
     closeInvestigationDb(investigationId);
     const dbPath = getInvestigationDbPath(investigationId);
+    let sizeBytes = 0;
+    try { sizeBytes = fs.statSync(dbPath).size; } catch (_) {}
     const walPath = dbPath + '-wal';
     const shmPath = dbPath + '-shm';
     try { fs.unlinkSync(dbPath); } catch (_) {}
     try { fs.unlinkSync(walPath); } catch (_) {}
     try { fs.unlinkSync(shmPath); } catch (_) {}
+    const sizeMb = (sizeBytes / 1024 / 1024).toFixed(1);
+    console.log(`[inv-db] deleted investigation DB: ${investigationId.substring(0, 8)}... (${sizeMb} MB freed)`);
 }
 
 /**
@@ -188,6 +200,8 @@ export function listInvestigationDbs() {
  * Run periodic WAL checkpoints on all pooled connections.
  */
 export function checkpointAll() {
+    if (pool.size === 0) return;
+    console.log(`[inv-db] WAL checkpoint (PASSIVE) on ${pool.size} pooled connections`);
     for (const [id, entry] of pool) {
         try { entry.db.pragma('wal_checkpoint(PASSIVE)'); } catch (_) {}
     }
@@ -517,6 +531,8 @@ export function refreshInvestigationCounts(mainDb, invDb, investigationId) {
             SUM(CASE WHEN doc_type = 'file' THEN 1 ELSE 0 END) as file_count
         FROM documents
     `).get();
+
+    console.log(`[inv-db] refreshing counts for ${investigationId.substring(0, 8)}...: ${counts.document_count || 0} docs (${counts.email_count || 0} email, ${counts.attachment_count || 0} attach, ${counts.chat_count || 0} chat, ${counts.file_count || 0} file)`);
 
     mainDb.prepare(`
         UPDATE investigations SET

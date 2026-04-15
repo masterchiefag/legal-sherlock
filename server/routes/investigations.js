@@ -157,6 +157,7 @@ router.post('/', requireRole('admin', 'reviewer'), (req, res) => {
 
         // Create the empty per-investigation DB file
         getInvestigationDb(id);
+        console.log(`[investigations] created "${name.trim()}" (${id}) by user ${req.user.email}`);
 
         // Auto-add creator as member
         db.prepare(
@@ -242,6 +243,8 @@ router.delete('/:id', requireRole('admin'), (req, res) => {
             deletedDocs = countRow?.cnt || 0;
         } catch (_) {}
 
+        console.log(`[investigations] deleting "${inv.name}" (${invId.substring(0, 8)}...) by ${req.user.email}: ${deletedDocs} documents`);
+
         // Delete the per-investigation DB file (documents, reviews, classifications, etc.)
         deleteInvestigationDb(invId);
 
@@ -318,6 +321,7 @@ router.post('/:id/members', requireRole('admin'), (req, res) => {
         db.prepare(
             'INSERT INTO investigation_members (id, investigation_id, user_id, role_override, added_by) VALUES (?, ?, ?, ?, ?)'
         ).run(id, req.params.id, user_id, role_override || null, req.user.id);
+        console.log(`[investigations] added member "${user.name}" (${user_id.substring(0, 8)}...) to investigation ${req.params.id.substring(0, 8)}... by ${req.user.email}`);
 
         logAudit(db, {
             userId: req.user.id,
@@ -343,6 +347,7 @@ router.delete('/:id/members/:userId', requireRole('admin'), (req, res) => {
         ).run(req.params.id, req.params.userId);
 
         if (result.changes === 0) return res.status(404).json({ error: 'Membership not found' });
+        console.log(`[investigations] removed member ${req.params.userId.substring(0, 8)}... from investigation ${req.params.id.substring(0, 8)}... by ${req.user.email}`);
 
         logAudit(db, {
             userId: req.user.id,

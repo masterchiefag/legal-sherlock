@@ -43,6 +43,7 @@ router.post('/', requireRole('admin', 'reviewer'), (req, res) => {
 
         const id = uuidv4();
         mainDb.prepare('INSERT INTO tags (id, name, color) VALUES (?, ?, ?)').run(id, name, color);
+        console.log(`[tags] created tag "${name}" (${color}) by ${req.user.email}`);
 
         logAudit(mainDb, {
             userId: req.user.id,
@@ -84,6 +85,7 @@ router.put('/:id', requireRole('admin', 'reviewer'), (req, res) => {
         const tag = mainDb.prepare('SELECT * FROM tags WHERE id = ?').get(req.params.id);
         if (!tag) return res.status(404).json({ error: 'Tag not found' });
 
+        console.log(`[tags] updated tag ${req.params.id.substring(0, 8)}...: name=${name || '(unchanged)'}, color=${color || '(unchanged)'}`);
         // Sync denormalized columns in the current investigation's document_tags
         // TODO: For complete sync, fan out across ALL investigation DBs
         if (req.invDb) {
@@ -118,6 +120,7 @@ router.delete('/:id', requireRole('admin'), (req, res) => {
     try {
         const result = mainDb.prepare('DELETE FROM tags WHERE id = ?').run(req.params.id);
         if (result.changes === 0) return res.status(404).json({ error: 'Tag not found' });
+        console.log(`[tags] deleted tag ${req.params.id.substring(0, 8)}... by ${req.user.email}`);
 
         // Clean up document_tags in the current investigation DB
         // TODO: For complete cleanup, fan out across ALL investigation DBs
@@ -157,6 +160,7 @@ router.post('/documents/:docId/tags', requireRole('admin', 'reviewer'), (req, re
         req.invDb.prepare(
             'INSERT OR IGNORE INTO document_tags (document_id, tag_id, tag_name, tag_color) VALUES (?, ?, ?, ?)'
         ).run(req.params.docId, tag_id, tag.name, tag.color);
+        console.log(`[tags] assigned "${tag.name}" to doc ${req.params.docId.substring(0, 8)}... by ${req.user.email}`);
 
         logAudit(mainDb, {
             userId: req.user.id,
@@ -180,6 +184,7 @@ router.delete('/documents/:docId/tags/:tagId', requireRole('admin', 'reviewer'),
         if (!req.invDb) return res.status(400).json({ error: 'investigation_id is required' });
 
         req.invDb.prepare('DELETE FROM document_tags WHERE document_id = ? AND tag_id = ?').run(req.params.docId, req.params.tagId);
+        console.log(`[tags] unassigned tag ${req.params.tagId.substring(0, 8)}... from doc ${req.params.docId.substring(0, 8)}... by ${req.user.email}`);
 
         logAudit(mainDb, {
             userId: req.user.id,

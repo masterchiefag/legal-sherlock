@@ -35,6 +35,7 @@ router.put('/documents/:docId/review', requireRole('admin', 'reviewer'), (req, r
       INSERT INTO document_reviews (id, document_id, status, notes, reviewer_id)
       VALUES (?, ?, ?, ?, ?)
     `).run(id, req.params.docId, status, notes || null, req.user.id);
+        console.log(`[reviews] doc ${req.params.docId.substring(0, 8)}... marked "${status}" by ${req.user.email}`);
 
         logAudit(mainDb, {
             userId: req.user.id,

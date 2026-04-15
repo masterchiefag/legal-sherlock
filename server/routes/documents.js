@@ -420,6 +420,11 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
             }
         }
 
+        const fileNames = req.files?.map(f => f.originalname).join(', ');
+        const totalSize = req.files?.reduce((sum, f) => sum + f.size, 0) || 0;
+        const totalSizeMb = (totalSize / 1024 / 1024).toFixed(1);
+        console.log(`[upload] ${req.files?.length} file(s) (${totalSizeMb} MB) to investigation ${investigation_id.substring(0, 8)}... by ${req.user.email}: ${fileNames}`);
+
         logAudit(mainDb, {
             userId: req.user.id,
             action: ACTIONS.DOC_UPLOAD,
@@ -458,6 +463,7 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
                     VALUES (?, ?, ?, 'pending', ?, ?)
                 `).run(jobId, file.originalname, file.path, investigation_id, custodian || null);
 
+                console.log(`[upload] spawning PST worker for "${file.originalname}" (job ${jobId.substring(0, 8)}..., custodian: ${custodian || 'none'})`);
                 spawnPstWorker(req.invDb, jobId, file.filename, file.path, file.originalname, investigation_id, custodian);
 
                 // Return 202 Accepted instead of waiting for results
@@ -474,6 +480,7 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
                     VALUES (?, ?, ?, 'pending', ?, ?, 'chat')
                 `).run(jobId, file.originalname, file.path, investigation_id, custodian || null);
 
+                console.log(`[upload] spawning Chat worker for "${file.originalname}" (job ${jobId.substring(0, 8)}..., custodian: ${custodian || 'none'})`);
                 spawnChatWorker(req.invDb, jobId, file.filename, file.path, file.originalname, investigation_id, custodian);
 
                 return res.status(202).json({
@@ -520,6 +527,7 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
                     });
                 }
 
+                console.log(`[upload] spawning ZIP worker for "${file.originalname}" (job ${jobId.substring(0, 8)}..., custodian: ${custodian || 'none'})`);
                 spawnZipWorker(req.invDb, jobId, file.filename, file.path, file.originalname, investigation_id, custodian);
 
                 return res.status(202).json({
@@ -576,6 +584,8 @@ router.post('/import-local', requireRole('admin', 'reviewer'), (req, res) => {
             VALUES (?, ?, ?, 'pending', ?, ?, 1)
         `).run(jobId, originalname, resolvedPath, investigation_id, custodian || null);
 
+        const sizeMb = (stat.size / 1024 / 1024).toFixed(1);
+        console.log(`[import-local] importing "${originalname}" (${sizeMb} MB) from ${resolvedPath} to investigation ${investigation_id.substring(0, 8)}... (job ${jobId.substring(0, 8)}...)`);
         spawnPstWorker(req.invDb, jobId, originalname, resolvedPath, originalname, investigation_id, custodian || null, false, true);
 
         logAudit(mainDb, {
@@ -1061,6 +1071,7 @@ router.delete('/:id', requireRole('admin', 'reviewer'), (req, res) => {
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
         req.invDb.prepare('DELETE FROM documents WHERE id = ?').run(req.params.id);
+        console.log(`[documents] deleted doc ${req.params.id.substring(0, 8)}... + ${children.length} child attachments by ${req.user.email}`);
 
         logAudit(mainDb, {
             userId: req.user.id,

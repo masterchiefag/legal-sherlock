@@ -185,7 +185,7 @@ export function refreshInvestigationCounts(mainDb, invDb, investigationId) {
             counts.file_count || 0,
             investigationId
         );
-        console.log('✦ Worker: investigation counts refreshed');
+        console.log(`✦ Worker: investigation counts refreshed — ${counts.document_count || 0} docs (${counts.email_count || 0} email, ${counts.attachment_count || 0} attach, ${counts.chat_count || 0} chat, ${counts.file_count || 0} file)`);
         return true;
     } catch (err) {
         console.error('✦ Worker: failed to refresh investigation counts —', err.message);
