@@ -8,7 +8,7 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
-import { refreshInvestigationCounts } from '../lib/worker-helpers.js';
+import { refreshInvestigationCounts, backfillDuplicateText } from '../lib/worker-helpers.js';
 import { getSetting } from '../lib/settings.js';
 
 const execFileAsync = promisify(execFile);
@@ -867,14 +867,10 @@ async function main() {
             }
             await Promise.all(workers);
 
-            // Backfill text from originals into duplicates
+            // Backfill text from originals into duplicates (shared helper, hash-map lookup)
             if (dupeCount.changes > 0) {
-                db.prepare(`
-                    UPDATE documents SET
-                        text_content = (SELECT d2.text_content FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 AND d2.text_content IS NOT NULL LIMIT 1),
-                        text_content_size = (SELECT d2.text_content_size FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 AND d2.text_content IS NOT NULL LIMIT 1)
-                    WHERE is_duplicate = 1 AND doc_type = 'attachment' AND investigation_id = ? AND text_content IS NULL
-                `).run(investigation_id);
+                console.log(`✦ Backfilling text for ${dupeCount.changes} duplicates...`);
+                backfillDuplicateText(db, investigation_id);
             }
 
             console.log(`✦ Phase 2 complete: extracted text from ${extracted} attachments` +

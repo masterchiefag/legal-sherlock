@@ -11,7 +11,7 @@ import { fileURLToPath } from 'url';
 import db from '../db.js';
 import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
-import { disableFtsTriggers, enableFtsTriggers, rebuildFtsIndex, dropBulkIndexes, recreateBulkIndexes, refreshInvestigationCounts, walCheckpoint } from '../lib/worker-helpers.js';
+import { disableFtsTriggers, enableFtsTriggers, rebuildFtsIndex, dropBulkIndexes, recreateBulkIndexes, refreshInvestigationCounts, walCheckpoint, backfillDuplicateText } from '../lib/worker-helpers.js';
 import { resolveThreadId, backfillThread, updateCacheOnly, resolveThreadIdFromCache, initCache } from '../lib/threading-cached.js';
 import { getSetting } from '../lib/settings.js';
 
@@ -590,19 +590,11 @@ async function main() {
         db.prepare("UPDATE import_jobs SET extraction_done_at = datetime('now') WHERE id = ?").run(jobId);
         console.log('✦ Extraction complete — extraction_done_at set');
 
-        // Backfill text from originals into duplicates (they share content_hash)
+        // Backfill text from originals into duplicates (they share content_hash).
+        // Backfill text from originals into duplicates (shared helper, hash-map lookup)
         if (dupeCount.changes > 0) {
             console.log(`✦ Backfilling text for ${dupeCount.changes} duplicates...`);
-            const backfillStart = Date.now();
-            const backfilled = db.prepare(`
-                UPDATE documents SET
-                    text_content = (SELECT d2.text_content FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 AND d2.text_content IS NOT NULL LIMIT 1),
-                    text_content_size = (SELECT d2.text_content_size FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 AND d2.text_content IS NOT NULL LIMIT 1),
-                    ocr_applied = (SELECT d2.ocr_applied FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 LIMIT 1),
-                    ocr_time_ms = (SELECT d2.ocr_time_ms FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 LIMIT 1)
-                WHERE is_duplicate = 1 AND doc_type = 'attachment' AND investigation_id = ? AND text_content IS NULL
-            `).run(investigation_id);
-            console.log(`✦ Backfill done: ${backfilled.changes} duplicates in ${((Date.now() - backfillStart) / 1000).toFixed(1)}s`);
+            backfillDuplicateText(db, investigation_id, { includeOcr: true });
         }
 
         console.log(`✦ PST Import Phase 2 complete: extracted text from ${extracted} attachments`);
