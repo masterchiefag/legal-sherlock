@@ -18,7 +18,7 @@ import Database from 'better-sqlite3';
 import { fileURLToPath } from 'url';
 import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
-import { disableFtsTriggers, enableFtsTriggers, rebuildFtsIndex, dropBulkIndexes, recreateBulkIndexes, refreshInvestigationCounts, walCheckpoint } from '../lib/worker-helpers.js';
+import { disableFtsTriggers, enableFtsTriggers, rebuildFtsIndex, dropBulkIndexes, recreateBulkIndexes, refreshInvestigationCounts, walCheckpoint, backfillDuplicateText } from '../lib/worker-helpers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DB_PATH = path.join(__dirname, '..', '..', 'data', 'ediscovery.db');
@@ -463,6 +463,9 @@ async function main() {
         const ingestTime = ((Date.now() - ingestStart) / 1000).toFixed(1);
         console.log(`✦ Image Ingest: ingestion phase complete in ${ingestTime}s`);
 
+        // Backfill text from originals into duplicates
+        backfillDuplicateText(db, investigationId);
+
         // Recreate FTS triggers + rebuild index + indexes
         enableFtsTriggers(db);
         rebuildFtsIndex(db);
@@ -518,14 +521,16 @@ async function ingestFile(file, results) {
     const existing = checkDuplicate.get(hash, investigationId);
     const isDuplicate = !!existing;
 
-    // Text extraction
+    // Text extraction — skip for duplicates (backfilled after loop)
     let textContent = '';
     let textSize = 0;
-    try {
-        textContent = await extractText(destPath, mime) || '';
-        textSize = Buffer.byteLength(textContent, 'utf-8');
-    } catch (err) {
-        console.warn(`✦ Image Ingest: text extraction failed for ${basename}: ${err.message}`);
+    if (!isDuplicate) {
+        try {
+            textContent = await extractText(destPath, mime) || '';
+            textSize = Buffer.byteLength(textContent, 'utf-8');
+        } catch (err) {
+            console.warn(`✦ Image Ingest: text extraction failed for ${basename}: ${err.message}`);
+        }
     }
 
     // Metadata extraction
@@ -539,7 +544,7 @@ async function ingestFile(file, results) {
     const docIdentifier = nextDocIdentifier();
 
     insertFile.run(
-        docId, storedName, basename, mime, file.size, textContent, textSize,
+        docId, storedName, basename, mime, file.size, textContent || null, textSize,
         hash, isDuplicate ? 1 : 0, investigationId, custodian, docIdentifier,
         meta.author || null, meta.title || null, meta.createdAt || null,
         meta.modifiedAt || null, meta.creatorTool || null, meta.keywords || null,

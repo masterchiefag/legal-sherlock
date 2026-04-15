@@ -9,6 +9,7 @@ import {
   recreateBulkIndexes,
   refreshInvestigationCounts,
   walCheckpoint,
+  backfillDuplicateText,
 } from '../worker-helpers.js';
 
 /**
@@ -33,13 +34,16 @@ function createSchema(db) {
       doc_type TEXT DEFAULT 'file',
       original_name TEXT NOT NULL,
       text_content TEXT,
+      text_content_size INTEGER DEFAULT 0,
       email_subject TEXT,
       email_from TEXT,
       email_to TEXT,
       status TEXT DEFAULT 'pending',
       thread_id TEXT,
       content_hash TEXT,
-      is_duplicate INTEGER DEFAULT 0
+      is_duplicate INTEGER DEFAULT 0,
+      ocr_applied INTEGER DEFAULT 0,
+      ocr_time_ms INTEGER
     );
 
     CREATE VIRTUAL TABLE documents_fts USING fts5(
@@ -235,6 +239,137 @@ describe('worker-helpers', () => {
 
     it('should not throw when recreating indexes on a database with documents table', () => {
       expect(() => recreateBulkIndexes(db)).not.toThrow();
+    });
+  });
+
+  describe('backfillDuplicateText', () => {
+    const INV = 'inv-backfill';
+    const insert = (db, id, hash, isDup, text, opts = {}) => {
+      db.prepare(`
+        INSERT INTO documents (id, investigation_id, doc_type, original_name, content_hash, is_duplicate, text_content, text_content_size, ocr_applied, ocr_time_ms)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(id, INV, opts.docType || 'attachment', `${id}.pdf`, hash, isDup ? 1 : 0, text, text ? text.length : 0, opts.ocrApplied || 0, opts.ocrTimeMs || null);
+    };
+
+    beforeEach(() => {
+      db.prepare('INSERT INTO investigations (id, name, short_code) VALUES (?, ?, ?)').run(INV, 'Backfill Test', 'BFT');
+    });
+
+    it('should copy text from original to duplicates with matching content_hash', () => {
+      insert(db, 'orig-1', 'hash-aaa', false, 'original text content');
+      insert(db, 'dupe-1', 'hash-aaa', true, null);
+      insert(db, 'dupe-2', 'hash-aaa', true, null);
+
+      const result = backfillDuplicateText(db, INV);
+
+      expect(result.backfilled).toBe(2);
+      const d1 = db.prepare('SELECT text_content, text_content_size FROM documents WHERE id = ?').get('dupe-1');
+      expect(d1.text_content).toBe('original text content');
+      expect(d1.text_content_size).toBe('original text content'.length);
+      const d2 = db.prepare('SELECT text_content FROM documents WHERE id = ?').get('dupe-2');
+      expect(d2.text_content).toBe('original text content');
+    });
+
+    it('should not overwrite duplicates that already have text', () => {
+      insert(db, 'orig-1', 'hash-bbb', false, 'original text');
+      insert(db, 'dupe-1', 'hash-bbb', true, 'already has text');
+
+      const result = backfillDuplicateText(db, INV);
+
+      expect(result.backfilled).toBe(0);
+      const d = db.prepare('SELECT text_content FROM documents WHERE id = ?').get('dupe-1');
+      expect(d.text_content).toBe('already has text');
+    });
+
+    it('should handle multiple content hashes independently', () => {
+      insert(db, 'orig-a', 'hash-111', false, 'text for hash 111');
+      insert(db, 'orig-b', 'hash-222', false, 'text for hash 222');
+      insert(db, 'dupe-a', 'hash-111', true, null);
+      insert(db, 'dupe-b', 'hash-222', true, null);
+
+      const result = backfillDuplicateText(db, INV);
+
+      expect(result.backfilled).toBe(2);
+      expect(db.prepare('SELECT text_content FROM documents WHERE id = ?').get('dupe-a').text_content).toBe('text for hash 111');
+      expect(db.prepare('SELECT text_content FROM documents WHERE id = ?').get('dupe-b').text_content).toBe('text for hash 222');
+    });
+
+    it('should not touch documents in other investigations', () => {
+      db.prepare('INSERT INTO investigations (id, name, short_code) VALUES (?, ?, ?)').run('inv-other', 'Other Case', 'OTH');
+      insert(db, 'orig-1', 'hash-ccc', false, 'my text');
+      // Duplicate in another investigation
+      db.prepare(`
+        INSERT INTO documents (id, investigation_id, doc_type, original_name, content_hash, is_duplicate, text_content)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `).run('dupe-other', 'inv-other', 'attachment', 'other.pdf', 'hash-ccc', 1, null);
+
+      backfillDuplicateText(db, INV);
+
+      const d = db.prepare('SELECT text_content FROM documents WHERE id = ?').get('dupe-other');
+      expect(d.text_content).toBeNull();
+    });
+
+    it('should include OCR fields when includeOcr is true', () => {
+      insert(db, 'orig-1', 'hash-ocr', false, 'ocr text', { ocrApplied: 1, ocrTimeMs: 500 });
+      insert(db, 'dupe-1', 'hash-ocr', true, null);
+
+      backfillDuplicateText(db, INV, { includeOcr: true });
+
+      const d = db.prepare('SELECT text_content, ocr_applied, ocr_time_ms FROM documents WHERE id = ?').get('dupe-1');
+      expect(d.text_content).toBe('ocr text');
+      expect(d.ocr_applied).toBe(1);
+      expect(d.ocr_time_ms).toBe(500);
+    });
+
+    it('should not backfill OCR fields when includeOcr is false', () => {
+      insert(db, 'orig-1', 'hash-noocr', false, 'some text', { ocrApplied: 1, ocrTimeMs: 300 });
+      insert(db, 'dupe-1', 'hash-noocr', true, null);
+
+      backfillDuplicateText(db, INV, { includeOcr: false });
+
+      const d = db.prepare('SELECT text_content, ocr_applied, ocr_time_ms FROM documents WHERE id = ?').get('dupe-1');
+      expect(d.text_content).toBe('some text');
+      expect(d.ocr_applied).toBe(0); // unchanged from default
+      expect(d.ocr_time_ms).toBeNull();
+    });
+
+    it('should backfill duplicates with doc_type file (zip/image-ingest imports)', () => {
+      insert(db, 'orig-file', 'hash-file', false, 'file text content', { docType: 'file' });
+      insert(db, 'dupe-file', 'hash-file', true, null, { docType: 'file' });
+
+      const result = backfillDuplicateText(db, INV);
+
+      expect(result.backfilled).toBe(1);
+      const d = db.prepare('SELECT text_content FROM documents WHERE id = ?').get('dupe-file');
+      expect(d.text_content).toBe('file text content');
+    });
+
+    it('should return zero when no duplicates need backfill', () => {
+      insert(db, 'orig-1', 'hash-ddd', false, 'text');
+
+      const result = backfillDuplicateText(db, INV);
+
+      expect(result.backfilled).toBe(0);
+    });
+
+    it('should handle large batches correctly', () => {
+      insert(db, 'orig-1', 'hash-bulk', false, 'bulk text');
+      // Insert 1200 duplicates to test batching (default batch size 500)
+      const stmt = db.prepare(`
+        INSERT INTO documents (id, investigation_id, doc_type, original_name, content_hash, is_duplicate, text_content)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (let i = 0; i < 1200; i++) {
+        stmt.run(`dupe-${i}`, INV, 'attachment', `file-${i}.pdf`, 'hash-bulk', 1, null);
+      }
+
+      const result = backfillDuplicateText(db, INV);
+
+      expect(result.backfilled).toBe(1200);
+      // Spot-check a few
+      expect(db.prepare('SELECT text_content FROM documents WHERE id = ?').get('dupe-0').text_content).toBe('bulk text');
+      expect(db.prepare('SELECT text_content FROM documents WHERE id = ?').get('dupe-999').text_content).toBe('bulk text');
+      expect(db.prepare('SELECT text_content FROM documents WHERE id = ?').get('dupe-1199').text_content).toBe('bulk text');
     });
   });
 });

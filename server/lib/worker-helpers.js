@@ -175,6 +175,79 @@ export function refreshInvestigationCounts(db, investigationId) {
     }
 }
 
+// ─── Duplicate text backfill ─────────────────────────────────────────────────
+
+/**
+ * Backfill text_content from original documents into their duplicates.
+ * Uses a hash-map lookup (one SELECT for originals, batched UPDATEs by ID)
+ * instead of correlated subqueries for speed.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} investigationId  UUID of the investigation
+ * @param {object} [options]
+ * @param {boolean} [options.includeOcr=false]  Also backfill ocr_applied/ocr_time_ms columns
+ * @param {number} [options.batchSize=500]  Number of rows per transaction batch
+ * @returns {{ backfilled: number, elapsed: number }} count and time in seconds
+ */
+export function backfillDuplicateText(db, investigationId, options = {}) {
+    const { includeOcr = false, batchSize = 500 } = options;
+
+    // Build lookup: content_hash -> original's text (+ optionally OCR fields)
+    const selectCols = includeOcr
+        ? 'content_hash, text_content, text_content_size, ocr_applied, ocr_time_ms'
+        : 'content_hash, text_content, text_content_size';
+    const originals = db.prepare(`
+        SELECT ${selectCols}
+        FROM documents
+        WHERE is_duplicate = 0 AND text_content IS NOT NULL AND investigation_id = ?
+        GROUP BY content_hash
+    `).all(investigationId);
+    const hashMap = new Map();
+    for (const o of originals) hashMap.set(o.content_hash, o);
+    console.log(`✦ Worker: backfill hash map built with ${hashMap.size} unique originals`);
+
+    // Fetch duplicate IDs needing text (attachments and files)
+    const dupes = db.prepare(`
+        SELECT id, content_hash FROM documents
+        WHERE is_duplicate = 1 AND doc_type IN ('attachment', 'file')
+        AND investigation_id = ? AND text_content IS NULL
+    `).all(investigationId);
+
+    if (dupes.length === 0) return { backfilled: 0, elapsed: 0 };
+
+    // Prepare update statement
+    const updateSql = includeOcr
+        ? 'UPDATE documents SET text_content = ?, text_content_size = ?, ocr_applied = ?, ocr_time_ms = ? WHERE id = ?'
+        : 'UPDATE documents SET text_content = ?, text_content_size = ? WHERE id = ?';
+    const updateDupe = db.prepare(updateSql);
+
+    // Batch update with progress
+    const t0 = Date.now();
+    let backfilled = 0;
+    for (let i = 0; i < dupes.length; i += batchSize) {
+        const batch = dupes.slice(i, i + batchSize);
+        db.transaction(() => {
+            for (const dupe of batch) {
+                const orig = hashMap.get(dupe.content_hash);
+                if (orig) {
+                    if (includeOcr) {
+                        updateDupe.run(orig.text_content, orig.text_content_size, orig.ocr_applied, orig.ocr_time_ms, dupe.id);
+                    } else {
+                        updateDupe.run(orig.text_content, orig.text_content_size, dupe.id);
+                    }
+                    backfilled++;
+                }
+            }
+        })();
+        if (dupes.length > batchSize) {
+            console.log(`✦ Worker: backfilling duplicates: ${Math.min(i + batchSize, dupes.length)}/${dupes.length}`);
+        }
+    }
+    const elapsed = (Date.now() - t0) / 1000;
+    console.log(`✦ Worker: backfill done — ${backfilled} duplicates in ${elapsed.toFixed(1)}s`);
+    return { backfilled, elapsed };
+}
+
 // ─── WAL checkpoint ──────────────────────────────────────────────────────────
 
 /**

@@ -8,7 +8,7 @@ import os from 'os';
 import { fileURLToPath } from 'url';
 import { execFile, spawn } from 'child_process';
 import { promisify } from 'util';
-import { refreshInvestigationCounts } from '../lib/worker-helpers.js';
+import { refreshInvestigationCounts, backfillDuplicateText } from '../lib/worker-helpers.js';
 import { getSetting } from '../lib/settings.js';
 
 const execFileAsync = promisify(execFile);
@@ -855,43 +855,10 @@ async function main() {
             }
             await Promise.all(workers);
 
-            // Backfill text from originals into duplicates (hash-map lookup, not correlated subqueries)
+            // Backfill text from originals into duplicates (shared helper, hash-map lookup)
             if (dupeCount.changes > 0) {
                 console.log(`✦ Backfilling text for ${dupeCount.changes} duplicates...`);
-                const backfillStart = Date.now();
-                const originals = db.prepare(`
-                    SELECT content_hash, text_content, text_content_size
-                    FROM documents
-                    WHERE is_duplicate = 0 AND text_content IS NOT NULL AND investigation_id = ?
-                    GROUP BY content_hash
-                `).all(investigation_id);
-                const hashMap = new Map();
-                for (const o of originals) hashMap.set(o.content_hash, o);
-
-                const dupes = db.prepare(`
-                    SELECT id, content_hash FROM documents
-                    WHERE is_duplicate = 1 AND doc_type = 'attachment'
-                    AND investigation_id = ? AND text_content IS NULL
-                `).all(investigation_id);
-
-                const updateDupe = db.prepare(`
-                    UPDATE documents SET text_content = ?, text_content_size = ? WHERE id = ?
-                `);
-                let backfilled = 0;
-                const BATCH = 500;
-                for (let i = 0; i < dupes.length; i += BATCH) {
-                    const batch = dupes.slice(i, i + BATCH);
-                    db.transaction(() => {
-                        for (const dupe of batch) {
-                            const orig = hashMap.get(dupe.content_hash);
-                            if (orig) {
-                                updateDupe.run(orig.text_content, orig.text_content_size, dupe.id);
-                                backfilled++;
-                            }
-                        }
-                    })();
-                }
-                console.log(`✦ Backfill done: ${backfilled} duplicates in ${((Date.now() - backfillStart) / 1000).toFixed(1)}s`);
+                backfillDuplicateText(db, investigation_id);
             }
 
             console.log(`✦ Phase 2 complete: extracted text from ${extracted} attachments` +

@@ -20,7 +20,7 @@ import { fileURLToPath } from 'url';
 import db from '../db.js';
 import {
     disableFtsTriggers, enableFtsTriggers, rebuildFtsIndex,
-    refreshInvestigationCounts, walCheckpoint
+    refreshInvestigationCounts, walCheckpoint, backfillDuplicateText
 } from '../lib/worker-helpers.js';
 import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
@@ -327,13 +327,13 @@ async function processFileEntry(zipPath, entry) {
             diskFilename = seenHashes.get(contentHash);
         }
 
-        // Extract text
+        // Extract text — skip for duplicates (backfilled after loop)
         const diskPath = path.join(UPLOADS_DIR, diskFilename);
         const mime = mimeFromExt(ext);
         let text = '';
         let meta = { author: null, title: null, createdAt: null, modifiedAt: null, creatorTool: null, keywords: null };
 
-        if (EXTRACTABLE_EXTS.has(ext)) {
+        if (!isDuplicate && EXTRACTABLE_EXTS.has(ext)) {
             try {
                 text = await extractText(diskPath, mime);
             } catch (e) {
@@ -348,7 +348,7 @@ async function processFileEntry(zipPath, entry) {
         batchBuffer.push(() => {
             insertFile.run(
                 fileId, diskFilename, originalName,
-                mime, entry.size, text, text ? text.length : 0,
+                mime, entry.size, text || null, text ? text.length : 0,
                 contentHash, isDuplicate, investigation_id, custodian || null, fileDocId,
                 meta.author, meta.title, meta.createdAt, meta.modifiedAt, meta.creatorTool, meta.keywords
             );
@@ -437,6 +437,9 @@ async function main() {
 
         // Final flush
         flushPendingOps();
+
+        // Backfill text from originals into duplicates (shared helper, hash-map lookup)
+        backfillDuplicateText(db, investigation_id);
 
         // Mark extraction_done_at — frontend uses this to detect stuck jobs
         const memBefore = process.memoryUsage();
