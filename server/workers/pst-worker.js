@@ -354,7 +354,12 @@ async function main() {
                 const folderPath = path.dirname(relPath).replace(/\\/g, '/');
                 eml._folderPath = folderPath === '.' ? '/' : '/' + folderPath;
 
-                await processEmail(eml);
+                const result = await processEmail(eml);
+                if (eml._warnings?.length > 0) {
+                    for (const w of eml._warnings) {
+                        errorLog.push({ type: w.type, subject: eml.subject, docId: result.emailId, raw: w.raw });
+                    }
+                }
                 totalEmails++;
                 perfStats.emailCount = totalEmails;
 
@@ -818,6 +823,8 @@ async function processEmail(eml) {
 
     // Wait for all file writes to finish before moving to next email
     if (writePromises.length > 0) await Promise.all(writePromises);
+
+    return { emailId };
 }
 
 // Start worker
