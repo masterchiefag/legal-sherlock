@@ -589,19 +589,53 @@ async function main() {
         db.prepare("UPDATE import_jobs SET extraction_done_at = datetime('now') WHERE id = ?").run(jobId);
         console.log('✦ Extraction complete — extraction_done_at set');
 
-        // Backfill text from originals into duplicates (they share content_hash)
+        // Backfill text from originals into duplicates (they share content_hash).
+        // Uses a hash-map lookup instead of correlated subqueries for speed.
         if (dupeCount.changes > 0) {
             console.log(`✦ Backfilling text for ${dupeCount.changes} duplicates...`);
             const backfillStart = Date.now();
-            const backfilled = db.prepare(`
-                UPDATE documents SET
-                    text_content = (SELECT d2.text_content FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 AND d2.text_content IS NOT NULL LIMIT 1),
-                    text_content_size = (SELECT d2.text_content_size FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 AND d2.text_content IS NOT NULL LIMIT 1),
-                    ocr_applied = (SELECT d2.ocr_applied FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 LIMIT 1),
-                    ocr_time_ms = (SELECT d2.ocr_time_ms FROM documents d2 WHERE d2.content_hash = documents.content_hash AND d2.is_duplicate = 0 LIMIT 1)
-                WHERE is_duplicate = 1 AND doc_type = 'attachment' AND investigation_id = ? AND text_content IS NULL
-            `).run(investigation_id);
-            console.log(`✦ Backfill done: ${backfilled.changes} duplicates in ${((Date.now() - backfillStart) / 1000).toFixed(1)}s`);
+
+            // Build lookup: content_hash -> {text, size, ocr_applied, ocr_time_ms}
+            const originals = db.prepare(`
+                SELECT content_hash, text_content, text_content_size, ocr_applied, ocr_time_ms
+                FROM documents
+                WHERE is_duplicate = 0 AND text_content IS NOT NULL AND investigation_id = ?
+                GROUP BY content_hash
+            `).all(investigation_id);
+            const hashMap = new Map();
+            for (const o of originals) hashMap.set(o.content_hash, o);
+            console.log(`✦ Backfill: built hash map with ${hashMap.size} unique originals`);
+
+            // Fetch duplicate IDs
+            const dupes = db.prepare(`
+                SELECT id, content_hash FROM documents
+                WHERE is_duplicate = 1 AND doc_type = 'attachment'
+                AND investigation_id = ? AND text_content IS NULL
+            `).all(investigation_id);
+
+            // Batch update
+            const updateDupe = db.prepare(`
+                UPDATE documents SET text_content = ?, text_content_size = ?, ocr_applied = ?, ocr_time_ms = ?
+                WHERE id = ?
+            `);
+            const BATCH = 500;
+            let backfilled = 0;
+            for (let i = 0; i < dupes.length; i += BATCH) {
+                const batch = dupes.slice(i, i + BATCH);
+                db.transaction(() => {
+                    for (const dupe of batch) {
+                        const orig = hashMap.get(dupe.content_hash);
+                        if (orig) {
+                            updateDupe.run(orig.text_content, orig.text_content_size, orig.ocr_applied, orig.ocr_time_ms, dupe.id);
+                            backfilled++;
+                        }
+                    }
+                })();
+                if (dupes.length > BATCH) {
+                    console.log(`✦ Backfilling duplicates: ${Math.min(i + BATCH, dupes.length)}/${dupes.length}`);
+                }
+            }
+            console.log(`✦ Backfill done: ${backfilled} duplicates in ${((Date.now() - backfillStart) / 1000).toFixed(1)}s`);
         }
 
         console.log(`✦ PST Import Phase 2 complete: extracted text from ${extracted} attachments`);
