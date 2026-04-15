@@ -153,7 +153,7 @@ describe('buildSearchFilter', () => {
     const { filterWhere, filterParams } = buildSearchFilter(
       { tags: 'privileged,responsive' }, null
     );
-    expect(filterWhere).toContain('t.name IN (?,?)');
+    expect(filterWhere).toContain('dt.tag_name IN (?,?)');
     expect(filterParams).toContain('privileged');
     expect(filterParams).toContain('responsive');
   });
@@ -162,7 +162,7 @@ describe('buildSearchFilter', () => {
     const { filterWhere, filterParams } = buildSearchFilter(
       { tags: ['privileged', 'responsive'] }, null
     );
-    expect(filterWhere).toContain('t.name IN (?,?)');
+    expect(filterWhere).toContain('dt.tag_name IN (?,?)');
     expect(filterParams).toContain('privileged');
   });
 

@@ -112,7 +112,7 @@ describe('worker-helpers', () => {
       insert.run('d6', 'inv-1', 'chat', 'chat-2024-01-02.txt');
 
       // Run the refresh
-      refreshInvestigationCounts(db, 'inv-1');
+      refreshInvestigationCounts(db, db, 'inv-1');
 
       // Verify counts
       const inv = db.prepare('SELECT * FROM investigations WHERE id = ?').get('inv-1');
@@ -126,7 +126,7 @@ describe('worker-helpers', () => {
     it('should set all counts to zero for empty investigation', () => {
       db.prepare('INSERT INTO investigations (id, name, short_code) VALUES (?, ?, ?)').run('inv-empty', 'Empty Case', 'EMP');
 
-      refreshInvestigationCounts(db, 'inv-empty');
+      refreshInvestigationCounts(db, db, 'inv-empty');
 
       const inv = db.prepare('SELECT * FROM investigations WHERE id = ?').get('inv-empty');
       expect(inv.document_count).toBe(0);
@@ -137,16 +137,25 @@ describe('worker-helpers', () => {
     });
 
     it('should not count documents from other investigations', () => {
+      // In the per-investigation DB model, each investigation has its own DB
+      // so cross-contamination is impossible. Simulate with separate in-memory DBs.
       db.prepare('INSERT INTO investigations (id, name, short_code) VALUES (?, ?, ?)').run('inv-a', 'Case A', 'CAS');
       db.prepare('INSERT INTO investigations (id, name, short_code) VALUES (?, ?, ?)').run('inv-b', 'Case B', 'CSB');
 
-      const insert = db.prepare('INSERT INTO documents (id, investigation_id, doc_type, original_name) VALUES (?, ?, ?, ?)');
-      insert.run('d1', 'inv-a', 'email', 'msg.eml');
+      // Inv-A DB: only has inv-a's doc
+      const invADb = new Database(':memory:');
+      invADb.exec(`CREATE TABLE documents (id TEXT PRIMARY KEY, investigation_id TEXT, doc_type TEXT DEFAULT 'file', original_name TEXT NOT NULL)`);
+      invADb.prepare('INSERT INTO documents (id, investigation_id, doc_type, original_name) VALUES (?, ?, ?, ?)').run('d1', 'inv-a', 'email', 'msg.eml');
+
+      // Inv-B DB: only has inv-b's docs
+      const invBDb = new Database(':memory:');
+      invBDb.exec(`CREATE TABLE documents (id TEXT PRIMARY KEY, investigation_id TEXT, doc_type TEXT DEFAULT 'file', original_name TEXT NOT NULL)`);
+      const insert = invBDb.prepare('INSERT INTO documents (id, investigation_id, doc_type, original_name) VALUES (?, ?, ?, ?)');
       insert.run('d2', 'inv-b', 'file', 'notes.txt');
       insert.run('d3', 'inv-b', 'file', 'report.pdf');
 
-      refreshInvestigationCounts(db, 'inv-a');
-      refreshInvestigationCounts(db, 'inv-b');
+      refreshInvestigationCounts(db, invADb, 'inv-a');
+      refreshInvestigationCounts(db, invBDb, 'inv-b');
 
       const invA = db.prepare('SELECT * FROM investigations WHERE id = ?').get('inv-a');
       expect(invA.document_count).toBe(1);
@@ -155,6 +164,9 @@ describe('worker-helpers', () => {
       const invB = db.prepare('SELECT * FROM investigations WHERE id = ?').get('inv-b');
       expect(invB.document_count).toBe(2);
       expect(invB.file_count).toBe(2);
+
+      invADb.close();
+      invBDb.close();
     });
   });
 
