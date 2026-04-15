@@ -1,6 +1,6 @@
 import express from 'express';
 import crypto from 'crypto';
-import db, { readDb } from '../db.js';
+import mainDb, { readDb as mainReadDb } from '../db.js';
 import { requireRole } from '../middleware/auth.js';
 import { logAudit, ACTIONS } from '../lib/audit.js';
 import { parseQuery, buildSearchFilter } from '../lib/search-filter.js';
@@ -28,7 +28,7 @@ router.post('/', requireRole('admin', 'reviewer'), (req, res) => {
 
         let docIds;
         if (useFts) {
-            docIds = readDb.prepare(`
+            docIds = req.invReadDb.prepare(`
                 SELECT d.id FROM documents_fts fts
                 CROSS JOIN documents d ON d.rowid = fts.rowid
                 WHERE documents_fts MATCH ?
@@ -36,7 +36,7 @@ router.post('/', requireRole('admin', 'reviewer'), (req, res) => {
                 ORDER BY d.doc_identifier ASC, d.uploaded_at ASC
             `).all(ftsQuery, ...filterParams).map(r => r.id);
         } else {
-            docIds = readDb.prepare(`
+            docIds = req.invReadDb.prepare(`
                 SELECT d.id FROM documents d
                 WHERE 1=1 ${filterWhere}
                 ORDER BY d.doc_identifier ASC, d.uploaded_at ASC
@@ -55,7 +55,7 @@ router.post('/', requireRole('admin', 'reviewer'), (req, res) => {
         }
 
         // Get next batch_number for this investigation
-        const maxRow = readDb.prepare(
+        const maxRow = req.invReadDb.prepare(
             'SELECT MAX(batch_number) as max_num FROM review_batches WHERE investigation_id = ?'
         ).get(investigation_id);
         let nextNum = (maxRow?.max_num || 0) + 1;
@@ -63,16 +63,16 @@ router.post('/', requireRole('admin', 'reviewer'), (req, res) => {
         const batchIds = [];
         const searchCriteriaJson = JSON.stringify(search_criteria);
 
-        const insertBatch = db.prepare(`
+        const insertBatch = req.invDb.prepare(`
             INSERT INTO review_batches (id, investigation_id, batch_number, batch_size, total_docs, search_criteria, created_by)
             VALUES (?, ?, ?, ?, ?, ?, ?)
         `);
-        const insertDoc = db.prepare(`
+        const insertDoc = req.invDb.prepare(`
             INSERT INTO review_batch_documents (batch_id, document_id, position)
             VALUES (?, ?, ?)
         `);
 
-        const createAll = db.transaction(() => {
+        const createAll = req.invDb.transaction(() => {
             for (const chunk of chunks) {
                 const batchId = crypto.randomUUID();
                 batchIds.push(batchId);
@@ -85,7 +85,7 @@ router.post('/', requireRole('admin', 'reviewer'), (req, res) => {
         });
         createAll();
 
-        logAudit(db, {
+        logAudit(mainDb, {
             userId: req.user.id,
             action: ACTIONS.BATCH_CREATE,
             resourceType: 'batch',
@@ -114,7 +114,7 @@ router.get('/', (req, res) => {
 
         // Non-admin: check investigation access
         if (req.user.role !== 'admin') {
-            const member = readDb.prepare(
+            const member = mainReadDb.prepare(
                 'SELECT 1 FROM investigation_members WHERE investigation_id = ? AND user_id = ?'
             ).get(investigation_id, req.user.id);
             if (!member) return res.status(403).json({ error: 'No access to this investigation' });
@@ -132,10 +132,8 @@ router.get('/', (req, res) => {
             params.push(status);
         }
 
-        const batches = readDb.prepare(`
+        const batches = req.invReadDb.prepare(`
             SELECT rb.*,
-                u_assignee.name as assignee_name,
-                u_creator.name as created_by_name,
                 (SELECT COUNT(*) FROM review_batch_documents rbd
                  JOIN document_reviews dr ON dr.document_id = rbd.document_id
                  WHERE rbd.batch_id = rb.id
@@ -143,14 +141,25 @@ router.get('/', (req, res) => {
                  AND dr.status != 'pending'
                 ) as reviewed_count
             FROM review_batches rb
-            LEFT JOIN users u_assignee ON rb.assignee_id = u_assignee.id
-            LEFT JOIN users u_creator ON rb.created_by = u_creator.id
             ${where}
             ORDER BY rb.batch_number ASC
         `).all(...params);
 
-        // Parse search_criteria JSON
+        // Resolve user names from main DB
+        const userIds = [...new Set(batches.flatMap(b => [b.assignee_id, b.created_by].filter(Boolean)))];
+        const userMap = {};
+        if (userIds.length > 0) {
+            const placeholders = userIds.map(() => '?').join(',');
+            const users = mainReadDb.prepare(
+                `SELECT id, name FROM users WHERE id IN (${placeholders})`
+            ).all(...userIds);
+            for (const u of users) userMap[u.id] = u.name;
+        }
+
+        // Parse search_criteria JSON and attach user names
         for (const b of batches) {
+            b.assignee_name = userMap[b.assignee_id] || null;
+            b.created_by_name = userMap[b.created_by] || null;
             try { b.search_criteria = JSON.parse(b.search_criteria); } catch { /* keep as string */ }
         }
 
@@ -167,10 +176,8 @@ router.get('/:id', (req, res) => {
         const { page = 1, limit = 50 } = req.query;
         const offset = (parseInt(page) - 1) * parseInt(limit);
 
-        const batch = readDb.prepare(`
+        const batch = req.invReadDb.prepare(`
             SELECT rb.*,
-                u_assignee.name as assignee_name,
-                u_creator.name as created_by_name,
                 (SELECT COUNT(*) FROM review_batch_documents rbd
                  JOIN document_reviews dr ON dr.document_id = rbd.document_id
                  WHERE rbd.batch_id = rb.id
@@ -178,16 +185,30 @@ router.get('/:id', (req, res) => {
                  AND dr.status != 'pending'
                 ) as reviewed_count
             FROM review_batches rb
-            LEFT JOIN users u_assignee ON rb.assignee_id = u_assignee.id
-            LEFT JOIN users u_creator ON rb.created_by = u_creator.id
             WHERE rb.id = ?
         `).get(req.params.id);
 
         if (!batch) return res.status(404).json({ error: 'Batch not found' });
 
+        // Resolve user names from main DB
+        const userIds = [batch.assignee_id, batch.created_by].filter(Boolean);
+        if (userIds.length > 0) {
+            const placeholders = userIds.map(() => '?').join(',');
+            const users = mainReadDb.prepare(
+                `SELECT id, name FROM users WHERE id IN (${placeholders})`
+            ).all(...userIds);
+            const userMap = {};
+            for (const u of users) userMap[u.id] = u.name;
+            batch.assignee_name = userMap[batch.assignee_id] || null;
+            batch.created_by_name = userMap[batch.created_by] || null;
+        } else {
+            batch.assignee_name = null;
+            batch.created_by_name = null;
+        }
+
         // Check investigation access for non-admins
         if (req.user.role !== 'admin') {
-            const member = readDb.prepare(
+            const member = mainReadDb.prepare(
                 'SELECT 1 FROM investigation_members WHERE investigation_id = ? AND user_id = ?'
             ).get(batch.investigation_id, req.user.id);
             if (!member) return res.status(403).json({ error: 'No access' });
@@ -195,11 +216,11 @@ router.get('/:id', (req, res) => {
 
         try { batch.search_criteria = JSON.parse(batch.search_criteria); } catch { /* keep as string */ }
 
-        const total = readDb.prepare(
+        const total = req.invReadDb.prepare(
             'SELECT COUNT(*) as cnt FROM review_batch_documents WHERE batch_id = ?'
         ).get(req.params.id).cnt;
 
-        const documents = readDb.prepare(`
+        const documents = req.invReadDb.prepare(`
             SELECT rbd.position, d.id, d.doc_identifier, d.original_name, d.doc_type,
                 d.email_subject, d.email_from, d.email_date, d.custodian, d.size_bytes,
                 (SELECT dr.status FROM document_reviews dr WHERE dr.document_id = d.id
@@ -235,7 +256,7 @@ router.get('/:id', (req, res) => {
 router.patch('/:id/assign', requireRole('admin', 'reviewer'), (req, res) => {
     try {
         const { assignee_id } = req.body;
-        const batch = readDb.prepare('SELECT * FROM review_batches WHERE id = ?').get(req.params.id);
+        const batch = req.invReadDb.prepare('SELECT * FROM review_batches WHERE id = ?').get(req.params.id);
         if (!batch) return res.status(404).json({ error: 'Batch not found' });
 
         // Reviewers can only self-assign
@@ -244,11 +265,11 @@ router.patch('/:id/assign', requireRole('admin', 'reviewer'), (req, res) => {
         }
 
         const newStatus = assignee_id ? 'in_progress' : 'pending';
-        db.prepare(`
+        req.invDb.prepare(`
             UPDATE review_batches SET assignee_id = ?, status = ?, updated_at = datetime('now') WHERE id = ?
         `).run(assignee_id || null, newStatus, req.params.id);
 
-        logAudit(db, {
+        logAudit(mainDb, {
             userId: req.user.id,
             action: ACTIONS.BATCH_ASSIGN,
             resourceType: 'batch',
@@ -257,12 +278,18 @@ router.patch('/:id/assign', requireRole('admin', 'reviewer'), (req, res) => {
             ipAddress: req.ip,
         });
 
-        const updated = readDb.prepare(`
-            SELECT rb.*, u.name as assignee_name
+        const updated = req.invReadDb.prepare(`
+            SELECT rb.*
             FROM review_batches rb
-            LEFT JOIN users u ON rb.assignee_id = u.id
             WHERE rb.id = ?
         `).get(req.params.id);
+        // Resolve assignee name from main DB
+        if (updated.assignee_id) {
+            const assigneeUser = mainReadDb.prepare('SELECT name FROM users WHERE id = ?').get(updated.assignee_id);
+            updated.assignee_name = assigneeUser?.name || null;
+        } else {
+            updated.assignee_name = null;
+        }
         try { updated.search_criteria = JSON.parse(updated.search_criteria); } catch { /* */ }
 
         res.json({ batch: updated });
@@ -280,7 +307,7 @@ router.patch('/:id/status', requireRole('admin', 'reviewer'), (req, res) => {
             return res.status(400).json({ error: 'Invalid status' });
         }
 
-        const batch = readDb.prepare('SELECT * FROM review_batches WHERE id = ?').get(req.params.id);
+        const batch = req.invReadDb.prepare('SELECT * FROM review_batches WHERE id = ?').get(req.params.id);
         if (!batch) return res.status(404).json({ error: 'Batch not found' });
 
         // Only assignee or admin can change status
@@ -288,7 +315,7 @@ router.patch('/:id/status', requireRole('admin', 'reviewer'), (req, res) => {
             return res.status(403).json({ error: 'Only the assignee or admin can change batch status' });
         }
 
-        db.prepare(`
+        req.invDb.prepare(`
             UPDATE review_batches SET status = ?, updated_at = datetime('now') WHERE id = ?
         `).run(status, req.params.id);
 
@@ -305,7 +332,7 @@ router.get('/check-access/:documentId', (req, res) => {
         if (req.user.role === 'admin') {
             return res.json({ can_edit: true });
         }
-        const assignedBatch = readDb.prepare(`
+        const assignedBatch = req.invReadDb.prepare(`
             SELECT rb.id FROM review_batch_documents rbd
             JOIN review_batches rb ON rbd.batch_id = rb.id
             WHERE rbd.document_id = ? AND rb.assignee_id = ?
@@ -321,12 +348,12 @@ router.get('/check-access/:documentId', (req, res) => {
 // DELETE /api/batches/:id — Delete a batch (admin only)
 router.delete('/:id', requireRole('admin'), (req, res) => {
     try {
-        const batch = readDb.prepare('SELECT * FROM review_batches WHERE id = ?').get(req.params.id);
+        const batch = req.invReadDb.prepare('SELECT * FROM review_batches WHERE id = ?').get(req.params.id);
         if (!batch) return res.status(404).json({ error: 'Batch not found' });
 
-        db.prepare('DELETE FROM review_batches WHERE id = ?').run(req.params.id);
+        req.invDb.prepare('DELETE FROM review_batches WHERE id = ?').run(req.params.id);
 
-        logAudit(db, {
+        logAudit(mainDb, {
             userId: req.user.id,
             action: ACTIONS.BATCH_DELETE,
             resourceType: 'batch',

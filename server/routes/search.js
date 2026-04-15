@@ -1,5 +1,4 @@
 import express from 'express';
-import { readDb as db } from '../db.js';
 import { parseQuery, buildSearchFilter } from '../lib/search-filter.js';
 
 const router = express.Router();
@@ -36,8 +35,8 @@ router.get('/', (req, res) => {
             (SELECT COUNT(*) FROM documents t WHERE t.thread_id = d.thread_id AND t.doc_type IN ('email', 'chat') AND t.investigation_id = d.investigation_id AND t.email_date <= d.email_date) as thread_position,
             (SELECT cl.score FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_score,
             (SELECT cl.reasoning FROM classifications cl WHERE cl.document_id = d.id ORDER BY cl.classified_at DESC LIMIT 1) as ai_reasoning,
-            (SELECT json_group_array(json_object('id', t.id, 'name', t.name, 'color', t.color))
-             FROM document_tags dt JOIN tags t ON dt.tag_id = t.id
+            (SELECT json_group_array(json_object('id', dt.tag_id, 'name', dt.tag_name, 'color', dt.tag_color))
+             FROM document_tags dt
              WHERE dt.document_id = d.id) as tags_json,
             (SELECT dr.status FROM document_reviews dr
              WHERE dr.document_id = d.id
@@ -45,7 +44,7 @@ router.get('/', (req, res) => {
 
         if (useFts) {
             // FTS search with filters — CROSS JOIN forces FTS-first execution
-            countRow = db.prepare(`
+            countRow = req.invReadDb.prepare(`
           SELECT COUNT(*) as total
           FROM documents_fts fts
           CROSS JOIN documents d ON d.rowid = fts.rowid
@@ -54,7 +53,7 @@ router.get('/', (req, res) => {
         `).get(ftsQuery, ...filterParams);
 
             // CTE: get the page of rows first, then enrich only those rows
-            results = db.prepare(`
+            results = req.invReadDb.prepare(`
           WITH page AS (
             SELECT
               d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,
@@ -75,14 +74,14 @@ router.get('/', (req, res) => {
         `).all(ftsQuery, ...filterParams, parseInt(limit), offset);
         } else {
             // Filter-only (no search query)
-            countRow = db.prepare(`
+            countRow = req.invReadDb.prepare(`
           SELECT COUNT(*) as total
           FROM documents d
           WHERE 1=1 ${filterWhere}
         `).get(...filterParams);
 
             // CTE: get the page of rows first, then enrich only those rows
-            results = db.prepare(`
+            results = req.invReadDb.prepare(`
           WITH page AS (
             SELECT
               d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,

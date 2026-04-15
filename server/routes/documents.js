@@ -5,13 +5,12 @@ import fs from 'fs';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
-import db, { refreshInvestigationCounts } from '../db.js';
+import mainDb from '../db.js';
 import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
 import { resolveThreadId, backfillThread } from '../lib/threading.js';
 import { requireRole, requireInvestigationAccess } from '../middleware/auth.js';
 import { logAudit, ACTIONS } from '../lib/audit.js';
-import { readDb } from '../db.js';
 import { parseQuery, buildSearchFilter } from '../lib/search-filter.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -69,29 +68,30 @@ const router = express.Router();
  * Check if a stuck/crashed import job actually completed its work and finalize
  * it appropriately — mark as 'completed' if all docs are ready, 'failed' otherwise.
  * Also restores FTS triggers and rebuilds the index.
+ *
+ * @param {object} invDb - Investigation-scoped DB (write handle)
+ * @param {string} jobId
+ * @param {string} reason
  */
-function finalizeStuckJob(jobId, reason) {
-    const job = db.prepare("SELECT * FROM import_jobs WHERE id = ?").get(jobId);
+function finalizeStuckJob(invDb, jobId, reason) {
+    const job = invDb.prepare("SELECT * FROM import_jobs WHERE id = ?").get(jobId);
     if (!job || job.status !== 'processing') return;
 
     // Check if the extraction actually finished (no docs left in 'processing' status)
-    const pendingDocs = db.prepare(
+    const pendingDocs = invDb.prepare(
         "SELECT COUNT(*) as cnt FROM documents WHERE investigation_id = ? AND status = 'processing'"
     ).get(job.investigation_id);
 
     if (pendingDocs.cnt === 0) {
         // All docs extracted — worker died during finalization (FTS rebuild, status update)
-        db.prepare(`
+        invDb.prepare(`
             UPDATE import_jobs SET status = 'completed', phase = 'completed',
             progress_percent = 100, completed_at = datetime('now') WHERE id = ?
         `).run(jobId);
         console.log(`✦ Finalized stuck job ${job.filename} (${jobId}) as completed — all docs ready. Reason: ${reason}`);
-
-        // Refresh investigation counts
-        try { refreshInvestigationCounts(job.investigation_id); } catch (_) {}
     } else {
         // Extraction was incomplete
-        db.prepare(`
+        invDb.prepare(`
             UPDATE import_jobs SET status = 'failed',
             error_log = ?, completed_at = datetime('now') WHERE id = ?
         `).run(JSON.stringify([{ error: `${reason}. ${pendingDocs.cnt} documents not extracted.`, fatal: true }]), jobId);
@@ -100,7 +100,7 @@ function finalizeStuckJob(jobId, reason) {
 
     // Restore FTS triggers and rebuild index
     try {
-        db.exec(`
+        invDb.exec(`
             CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
                 INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
                 VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
@@ -116,27 +116,14 @@ function finalizeStuckJob(jobId, reason) {
                 VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
             END;
         `);
-        db.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')");
+        invDb.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')");
         console.log(`✦ FTS triggers restored and index rebuilt for job ${jobId}`);
     } catch (ftsErr) {
         console.error(`✦ FTS recovery failed for job ${jobId}:`, ftsErr.message);
     }
 }
 
-// ═══════════════════════════════════════════════════
-// Mark stuck import jobs as failed on startup (no worker is running after restart)
-// ═══════════════════════════════════════════════════
-const stuckJobs = db.prepare("SELECT id, filename, total_emails, total_attachments FROM import_jobs WHERE status IN ('processing', 'pending')").all();
-if (stuckJobs.length > 0) {
-    console.log(`✦ Found ${stuckJobs.length} stuck import job(s) — marking as failed (use Resume to continue):`);
-    const markFailed = db.prepare(
-        "UPDATE import_jobs SET status = 'failed', completed_at = datetime('now') WHERE id = ?"
-    );
-    for (const job of stuckJobs) {
-        markFailed.run(job.id);
-        console.log(`  - ${job.filename} (${job.id}) — ${job.total_emails || 0} emails, ${job.total_attachments || 0} attachments before crash`);
-    }
-}
+// Stuck job recovery now handled in server/index.js via investigation DB iteration
 
 // ═══════════════════════════════════════════════════
 // Doc identifier generation for direct uploads
@@ -151,13 +138,15 @@ function getCustodianInitials(name) {
     return name.substring(0, 3).toUpperCase();
 }
 
-function generateDocIdentifier(investigationId, custodian, docType) {
-    const investigation = db.prepare('SELECT short_code FROM investigations WHERE id = ?').get(investigationId);
+function generateDocIdentifier(invDb, investigationId, custodian, docType) {
+    // short_code lives in the main DB (investigations table)
+    const investigation = mainDb.prepare('SELECT short_code FROM investigations WHERE id = ?').get(investigationId);
     const caseCode = investigation?.short_code || 'CASE';
     const custCode = getCustodianInitials(custodian);
     const prefix = `${caseCode}_${custCode}`;
 
-    const maxExisting = db.prepare(
+    // documents table is in the per-investigation DB
+    const maxExisting = invDb.prepare(
         "SELECT MAX(CAST(SUBSTR(doc_identifier, ?, 5) AS INTEGER)) as max_seq FROM documents WHERE doc_identifier LIKE ?"
     ).get(prefix.length + 2, `${prefix}_%`);
     const seq = (maxExisting?.max_seq || 0) + 1;
@@ -171,7 +160,7 @@ function generateAttIdentifier(parentIdentifier, attIndex) {
 // ═══════════════════════════════════════════════════
 // Shared: insert a parsed email + its attachments
 // ═══════════════════════════════════════════════════
-async function processEmailData(eml, emailId, filename, originalName, sizeBytes, investigation_id, custodian) {
+async function processEmailData(invDb, eml, emailId, filename, originalName, sizeBytes, investigation_id, custodian) {
     const result = {
         id: emailId,
         name: originalName,
@@ -185,14 +174,14 @@ async function processEmailData(eml, emailId, filename, originalName, sizeBytes,
     };
 
     // Resolve thread
-    const threadId = resolveThreadId(eml.messageId, eml.inReplyTo, eml.references);
+    const threadId = resolveThreadId(invDb, eml.messageId, eml.inReplyTo, eml.references);
     result.thread_id = threadId;
 
     // Generate doc identifier
-    const emailDocId = generateDocIdentifier(investigation_id, custodian, 'email');
+    const emailDocId = generateDocIdentifier(invDb, investigation_id, custodian, 'email');
 
     // Insert email document (with transport metadata)
-    db.prepare(`
+    invDb.prepare(`
       INSERT INTO documents (
         id, filename, original_name, mime_type, size_bytes, text_content, status,
         doc_type, thread_id, message_id, in_reply_to, email_references,
@@ -216,7 +205,7 @@ async function processEmailData(eml, emailId, filename, originalName, sizeBytes,
     );
 
     // Backfill thread for late arrivals
-    backfillThread(threadId, eml.messageId, eml.references);
+    backfillThread(invDb, threadId, eml.messageId, eml.references);
 
     // Process attachments
     for (const att of eml.attachments) {
@@ -230,7 +219,7 @@ async function processEmailData(eml, emailId, filename, originalName, sizeBytes,
 
         // Compute content hash for deduplication
         const attHash = crypto.createHash('md5').update(att.content).digest('hex');
-        const existingWithHash = db.prepare(`SELECT id FROM documents WHERE content_hash = ? AND investigation_id = ? LIMIT 1`).get(attHash, investigation_id);
+        const existingWithHash = invDb.prepare(`SELECT id FROM documents WHERE content_hash = ? AND investigation_id = ? LIMIT 1`).get(attHash, investigation_id);
         const isDuplicate = existingWithHash ? 1 : 0;
 
         let attText = '';
@@ -247,7 +236,7 @@ async function processEmailData(eml, emailId, filename, originalName, sizeBytes,
 
         const attDocId = generateAttIdentifier(emailDocId, result.attachments.length + 1);
 
-        db.prepare(`
+        invDb.prepare(`
           INSERT INTO documents (
             id, filename, original_name, mime_type, size_bytes, text_content, status,
             doc_type, parent_id, thread_id, content_hash, is_duplicate, investigation_id, custodian,
@@ -268,15 +257,15 @@ async function processEmailData(eml, emailId, filename, originalName, sizeBytes,
 // ═══════════════════════════════════════════════════
 // EML processing pipeline
 // ═══════════════════════════════════════════════════
-async function processEmlFile(file, investigation_id, custodian) {
+async function processEmlFile(invDb, file, investigation_id, custodian) {
     const emailId = path.basename(file.filename, path.extname(file.filename));
     try {
         const eml = await parseEml(file.path);
-        const result = await processEmailData(eml, emailId, file.filename, file.originalname, file.size, investigation_id, custodian);
+        const result = await processEmailData(invDb, eml, emailId, file.filename, file.originalname, file.size, investigation_id, custodian);
         return [result];
     } catch (err) {
         try {
-            db.prepare(`
+            invDb.prepare(`
               INSERT INTO documents (id, filename, original_name, mime_type, size_bytes, status, doc_type)
               VALUES (?, ?, ?, 'message/rfc822', ?, 'error', 'email')
             `).run(emailId, file.filename, file.originalname, file.size);
@@ -293,7 +282,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
 
-function spawnPstWorker(jobId, filename, filepath, originalname, investigation_id, custodian, extractionOnly = false, preserveSource = false) {
+function spawnPstWorker(invDb, jobId, filename, filepath, originalname, investigation_id, custodian, extractionOnly = false, preserveSource = false) {
     const workerPath = path.join(__dirname, '..', 'workers', 'pst-worker.js');
     const worker = new Worker(workerPath, {
         workerData: { jobId, filename, filepath, originalname, investigation_id, custodian, resume: extractionOnly, extractionOnly, preserveSource }
@@ -307,7 +296,7 @@ function spawnPstWorker(jobId, filename, filepath, originalname, investigation_i
         if (code !== 0) {
             console.error(`⚠ PST Worker for job ${jobId} stopped with exit code ${code}`);
         }
-        finalizeStuckJob(jobId, `Worker exited with code ${code}`);
+        finalizeStuckJob(invDb, jobId, `Worker exited with code ${code}`);
     });
 
     return worker;
@@ -316,7 +305,7 @@ function spawnPstWorker(jobId, filename, filepath, originalname, investigation_i
 // ═══════════════════════════════════════════════════
 // Chat/SQLite processing pipeline (Delegated to Worker)
 // ═══════════════════════════════════════════════════
-function spawnChatWorker(jobId, filename, filepath, originalname, investigation_id, custodian, zipPath = null, sqliteEntry = null) {
+function spawnChatWorker(invDb, jobId, filename, filepath, originalname, investigation_id, custodian, zipPath = null, sqliteEntry = null) {
     const workerPath = path.join(__dirname, '..', 'workers', 'chat-worker.js');
     const worker = new Worker(workerPath, {
         workerData: { jobId, filename, filepath, originalname, investigation_id, custodian, zipPath, sqliteEntry }
@@ -330,7 +319,7 @@ function spawnChatWorker(jobId, filename, filepath, originalname, investigation_
         if (code !== 0) {
             console.error(`⚠ Chat Worker for job ${jobId} stopped with exit code ${code}`);
         }
-        finalizeStuckJob(jobId, `Worker exited with code ${code}`);
+        finalizeStuckJob(invDb, jobId, `Worker exited with code ${code}`);
     });
 
     return worker;
@@ -339,7 +328,7 @@ function spawnChatWorker(jobId, filename, filepath, originalname, investigation_
 // ═══════════════════════════════════════════════════
 // ZIP processing pipeline (Delegated to Worker)
 // ═══════════════════════════════════════════════════
-function spawnZipWorker(jobId, filename, filepath, originalname, investigation_id, custodian) {
+function spawnZipWorker(invDb, jobId, filename, filepath, originalname, investigation_id, custodian) {
     const workerPath = path.join(__dirname, '..', 'workers', 'zip-worker.js');
     const worker = new Worker(workerPath, {
         workerData: { jobId, filename, filepath, originalname, investigation_id, custodian }
@@ -353,7 +342,7 @@ function spawnZipWorker(jobId, filename, filepath, originalname, investigation_i
         if (code !== 0) {
             console.error(`⚠ ZIP Worker for job ${jobId} stopped with exit code ${code}`);
         }
-        finalizeStuckJob(jobId, `Worker exited with code ${code}`);
+        finalizeStuckJob(invDb, jobId, `Worker exited with code ${code}`);
     });
 
     return worker;
@@ -362,18 +351,18 @@ function spawnZipWorker(jobId, filename, filepath, originalname, investigation_i
 // ═══════════════════════════════════════════════════
 // Regular file processing (PDF, DOCX, TXT, etc.)
 // ═══════════════════════════════════════════════════
-async function processRegularFile(file, investigation_id, custodian) {
+async function processRegularFile(invDb, file, investigation_id, custodian) {
     const id = path.basename(file.filename, path.extname(file.filename));
 
     // Compute content hash for deduplication
     const fileBuffer = fs.readFileSync(file.path);
     const contentHash = crypto.createHash('md5').update(fileBuffer).digest('hex');
-    const existingWithHash = db.prepare(`SELECT id FROM documents WHERE content_hash = ? AND investigation_id = ? LIMIT 1`).get(contentHash, investigation_id);
+    const existingWithHash = invDb.prepare(`SELECT id FROM documents WHERE content_hash = ? AND investigation_id = ? LIMIT 1`).get(contentHash, investigation_id);
     const isDuplicate = existingWithHash ? 1 : 0;
 
-    const fileDocId = generateDocIdentifier(investigation_id, custodian, 'file');
+    const fileDocId = generateDocIdentifier(invDb, investigation_id, custodian, 'file');
 
-    db.prepare(`
+    invDb.prepare(`
     INSERT INTO documents (id, filename, original_name, mime_type, size_bytes, status, doc_type, content_hash, is_duplicate, investigation_id, custodian, doc_identifier)
     VALUES (?, ?, ?, ?, ?, 'processing', 'file', ?, ?, ?, ?, ?)
   `).run(id, file.filename, file.originalname, file.mimetype, file.size, contentHash, isDuplicate, investigation_id, custodian || null, fileDocId);
@@ -387,7 +376,7 @@ async function processRegularFile(file, investigation_id, custodian) {
             meta = await extractMetadata(file.path, file.mimetype);
         } catch (_) { /* best effort */ }
 
-        db.prepare(`UPDATE documents SET text_content = ?, text_content_size = ?, status = 'ready',
+        invDb.prepare(`UPDATE documents SET text_content = ?, text_content_size = ?, status = 'ready',
             doc_author = ?, doc_title = ?, doc_created_at = ?,
             doc_modified_at = ?, doc_creator_tool = ?, doc_keywords = ?
             WHERE id = ?`
@@ -395,7 +384,7 @@ async function processRegularFile(file, investigation_id, custodian) {
             meta.modifiedAt, meta.creatorTool, meta.keywords, id);
         return [{ id, name: file.originalname, status: 'ready', size: file.size, doc_type: 'file' }];
     } catch (err) {
-        db.prepare(`UPDATE documents SET status = 'error' WHERE id = ?`).run(id);
+        invDb.prepare(`UPDATE documents SET status = 'error' WHERE id = ?`).run(id);
         return [{ id, name: file.originalname, status: 'error', error: err.message, doc_type: 'file' }];
     }
 }
@@ -421,9 +410,9 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
             return res.status(400).json({ error: 'investigation_id is required' });
         }
 
-        // Verify investigation access
+        // Verify investigation access (investigation_members is in main DB)
         if (req.user.role !== 'admin') {
-            const membership = db.prepare(
+            const membership = mainDb.prepare(
                 'SELECT id FROM investigation_members WHERE investigation_id = ? AND user_id = ?'
             ).get(investigation_id, req.user.id);
             if (!membership) {
@@ -431,7 +420,7 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
             }
         }
 
-        logAudit(db, {
+        logAudit(mainDb, {
             userId: req.user.id,
             action: ACTIONS.DOC_UPLOAD,
             resourceType: 'investigation',
@@ -457,19 +446,19 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
             const ext = path.extname(file.originalname).toLowerCase();
 
             if (ext === '.eml') {
-                const emlResults = await processEmlFile(file, investigation_id, custodian);
+                const emlResults = await processEmlFile(req.invDb, file, investigation_id, custodian);
                 allResults.push(...emlResults);
             } else if (ext === '.pst' || ext === '.ost') {
                 // Background job for PST
                 const jobId = uuidv4();
 
-                // Initialize job in database (store filepath for resume support)
-                db.prepare(`
+                // Initialize job in database (import_jobs is in investigation DB)
+                req.invDb.prepare(`
                     INSERT INTO import_jobs (id, filename, filepath, status, investigation_id, custodian)
                     VALUES (?, ?, ?, 'pending', ?, ?)
                 `).run(jobId, file.originalname, file.path, investigation_id, custodian || null);
 
-                spawnPstWorker(jobId, file.filename, file.path, file.originalname, investigation_id, custodian);
+                spawnPstWorker(req.invDb, jobId, file.filename, file.path, file.originalname, investigation_id, custodian);
 
                 // Return 202 Accepted instead of waiting for results
                 return res.status(202).json({
@@ -480,12 +469,12 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
                 // Background job for Chat DBs
                 const jobId = uuidv4();
 
-                db.prepare(`
+                req.invDb.prepare(`
                     INSERT INTO import_jobs (id, filename, filepath, status, investigation_id, custodian, job_type)
                     VALUES (?, ?, ?, 'pending', ?, ?, 'chat')
                 `).run(jobId, file.originalname, file.path, investigation_id, custodian || null);
 
-                spawnChatWorker(jobId, file.filename, file.path, file.originalname, investigation_id, custodian);
+                spawnChatWorker(req.invDb, jobId, file.filename, file.path, file.originalname, investigation_id, custodian);
 
                 return res.status(202).json({
                     message: "Chat DB uploaded. Processing in background.",
@@ -514,7 +503,7 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
                 const jobId = uuidv4();
 
                 const zipJobType = sqliteEntry ? 'chat' : 'zip';
-                db.prepare(`
+                req.invDb.prepare(`
                     INSERT INTO import_jobs (id, filename, filepath, status, investigation_id, custodian, job_type)
                     VALUES (?, ?, ?, 'pending', ?, ?, ?)
                 `).run(jobId, file.originalname, file.path, investigation_id, custodian || null, zipJobType);
@@ -522,7 +511,7 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
                 if (sqliteEntry) {
                     // WhatsApp chat+media ZIP — route to chat worker
                     console.log(`✦ Detected WhatsApp ZIP: ${sqliteEntry}`);
-                    spawnChatWorker(jobId, file.filename, file.path, file.originalname, investigation_id, custodian, file.path, sqliteEntry);
+                    spawnChatWorker(req.invDb, jobId, file.filename, file.path, file.originalname, investigation_id, custodian, file.path, sqliteEntry);
 
                     return res.status(202).json({
                         message: "WhatsApp chat+media ZIP uploaded. Processing in background.",
@@ -531,7 +520,7 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
                     });
                 }
 
-                spawnZipWorker(jobId, file.filename, file.path, file.originalname, investigation_id, custodian);
+                spawnZipWorker(req.invDb, jobId, file.filename, file.path, file.originalname, investigation_id, custodian);
 
                 return res.status(202).json({
                     message: "ZIP archive uploaded. Processing in background.",
@@ -539,13 +528,10 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
                     filename: file.originalname
                 });
             } else {
-                const fileResults = await processRegularFile(file, investigation_id, custodian);
+                const fileResults = await processRegularFile(req.invDb, file, investigation_id, custodian);
                 allResults.push(...fileResults);
             }
         }
-
-        // Refresh precomputed investigation counts
-        refreshInvestigationCounts(investigation_id);
 
         // Only returns here for non-PST files
         res.json({ uploaded: allResults.length, documents: allResults });
@@ -585,14 +571,14 @@ router.post('/import-local', requireRole('admin', 'reviewer'), (req, res) => {
         const originalname = path.basename(resolvedPath);
         const jobId = uuidv4();
 
-        db.prepare(`
+        req.invDb.prepare(`
             INSERT INTO import_jobs (id, filename, filepath, status, investigation_id, custodian, preserve_source)
             VALUES (?, ?, ?, 'pending', ?, ?, 1)
         `).run(jobId, originalname, resolvedPath, investigation_id, custodian || null);
 
-        spawnPstWorker(jobId, originalname, resolvedPath, originalname, investigation_id, custodian || null, false, true);
+        spawnPstWorker(req.invDb, jobId, originalname, resolvedPath, originalname, investigation_id, custodian || null, false, true);
 
-        logAudit(db, {
+        logAudit(mainDb, {
             userId: req.user.id,
             action: ACTIONS.DOC_UPLOAD,
             resourceType: 'import_job',
@@ -615,7 +601,7 @@ router.post('/import-local', requireRole('admin', 'reviewer'), (req, res) => {
 // Get recent failed jobs for the active investigation (must be before /jobs/:id)
 router.get('/jobs/failed/:investigation_id', (req, res) => {
     try {
-        const jobs = readDb.prepare(
+        const jobs = req.invReadDb.prepare(
             "SELECT * FROM import_jobs WHERE investigation_id = ? AND status = 'failed' ORDER BY started_at DESC LIMIT 5"
         ).all(req.params.investigation_id);
         res.json({ jobs });
@@ -628,7 +614,7 @@ router.get('/jobs/failed/:investigation_id', (req, res) => {
 // Get recent import jobs for the active investigation (all statuses)
 router.get('/jobs/recent/:investigation_id', (req, res) => {
     try {
-        const jobs = readDb.prepare(
+        const jobs = req.invReadDb.prepare(
             "SELECT * FROM import_jobs WHERE investigation_id = ? ORDER BY started_at DESC LIMIT 5"
         ).all(req.params.investigation_id);
         res.json({ jobs });
@@ -641,7 +627,7 @@ router.get('/jobs/recent/:investigation_id', (req, res) => {
 // GET /api/documents/jobs/:id - Poll job status
 router.get('/jobs/:id', (req, res) => {
     try {
-        const job = readDb.prepare('SELECT * FROM import_jobs WHERE id = ?').get(req.params.id);
+        const job = req.invReadDb.prepare('SELECT * FROM import_jobs WHERE id = ?').get(req.params.id);
         if (!job) {
             return res.status(404).json({ error: "Job not found" });
         }
@@ -655,12 +641,12 @@ router.get('/jobs/:id', (req, res) => {
 // Finalize a stuck import job — check if extraction actually completed and update status
 router.post('/jobs/:id/finalize', requireRole('admin', 'reviewer'), (req, res) => {
     try {
-        const job = db.prepare('SELECT * FROM import_jobs WHERE id = ?').get(req.params.id);
+        const job = req.invDb.prepare('SELECT * FROM import_jobs WHERE id = ?').get(req.params.id);
         if (!job) return res.status(404).json({ error: 'Job not found' });
         if (job.status !== 'processing') return res.status(400).json({ error: 'Job is not stuck — current status: ' + job.status });
 
-        finalizeStuckJob(job.id, 'Manual finalization by user');
-        const updated = db.prepare('SELECT * FROM import_jobs WHERE id = ?').get(req.params.id);
+        finalizeStuckJob(req.invDb, job.id, 'Manual finalization by user');
+        const updated = req.invDb.prepare('SELECT * FROM import_jobs WHERE id = ?').get(req.params.id);
         res.json(updated);
     } catch (err) {
         console.error(err);
@@ -671,7 +657,7 @@ router.post('/jobs/:id/finalize', requireRole('admin', 'reviewer'), (req, res) =
 // Resume a failed PST import job — admin or reviewer
 router.post('/jobs/:id/resume', requireRole('admin', 'reviewer'), (req, res) => {
     try {
-        const job = db.prepare('SELECT * FROM import_jobs WHERE id = ?').get(req.params.id);
+        const job = req.invDb.prepare('SELECT * FROM import_jobs WHERE id = ?').get(req.params.id);
         if (!job) return res.status(404).json({ error: 'Job not found' });
         if (job.status !== 'failed') return res.status(400).json({ error: 'Only failed jobs can be resumed' });
 
@@ -680,7 +666,7 @@ router.post('/jobs/:id/resume', requireRole('admin', 'reviewer'), (req, res) => 
         const extractionOnly = !sourceFileExists;
         if (extractionOnly) {
             // Verify there are actually documents to extract
-            const pending = db.prepare(
+            const pending = req.invDb.prepare(
                 "SELECT COUNT(*) as c FROM documents WHERE status = 'processing' AND investigation_id = ?"
             ).get(job.investigation_id);
             if (!pending || pending.c === 0) {
@@ -692,9 +678,9 @@ router.post('/jobs/:id/resume', requireRole('admin', 'reviewer'), (req, res) => 
         // Cleanup orphaned files in uploads/ that aren't referenced by any document or import job
         try {
             const referencedFiles = new Set();
-            const docFiles = db.prepare('SELECT filename FROM documents WHERE filename IS NOT NULL').all();
+            const docFiles = req.invDb.prepare('SELECT filename FROM documents WHERE filename IS NOT NULL').all();
             for (const r of docFiles) referencedFiles.add(r.filename);
-            const jobFiles = db.prepare('SELECT filepath FROM import_jobs WHERE filepath IS NOT NULL').all();
+            const jobFiles = req.invDb.prepare('SELECT filepath FROM import_jobs WHERE filepath IS NOT NULL').all();
             for (const r of jobFiles) referencedFiles.add(path.basename(r.filepath));
 
             const uploadsDir = path.join(__dirname, '..', '..', 'uploads');
@@ -739,7 +725,7 @@ router.post('/jobs/:id/resume', requireRole('admin', 'reviewer'), (req, res) => 
         }
 
         // Accumulate time spent before failure, then reset started_at for this attempt
-        db.prepare(`
+        req.invDb.prepare(`
             UPDATE import_jobs SET status = 'processing', phase = ?,
             error_log = NULL, completed_at = NULL,
             elapsed_seconds = COALESCE(elapsed_seconds, 0) + CAST((julianday(COALESCE(completed_at, datetime('now'))) - julianday(started_at)) * 86400 AS INTEGER),
@@ -770,7 +756,7 @@ router.post('/jobs/:id/resume', requireRole('admin', 'reviewer'), (req, res) => 
 
         worker.on('exit', (code) => {
             if (code !== 0) console.error(`⚠ PST Worker resume for job ${job.id} stopped with exit code ${code}`);
-            finalizeStuckJob(job.id, `Resume worker exited with code ${code}`);
+            finalizeStuckJob(req.invDb, job.id, `Resume worker exited with code ${code}`);
         });
 
         res.json({ message: 'Import resumed', jobId: job.id });
@@ -816,16 +802,16 @@ router.get('/', (req, res) => {
             params.push(doc_type);
         }
 
-        const countRow = db.prepare(`
+        const countRow = req.invReadDb.prepare(`
       SELECT COUNT(*) as total FROM documents d ${where}
     `).get(...params);
 
-        const documents = db.prepare(`
+        const documents = req.invReadDb.prepare(`
       SELECT d.id, d.filename, d.original_name, d.mime_type, d.size_bytes, d.status,
         d.doc_type, d.thread_id, d.parent_id,
         d.email_from, d.email_to, d.email_subject, d.email_date, d.uploaded_at,
-        (SELECT GROUP_CONCAT(t.name, ', ')
-         FROM document_tags dt JOIN tags t ON dt.tag_id = t.id
+        (SELECT GROUP_CONCAT(dt.tag_name, ', ')
+         FROM document_tags dt
          WHERE dt.document_id = d.id) as tag_names,
         (SELECT dr.status FROM document_reviews dr
          WHERE dr.document_id = d.id
@@ -875,7 +861,7 @@ router.get('/:id/neighbors', (req, res) => {
         const scanLimit = pageSize * 5;
 
         if (useFts) {
-            ids = readDb.prepare(`
+            ids = req.invReadDb.prepare(`
                 SELECT d.id FROM documents_fts fts
                 CROSS JOIN documents d ON d.rowid = fts.rowid
                 WHERE documents_fts MATCH ?
@@ -884,7 +870,7 @@ router.get('/:id/neighbors', (req, res) => {
                 LIMIT ? OFFSET ?
             `).all(ftsQuery, ...filterParams, scanLimit, scanOffset).map(r => r.id);
         } else {
-            ids = readDb.prepare(`
+            ids = req.invReadDb.prepare(`
                 SELECT d.id FROM documents d
                 WHERE 1=1 ${filterWhere}
                 ORDER BY COALESCE(d.email_date, d.doc_created_at, d.doc_modified_at, d.uploaded_at) DESC
@@ -895,13 +881,13 @@ router.get('/:id/neighbors', (req, res) => {
         // Get total count
         let total;
         if (useFts) {
-            total = readDb.prepare(`
+            total = req.invReadDb.prepare(`
                 SELECT COUNT(*) as total FROM documents_fts fts
                 CROSS JOIN documents d ON d.rowid = fts.rowid
                 WHERE documents_fts MATCH ? ${filterWhere}
             `).get(ftsQuery, ...filterParams).total;
         } else {
-            total = readDb.prepare(`
+            total = req.invReadDb.prepare(`
                 SELECT COUNT(*) as total FROM documents d
                 WHERE 1=1 ${filterWhere}
             `).get(...filterParams).total;
@@ -926,7 +912,7 @@ router.get('/:id/neighbors', (req, res) => {
 // Get XLSX/XLS sheet data for native preview
 router.get('/:id/sheets', async (req, res) => {
     try {
-        const doc = db.prepare('SELECT filename, original_name FROM documents WHERE id = ?').get(req.params.id);
+        const doc = req.invReadDb.prepare('SELECT filename, original_name FROM documents WHERE id = ?').get(req.params.id);
         if (!doc) return res.status(404).json({ error: 'Document not found' });
         if (!doc.filename) return res.status(404).json({ error: 'File not available on disk' });
 
@@ -963,7 +949,7 @@ router.get('/:id/sheets', async (req, res) => {
 // Get DOCX HTML preview via mammoth
 router.get('/:id/preview', async (req, res) => {
     try {
-        const doc = db.prepare('SELECT filename, original_name FROM documents WHERE id = ?').get(req.params.id);
+        const doc = req.invReadDb.prepare('SELECT filename, original_name FROM documents WHERE id = ?').get(req.params.id);
         if (!doc) return res.status(404).json({ error: 'Document not found' });
         if (!doc.filename) return res.status(404).json({ error: 'File not available on disk' });
 
@@ -987,10 +973,10 @@ router.get('/:id/preview', async (req, res) => {
 // Get single document with thread + attachments
 router.get('/:id', (req, res) => {
     try {
-        const doc = db.prepare(`
+        const doc = req.invReadDb.prepare(`
       SELECT d.*,
-        (SELECT json_group_array(json_object('id', t.id, 'name', t.name, 'color', t.color))
-         FROM document_tags dt JOIN tags t ON dt.tag_id = t.id
+        (SELECT json_group_array(json_object('id', dt.tag_id, 'name', dt.tag_name, 'color', dt.tag_color))
+         FROM document_tags dt
          WHERE dt.document_id = d.id) as tags,
         (SELECT json_group_array(json_object('id', dr.id, 'status', dr.status, 'notes', dr.notes, 'reviewed_at', dr.reviewed_at))
          FROM document_reviews dr
@@ -1008,7 +994,7 @@ router.get('/:id', (req, res) => {
 
         // If email, fetch thread siblings
         if (doc.thread_id) {
-            doc.thread = db.prepare(`
+            doc.thread = req.invReadDb.prepare(`
         SELECT id, original_name, email_from, email_to, email_subject, email_date, doc_type, message_id, in_reply_to
         FROM documents
         WHERE thread_id = ? AND doc_type IN ('email', 'chat') AND investigation_id = ?
@@ -1019,7 +1005,7 @@ router.get('/:id', (req, res) => {
         }
 
         // Fetch child attachments
-        doc.attachments = db.prepare(`
+        doc.attachments = req.invReadDb.prepare(`
       SELECT id, original_name, mime_type, size_bytes, filename
       FROM documents
       WHERE parent_id = ?
@@ -1027,12 +1013,12 @@ router.get('/:id', (req, res) => {
 
         // If this IS an attachment, fetch parent info + sibling attachments
         if (doc.parent_id) {
-            doc.parent = db.prepare(`
+            doc.parent = req.invReadDb.prepare(`
         SELECT id, original_name, email_subject, email_from
         FROM documents WHERE id = ?
       `).get(doc.parent_id);
 
-            doc.siblings = db.prepare(`
+            doc.siblings = req.invReadDb.prepare(`
         SELECT id, original_name, mime_type, size_bytes, filename
         FROM documents
         WHERE parent_id = ? AND id != ?
@@ -1049,12 +1035,12 @@ router.get('/:id', (req, res) => {
 // Delete document (and its children) — admin or reviewer with investigation access
 router.delete('/:id', requireRole('admin', 'reviewer'), (req, res) => {
     try {
-        const doc = db.prepare('SELECT filename, investigation_id FROM documents WHERE id = ?').get(req.params.id);
+        const doc = req.invDb.prepare('SELECT filename, investigation_id FROM documents WHERE id = ?').get(req.params.id);
         if (!doc) return res.status(404).json({ error: 'Document not found' });
 
-        // Verify investigation access for non-admins
+        // Verify investigation access for non-admins (investigation_members is in main DB)
         if (req.user.role !== 'admin' && doc.investigation_id) {
-            const membership = db.prepare(
+            const membership = mainDb.prepare(
                 'SELECT id FROM investigation_members WHERE investigation_id = ? AND user_id = ?'
             ).get(doc.investigation_id, req.user.id);
             if (!membership) {
@@ -1063,23 +1049,20 @@ router.delete('/:id', requireRole('admin', 'reviewer'), (req, res) => {
         }
 
         // Delete child attachment files
-        const children = db.prepare('SELECT filename FROM documents WHERE parent_id = ?').all(req.params.id);
+        const children = req.invDb.prepare('SELECT filename FROM documents WHERE parent_id = ?').all(req.params.id);
         for (const child of children) {
             const childPath = path.join(UPLOADS_DIR, child.filename);
             if (fs.existsSync(childPath)) fs.unlinkSync(childPath);
         }
-        db.prepare('DELETE FROM documents WHERE parent_id = ?').run(req.params.id);
+        req.invDb.prepare('DELETE FROM documents WHERE parent_id = ?').run(req.params.id);
 
         // Delete parent file
         const filePath = path.join(UPLOADS_DIR, doc.filename);
         if (fs.existsSync(filePath)) fs.unlinkSync(filePath);
 
-        db.prepare('DELETE FROM documents WHERE id = ?').run(req.params.id);
+        req.invDb.prepare('DELETE FROM documents WHERE id = ?').run(req.params.id);
 
-        // Refresh precomputed investigation counts
-        if (doc.investigation_id) refreshInvestigationCounts(doc.investigation_id);
-
-        logAudit(db, {
+        logAudit(mainDb, {
             userId: req.user.id,
             action: ACTIONS.DOC_DELETE,
             resourceType: 'document',

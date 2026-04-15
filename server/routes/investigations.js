@@ -6,6 +6,7 @@ import { fileURLToPath } from 'url';
 import db from '../db.js';
 import { requireRole, requireInvestigationAccess } from '../middleware/auth.js';
 import { logAudit, ACTIONS } from '../lib/audit.js';
+import { getInvestigationDb, deleteInvestigationDb } from '../lib/investigation-db.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
@@ -29,31 +30,29 @@ router.get('/', (req, res) => {
         `).all(...memberParams);
         const tMain = Date.now();
 
-        // Batch fetch reviewed_count per investigation (single query instead of N correlated subqueries)
-        const reviewedByInv = db.prepare(`
-            SELECT d.investigation_id, COUNT(DISTINCT dr.document_id) as reviewed_count
-            FROM document_reviews dr
-            JOIN documents d ON d.id = dr.document_id
-            WHERE dr.status != 'pending'
-            GROUP BY d.investigation_id
-        `).all();
-        const reviewedMap = new Map(reviewedByInv.map(r => [r.investigation_id, r.reviewed_count]));
-
-        // Batch fetch import jobs for all investigations (single query instead of N)
-        const invIds = investigations.map(inv => inv.id);
+        // Fetch reviewed_count and import_jobs from each per-investigation DB
+        const reviewedMap = new Map();
         const jobMap = new Map();
-        if (invIds.length > 0) {
-            const placeholders = invIds.map(() => '?').join(',');
-            const allJobs = db.prepare(`
-                SELECT investigation_id, filename as original_name, status, total_emails, total_attachments, started_at, completed_at
-                FROM import_jobs WHERE investigation_id IN (${placeholders})
-                ORDER BY rowid DESC
-            `).all(...invIds);
-            for (const job of allJobs) {
-                if (!jobMap.has(job.investigation_id)) jobMap.set(job.investigation_id, []);
-                jobMap.get(job.investigation_id).push(job);
+        for (const inv of investigations) {
+            try {
+                const { readDb: invReadDb } = getInvestigationDb(inv.id);
+                const reviewed = invReadDb.prepare(`
+                    SELECT COUNT(DISTINCT document_id) as reviewed_count
+                    FROM document_reviews WHERE status != 'pending'
+                `).get();
+                reviewedMap.set(inv.id, reviewed?.reviewed_count || 0);
+
+                const jobs = invReadDb.prepare(`
+                    SELECT investigation_id, filename as original_name, status, total_emails, total_attachments, started_at, completed_at
+                    FROM import_jobs ORDER BY rowid DESC
+                `).all();
+                if (jobs.length > 0) jobMap.set(inv.id, jobs);
+            } catch (_) {
+                // Investigation DB may not exist yet
             }
         }
+
+        const invIds = investigations.map(inv => inv.id);
 
         // Batch fetch image ingest jobs for all investigations
         const ingestMap = new Map();
@@ -90,15 +89,21 @@ router.get('/:id', requireInvestigationAccess, (req, res) => {
         const inv = db.prepare(`SELECT * FROM investigations WHERE id = ?`).get(req.params.id);
         if (!inv) return res.status(404).json({ error: 'Investigation not found' });
 
-        const stats = db.prepare(`
-            SELECT
-                COUNT(*) as total_documents,
-                SUM(CASE WHEN doc_type = 'email' THEN 1 ELSE 0 END) as emails,
-                SUM(CASE WHEN doc_type = 'attachment' THEN 1 ELSE 0 END) as attachments,
-                SUM(CASE WHEN doc_type = 'file' THEN 1 ELSE 0 END) as files,
-                SUM(size_bytes) as total_size
-            FROM documents WHERE investigation_id = ?
-        `).get(req.params.id);
+        let stats = { total_documents: 0, emails: 0, attachments: 0, files: 0, total_size: 0 };
+        try {
+            const { readDb: invReadDb } = getInvestigationDb(req.params.id);
+            stats = invReadDb.prepare(`
+                SELECT
+                    COUNT(*) as total_documents,
+                    SUM(CASE WHEN doc_type = 'email' THEN 1 ELSE 0 END) as emails,
+                    SUM(CASE WHEN doc_type = 'attachment' THEN 1 ELSE 0 END) as attachments,
+                    SUM(CASE WHEN doc_type = 'file' THEN 1 ELSE 0 END) as files,
+                    SUM(size_bytes) as total_size
+                FROM documents
+            `).get();
+        } catch (_) {
+            // Investigation DB may not exist yet
+        }
 
         res.json({ ...inv, stats });
     } catch (err) {
@@ -110,18 +115,24 @@ router.get('/:id', requireInvestigationAccess, (req, res) => {
 // List custodians for an investigation with document counts
 router.get('/:id/custodians', requireInvestigationAccess, (req, res) => {
     try {
-        const custodians = db.prepare(`
-            SELECT custodian as name,
-                COUNT(*) as document_count,
-                SUM(CASE WHEN doc_type = 'email' THEN 1 ELSE 0 END) as email_count,
-                SUM(CASE WHEN doc_type = 'attachment' THEN 1 ELSE 0 END) as attachment_count,
-                SUM(CASE WHEN doc_type = 'chat' THEN 1 ELSE 0 END) as chat_count,
-                SUM(CASE WHEN doc_type = 'file' THEN 1 ELSE 0 END) as file_count
-            FROM documents
-            WHERE investigation_id = ? AND custodian IS NOT NULL
-            GROUP BY custodian
-            ORDER BY document_count DESC
-        `).all(req.params.id);
+        let custodians = [];
+        try {
+            const { readDb: invReadDb } = getInvestigationDb(req.params.id);
+            custodians = invReadDb.prepare(`
+                SELECT custodian as name,
+                    COUNT(*) as document_count,
+                    SUM(CASE WHEN doc_type = 'email' THEN 1 ELSE 0 END) as email_count,
+                    SUM(CASE WHEN doc_type = 'attachment' THEN 1 ELSE 0 END) as attachment_count,
+                    SUM(CASE WHEN doc_type = 'chat' THEN 1 ELSE 0 END) as chat_count,
+                    SUM(CASE WHEN doc_type = 'file' THEN 1 ELSE 0 END) as file_count
+                FROM documents
+                WHERE custodian IS NOT NULL
+                GROUP BY custodian
+                ORDER BY document_count DESC
+            `).all();
+        } catch (_) {
+            // Investigation DB may not exist yet
+        }
         res.json(custodians);
     } catch (err) {
         console.error(err);
@@ -143,6 +154,9 @@ router.post('/', requireRole('admin', 'reviewer'), (req, res) => {
             INSERT INTO investigations (id, name, description, allegation, key_parties, remarks, date_range_start, date_range_end, short_code)
             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         `).run(id, name.trim(), description || null, allegation || null, key_parties || null, remarks || null, date_range_start || null, date_range_end || null, code);
+
+        // Create the empty per-investigation DB file
+        getInvestigationDb(id);
 
         // Auto-add creator as member
         db.prepare(
@@ -220,45 +234,22 @@ router.delete('/:id', requireRole('admin'), (req, res) => {
         const inv = db.prepare(`SELECT * FROM investigations WHERE id = ?`).get(invId);
         if (!inv) return res.status(404).json({ error: 'Investigation not found' });
 
-        // Drop FTS triggers before deleting — if the FTS index is corrupt,
-        // the delete trigger would abort the whole transaction.
-        db.exec('DROP TRIGGER IF EXISTS documents_ai');
-        db.exec('DROP TRIGGER IF EXISTS documents_ad');
-        db.exec('DROP TRIGGER IF EXISTS documents_au');
+        // Get document count before deleting the per-investigation DB
+        let deletedDocs = 0;
+        try {
+            const { readDb: invReadDb } = getInvestigationDb(invId);
+            const countRow = invReadDb.prepare('SELECT COUNT(*) as cnt FROM documents').get();
+            deletedDocs = countRow?.cnt || 0;
+        } catch (_) {}
 
-        // Delete in correct order for foreign key constraints
-        const tx = db.transaction(() => {
-            db.prepare(`DELETE FROM document_tags WHERE document_id IN (SELECT id FROM documents WHERE investigation_id = ?)`).run(invId);
-            db.prepare(`DELETE FROM document_reviews WHERE document_id IN (SELECT id FROM documents WHERE investigation_id = ?)`).run(invId);
-            db.prepare(`DELETE FROM classifications WHERE document_id IN (SELECT id FROM documents WHERE investigation_id = ?)`).run(invId);
-            db.prepare(`DELETE FROM summaries WHERE document_id IN (SELECT id FROM documents WHERE investigation_id = ?)`).run(invId);
-            const delResult = db.prepare('DELETE FROM documents WHERE investigation_id = ?').run(invId);
-            db.prepare('DELETE FROM import_jobs WHERE investigation_id = ?').run(invId);
+        // Delete the per-investigation DB file (documents, reviews, classifications, etc.)
+        deleteInvestigationDb(invId);
+
+        // Delete main DB records (investigation row + members)
+        db.transaction(() => {
             db.prepare('DELETE FROM investigation_members WHERE investigation_id = ?').run(invId);
             db.prepare('DELETE FROM investigations WHERE id = ?').run(invId);
-            return delResult.changes;
-        });
-
-        const deletedDocs = tx();
-
-        // Rebuild FTS index from scratch (handles corrupt index) then restore triggers
-        try { db.exec("INSERT INTO documents_fts(documents_fts) VALUES('rebuild')"); } catch (_) {}
-        db.exec(`
-            CREATE TRIGGER IF NOT EXISTS documents_ai AFTER INSERT ON documents BEGIN
-                INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
-                VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
-            END;
-            CREATE TRIGGER IF NOT EXISTS documents_ad AFTER DELETE ON documents BEGIN
-                INSERT INTO documents_fts(documents_fts, rowid, original_name, text_content, email_subject, email_from, email_to)
-                VALUES ('delete', old.rowid, old.original_name, COALESCE(old.text_content,''), COALESCE(old.email_subject,''), COALESCE(old.email_from,''), COALESCE(old.email_to,''));
-            END;
-            CREATE TRIGGER IF NOT EXISTS documents_au AFTER UPDATE ON documents BEGIN
-                INSERT INTO documents_fts(documents_fts, rowid, original_name, text_content, email_subject, email_from, email_to)
-                VALUES ('delete', old.rowid, old.original_name, COALESCE(old.text_content,''), COALESCE(old.email_subject,''), COALESCE(old.email_from,''), COALESCE(old.email_to,''));
-                INSERT INTO documents_fts(rowid, original_name, text_content, email_subject, email_from, email_to)
-                VALUES (new.rowid, new.original_name, COALESCE(new.text_content,''), COALESCE(new.email_subject,''), COALESCE(new.email_from,''), COALESCE(new.email_to,''));
-            END;
-        `);
+        })();
 
         // Delete investigation upload directory
         let filesDeleted = 0;

@@ -7,6 +7,8 @@ import { fileURLToPath } from 'url';
 
 import db from './db.js';
 import { authenticate, requireAuth } from './middleware/auth.js';
+import { withInvestigationDb } from './middleware/investigation-db.js';
+import { closeAll as closeAllInvestigationDbs, checkpointAll as checkpointAllInvestigationDbs } from './lib/investigation-db.js';
 import authRouter from './routes/auth.js';
 import usersRouter from './routes/users.js';
 import documentsRouter from './routes/documents.js';
@@ -92,21 +94,23 @@ app.use('/api', (req, res, next) => {
     return requireAuth(req, res, next);
 });
 
-// API Routes
+// API Routes — global tables only (no investigation DB needed)
 app.use('/api/auth', authRouter);
 app.use('/api/users', usersRouter);
-app.use('/api/documents', documentsRouter);
-app.use('/api/search', searchRouter);
-app.use('/api/tags', tagsRouter);
-app.use('/api/reviews', reviewsRouter);
-app.use('/api/classify', classifyRouter);
-app.use('/api/investigations', investigationsRouter);
+app.use('/api/audit-logs', auditLogsRouter);
 app.use('/api/playground', playgroundRouter);
 app.use('/api/images', imagesRouter);
-app.use('/api/summarize', summarizeRouter);
-app.use('/api/audit-logs', auditLogsRouter);
-app.use('/api/batches', batchesRouter);
 app.use('/api/settings', settingsRouter);
+app.use('/api/investigations', investigationsRouter);
+
+// API Routes — per-investigation DB (middleware resolves investigation_id → opens DB)
+app.use('/api/documents', withInvestigationDb, documentsRouter);
+app.use('/api/search', withInvestigationDb, searchRouter);
+app.use('/api/tags', withInvestigationDb, tagsRouter);
+app.use('/api/reviews', withInvestigationDb, reviewsRouter);
+app.use('/api/classify', withInvestigationDb, classifyRouter);
+app.use('/api/summarize', withInvestigationDb, summarizeRouter);
+app.use('/api/batches', withInvestigationDb, batchesRouter);
 
 // Health check
 app.get('/api/health', (req, res) => {
@@ -125,6 +129,7 @@ const server = app.listen(PORT, () => {
 // Periodic WAL checkpoint every 5 minutes (PASSIVE never blocks)
 const walCheckpointInterval = setInterval(() => {
     try { db.pragma('wal_checkpoint(PASSIVE)'); } catch (_) {}
+    checkpointAllInvestigationDbs();
 }, 5 * 60 * 1000);
 
 // Graceful shutdown
@@ -133,6 +138,7 @@ function shutdown(signal) {
     clearInterval(walCheckpointInterval);
     server.close(() => {
         try { db.close(); } catch (_) {}
+        closeAllInvestigationDbs();
         console.log('✦ Server closed.');
         process.exit(0);
     });

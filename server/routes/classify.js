@@ -1,6 +1,6 @@
 import express from 'express';
 import { v4 as uuidv4 } from 'uuid';
-import db from '../db.js';
+import mainDb from '../db.js';
 import { getProvider, listProviders } from '../lib/llm-providers.js';
 import { LLM_LIMITS } from '../lib/config.js';
 import { requireRole } from '../middleware/auth.js';
@@ -21,7 +21,7 @@ Respond ONLY with JSON: {"score": <1-5>, "reasoning": "<1 sentence>"}`;
 // Target ~2500 chars of content to stay well within 4096 token context
 // Limits are now managed centrally in lib/config.js
 
-function buildDocumentContent(doc, thread, attachments) {
+function buildDocumentContent(db, doc, thread, attachments) {
     let content = '';
 
     // Email metadata (compact)
@@ -83,23 +83,23 @@ router.post('/:documentId', requireRole('admin', 'reviewer'), async (req, res) =
         }
 
         // Fetch document
-        const doc = db.prepare('SELECT * FROM documents WHERE id = ?').get(documentId);
+        const doc = req.invReadDb.prepare('SELECT * FROM documents WHERE id = ?').get(documentId);
         if (!doc) return res.status(404).json({ error: 'Document not found' });
 
         // Fetch thread context
         let thread = [];
         if (doc.thread_id) {
-            thread = db.prepare(
+            thread = req.invReadDb.prepare(
                 "SELECT id, email_from, email_subject, email_date FROM documents WHERE thread_id = ? AND doc_type = 'email' AND investigation_id = ? ORDER BY email_date ASC"
             ).all(doc.thread_id, doc.investigation_id);
         }
 
         // Fetch attachments
-        const attachments = db.prepare('SELECT id, original_name FROM documents WHERE parent_id = ?').all(documentId);
+        const attachments = req.invReadDb.prepare('SELECT id, original_name FROM documents WHERE parent_id = ?').all(documentId);
 
         // Build prompts
         const systemPrompt = buildSystemPrompt(investigationPrompt.trim());
-        const documentContent = buildDocumentContent(doc, thread, attachments);
+        const documentContent = buildDocumentContent(req.invReadDb, doc, thread, attachments);
 
         // Call LLM
         const provider = getProvider();
@@ -116,12 +116,12 @@ router.post('/:documentId', requireRole('admin', 'reviewer'), async (req, res) =
 
         // Save to DB
         const classificationId = uuidv4();
-        db.prepare(`
+        req.invDb.prepare(`
       INSERT INTO classifications (id, document_id, investigation_prompt, score, reasoning, provider, model, elapsed_seconds, requested_by)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(classificationId, documentId, investigationPrompt.trim(), result.score, result.reasoning, provider.name, activeModel, parseFloat(elapsed), req.user?.id || null);
 
-        logAudit(db, {
+        logAudit(mainDb, {
             userId: req.user?.id,
             action: ACTIONS.CLASSIFY_RUN,
             resourceType: 'document',
@@ -155,8 +155,8 @@ router.get('/logs', (req, res) => {
         const { limit = 100, page = 1 } = req.query;
         const offset = (parseInt(page) - 1) * parseInt(limit);
 
-        const logs = db.prepare(`
-            SELECT 
+        const logs = req.invReadDb.prepare(`
+            SELECT
                 c.id, c.document_id, c.investigation_prompt, c.score, c.reasoning, c.model, c.classified_at, c.elapsed_seconds,
                 d.original_name, d.email_subject, d.doc_type
             FROM classifications c
@@ -165,7 +165,7 @@ router.get('/logs', (req, res) => {
             LIMIT ? OFFSET ?
         `).all(parseInt(limit), offset);
 
-        const countRow = db.prepare('SELECT COUNT(*) as total FROM classifications').get();
+        const countRow = req.invReadDb.prepare('SELECT COUNT(*) as total FROM classifications').get();
 
         res.json({
             logs,
@@ -187,7 +187,7 @@ router.get('/logs', (req, res) => {
 // ═══════════════════════════════════════════════════
 router.get('/compare/prompts', (req, res) => {
     try {
-        const prompts = db.prepare(`
+        const prompts = req.invReadDb.prepare(`
             SELECT investigation_prompt, COUNT(DISTINCT model) as model_count, COUNT(*) as total_runs
             FROM classifications
             GROUP BY investigation_prompt
@@ -210,7 +210,7 @@ router.get('/compare', (req, res) => {
         if (!prompt) return res.status(400).json({ error: 'prompt query parameter required' });
 
         // Get all classifications for this prompt
-        const rows = db.prepare(`
+        const rows = req.invReadDb.prepare(`
             SELECT c.document_id, c.score, c.reasoning, c.model, c.elapsed_seconds,
                    d.original_name, d.email_subject, d.doc_type
             FROM classifications c
@@ -328,7 +328,7 @@ router.get('/models', async (req, res) => {
 // ═══════════════════════════════════════════════════
 router.get('/:documentId', (req, res) => {
     try {
-        const classifications = db.prepare(`
+        const classifications = req.invReadDb.prepare(`
       SELECT * FROM classifications WHERE document_id = ? ORDER BY classified_at DESC
     `).all(req.params.documentId);
 
