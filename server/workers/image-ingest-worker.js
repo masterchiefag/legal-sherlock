@@ -31,6 +31,19 @@ db.pragma('busy_timeout = 10000');
 
 const { jobId, imagePath, selectedFiles, investigationId, custodian } = workerData;
 
+// Set OCR-related env vars from DB settings so extractText() (called in-process) picks them up
+{
+    const rows = db.prepare('SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?, ?)').all(
+        'extract_max_file_size_mb', 'ocr_min_text_length', 'ocr_dpi', 'ocr_pdftoppm_timeout', 'ocr_tesseract_timeout'
+    );
+    const s = Object.fromEntries(rows.map(r => [r.key, r.value]));
+    process.env.EXTRACT_MAX_FILE_SIZE_MB = String(s.extract_max_file_size_mb || 50);
+    process.env.EXTRACT_OCR_MIN_TEXT_LENGTH = String(s.ocr_min_text_length || 100);
+    process.env.EXTRACT_OCR_DPI = String(s.ocr_dpi || 100);
+    process.env.EXTRACT_OCR_PDFTOPPM_TIMEOUT = String(s.ocr_pdftoppm_timeout || 60);
+    process.env.EXTRACT_OCR_TESSERACT_TIMEOUT = String(s.ocr_tesseract_timeout || 60);
+}
+
 // Ensure investigation uploads dir exists
 const INV_UPLOADS_DIR = path.join(UPLOADS_DIR, investigationId);
 fs.mkdirSync(INV_UPLOADS_DIR, { recursive: true });
