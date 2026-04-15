@@ -37,10 +37,11 @@ const db = openWorkerDb(investigationId);
 
 // Set OCR-related env vars from DB settings so extractText() (called in-process) picks them up
 {
-    const rows = mainDb.prepare('SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?, ?)').all(
-        'extract_max_file_size_mb', 'ocr_min_text_length', 'ocr_dpi', 'ocr_pdftoppm_timeout', 'ocr_tesseract_timeout'
+    const rows = mainDb.prepare('SELECT key, value FROM system_settings WHERE key IN (?, ?, ?, ?, ?, ?)').all(
+        'ocr_enabled', 'extract_max_file_size_mb', 'ocr_min_text_length', 'ocr_dpi', 'ocr_pdftoppm_timeout', 'ocr_tesseract_timeout'
     );
     const s = Object.fromEntries(rows.map(r => [r.key, r.value]));
+    process.env.EXTRACT_OCR_ENABLED = String(s.ocr_enabled ?? 'true');
     process.env.EXTRACT_MAX_FILE_SIZE_MB = String(s.extract_max_file_size_mb || 50);
     process.env.EXTRACT_OCR_MIN_TEXT_LENGTH = String(s.ocr_min_text_length || 100);
     process.env.EXTRACT_OCR_DPI = String(s.ocr_dpi || 100);

@@ -1,16 +1,16 @@
 import fs from 'fs';
 import path from 'path';
 
-// Extraction settings — read from env vars (set by pst-worker for subprocesses)
-// with sensible defaults. This avoids importing db.js/settings.js in subprocess
-// workers, which caused SQLITE_BUSY from concurrent write locks.
+// Extraction settings — read from env vars (set by workers before calling extractText).
+// Uses getters so env vars are read at call time, not import time — workers set env
+// vars after importing this module.
 const extractConfig = {
-    ocrEnabled: process.env.EXTRACT_OCR_ENABLED !== 'false', // default true
-    maxFileSizeMb: Number(process.env.EXTRACT_MAX_FILE_SIZE_MB) || 50,
-    ocrMinTextLength: Number(process.env.EXTRACT_OCR_MIN_TEXT_LENGTH) || 100,
-    ocrDpi: process.env.EXTRACT_OCR_DPI || '100',
-    ocrPdftoppmTimeout: (Number(process.env.EXTRACT_OCR_PDFTOPPM_TIMEOUT) || 60) * 1000,
-    ocrTesseractTimeout: (Number(process.env.EXTRACT_OCR_TESSERACT_TIMEOUT) || 60) * 1000,
+    get ocrEnabled() { return process.env.EXTRACT_OCR_ENABLED !== 'false'; },
+    get maxFileSizeMb() { return Number(process.env.EXTRACT_MAX_FILE_SIZE_MB) || 50; },
+    get ocrMinTextLength() { return Number(process.env.EXTRACT_OCR_MIN_TEXT_LENGTH) || 100; },
+    get ocrDpi() { return process.env.EXTRACT_OCR_DPI || '100'; },
+    get ocrPdftoppmTimeout() { return (Number(process.env.EXTRACT_OCR_PDFTOPPM_TIMEOUT) || 60) * 1000; },
+    get ocrTesseractTimeout() { return (Number(process.env.EXTRACT_OCR_TESSERACT_TIMEOUT) || 60) * 1000; },
 };
 
 /**

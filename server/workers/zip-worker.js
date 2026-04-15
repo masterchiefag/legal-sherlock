@@ -39,6 +39,7 @@ const { jobId, filename, filepath, originalname, investigation_id, custodian } =
 const db = openWorkerDb(investigation_id);
 
 // Set OCR-related env vars from DB settings so extractText() (called in-process) picks them up
+process.env.EXTRACT_OCR_ENABLED = String(getSetting('ocr_enabled') ?? true);
 process.env.EXTRACT_MAX_FILE_SIZE_MB = String(getSetting('extract_max_file_size_mb') || 50);
 process.env.EXTRACT_OCR_MIN_TEXT_LENGTH = String(getSetting('ocr_min_text_length') || 100);
 process.env.EXTRACT_OCR_DPI = String(getSetting('ocr_dpi') || 100);
