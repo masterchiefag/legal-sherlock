@@ -264,24 +264,26 @@ router.get('/stats', (req, res) => {
                 .sort((a, b) => b.count - a.count)
                 .slice(0, 20);
 
-            // Date range
+            // Date range — only consider valid ISO dates (STRFTIME returns null for unparseable strings)
             const dateRangeRow = invReadDb.prepare(`
                 SELECT MIN(email_date) as earliest, MAX(email_date) as latest
-                FROM documents WHERE email_date IS NOT NULL
+                FROM documents WHERE email_date IS NOT NULL AND STRFTIME('%Y', email_date) IS NOT NULL
             `).get();
             let dateRange = null;
             if (dateRangeRow && dateRangeRow.earliest && dateRangeRow.latest) {
                 const earliest = new Date(dateRangeRow.earliest);
                 const latest = new Date(dateRangeRow.latest);
-                const rangeDays = Math.round((latest - earliest) / 86400000);
-                dateRange = { earliest: dateRangeRow.earliest, latest: dateRangeRow.latest, range_days: rangeDays };
+                if (!isNaN(earliest.getTime()) && !isNaN(latest.getTime())) {
+                    const rangeDays = Math.round((latest - earliest) / 86400000);
+                    dateRange = { earliest: dateRangeRow.earliest, latest: dateRangeRow.latest, range_days: rangeDays };
+                }
             }
 
             // Volume by month
             const volumeByMonth = invReadDb.prepare(`
                 SELECT STRFTIME('%Y-%m', email_date) as month, COUNT(*) as count
                 FROM documents WHERE email_date IS NOT NULL
-                GROUP BY month ORDER BY month
+                GROUP BY month HAVING month IS NOT NULL ORDER BY month
             `).all();
 
             // AI score distribution
@@ -298,6 +300,7 @@ router.get('/stats', (req, res) => {
                        COUNT(*) as count
                 FROM documents WHERE email_date IS NOT NULL AND doc_type IN ('email', 'chat')
                 GROUP BY day_of_week, hour
+                HAVING day_of_week IS NOT NULL AND hour IS NOT NULL
             `).all();
 
             // Thread depth distribution
