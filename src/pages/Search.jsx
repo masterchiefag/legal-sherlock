@@ -577,9 +577,15 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
 
     const exportCsv = async () => {
         try {
-            const res = await apiFetch(`/api/search?${buildSearchParams()}`);
-            const data = await res.json();
-            let docs = data.results || [];
+            let docs;
+            // If all results are already loaded (per_page=0 or single page), use them directly
+            if (pageSize === 0 || (pagination && pagination.pages <= 1)) {
+                docs = [...results];
+            } else {
+                const res = await apiFetch(`/api/search?${buildSearchParams()}`);
+                const data = await res.json();
+                docs = data.results || [];
+            }
 
             if (selectedIds.size > 0) {
                 docs = docs.filter(d => selectedIds.has(d.id));
