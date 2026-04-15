@@ -1,7 +1,6 @@
 import { v4 as uuidv4 } from 'uuid';
-import db from '../db.js';
 
-export function resolveThreadId(messageId, inReplyTo, references) {
+export function resolveThreadId(db, messageId, inReplyTo, references) {
     // 1. Check if any existing email has the same thread by looking up In-Reply-To
     if (inReplyTo) {
         const parent = db.prepare('SELECT thread_id FROM documents WHERE message_id = ?').get(inReplyTo);
@@ -29,7 +28,7 @@ export function resolveThreadId(messageId, inReplyTo, references) {
     return uuidv4();
 }
 
-export function backfillThread(threadId, messageId, references) {
+export function backfillThread(db, threadId, messageId, references) {
     // If we're creating a new thread but other emails reference us or
     // share references, unify them under this thread_id
     if (!messageId && !references) return;
