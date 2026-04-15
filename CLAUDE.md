@@ -58,6 +58,7 @@ server/                 # Express backend
   db.js                 # SQLite schema, migrations, indexes, and connection
   middleware/           # Express middleware
     auth.js             # authenticate, requireAuth, requireRole, requireInvestigationAccess
+    investigation-db.js # withInvestigationDb — attaches req.invDb/req.invReadDb per request
   routes/               # API route handlers
     auth.js             # Login, register, me, setup-status, change-password
     users.js            # Admin: user CRUD (list, create, update, deactivate)
@@ -80,7 +81,13 @@ server/                 # Express backend
     eml-parser.js       # .eml email parsing
     pst-parser.js       # Outlook PST folder walking
     llm-providers.js    # LLM provider abstraction (Ollama, OpenAI, Anthropic)
-    threading.js        # Email thread resolution and backfill
+    investigation-db.js # Per-investigation DB pool, schema, openWorkerDb(), refreshInvestigationCounts()
+    threading.js        # Email thread resolution and backfill (accepts db as first param)
+    threading-cached.js # In-memory cached threading for PST worker
+    worker-helpers.js   # Shared bulk-ingestion utilities (FTS, indexes, dedup backfill)
+    settings.js         # System settings read/write
+  scripts/
+    migrate-to-per-investigation-db.js  # One-time migration from monolithic DB
   workers/
     pst-worker.js       # Background PST extraction via native readpst CLI
     image-scan-worker.js    # Scan E01/UFDR for PST/OST files
@@ -88,8 +95,11 @@ server/                 # Express backend
     chat-worker.js          # WhatsApp SQLite chat ingestion
     zip-worker.js           # ZIP archive ingestion (extract & process files)
 
-uploads/                # Uploaded files (git-ignored)
-data/                   # SQLite database (git-ignored)
+uploads/                # Uploaded files (git-ignored), organized by investigation_id subdirs
+data/                   # SQLite databases (git-ignored)
+  ediscovery.db         # Main DB (users, tags, investigations, audit_logs, etc.)
+  investigations/       # Per-investigation DBs ({uuid}.db) with documents, FTS, reviews, etc.
+docs/                   # Architecture and feature reference docs
 ```
 
 ## Code Conventions
@@ -111,22 +121,16 @@ Conventional commits with imperative mood:
 
 ## Database
 
-SQLite at `data/ediscovery.db`. Programmatic migrations in `server/db.js` using a `columnExists()` helper to add columns idempotently.
+**Two-tier SQLite architecture** — a main DB for global tables + per-investigation DB files for document data. See [docs/db-architecture.md](docs/db-architecture.md) and [docs/per-investigation-db.md](docs/per-investigation-db.md) for full details.
 
-Key tables:
-- `documents` — Core document store with email metadata, threading, deduplication, and investigation scoping
-- `investigations` — Case management (name, description, status, allegation, key_parties, date_range)
-- `classifications` — AI scores with model, elapsed time, reasoning, investigation_prompt
-- `tags`, `document_tags` — Tagging system
-- `document_reviews` — Review status tracking (pending/relevant/not_relevant/privileged), reviewer_id
-- `users` — User accounts (email, password_hash, name, role: admin/reviewer/viewer, is_active)
-- `investigation_members` — Explicit user-to-investigation access (user_id, investigation_id, role_override)
-- `audit_logs` — Full audit trail (user_id, action, resource_type, resource_id, details JSON, ip_address)
-- `import_jobs` — PST import job tracking with phase and investigation_id
-- `image_jobs` — E01/UFDR scan and extraction job tracking (type, status, progress, result_data as JSON)
-- `summarization_jobs` — Batch summarization job tracking (prompt, model, progress)
-- `summaries` — Per-document summaries linked to jobs
-- `documents_fts` — FTS5 virtual table (original_name, text_content, email_subject, email_from, email_to) with auto-sync triggers
+- **Main DB** (`data/ediscovery.db`): `users`, `tags`, `investigations`, `investigation_members`, `audit_logs`, `system_settings`, `image_jobs`. Managed by `server/db.js`.
+- **Per-investigation DBs** (`data/investigations/{uuid}.db`): `documents`, `document_tags`, `document_reviews`, `classifications`, `import_jobs`, `summarization_jobs`, `summaries`, `review_batches`, `review_batch_documents`, `documents_fts`. Managed by `server/lib/investigation-db.js` (LRU connection pool, 5 slots).
+
+Key access patterns:
+- **Request path**: `withInvestigationDb` middleware (`server/middleware/investigation-db.js`) resolves `investigation_id` and attaches `req.invDb` (write) / `req.invReadDb` (read-only) from the LRU pool.
+- **Workers**: `openWorkerDb(investigationId)` from `server/lib/investigation-db.js` — standalone connection, caller must close. Do NOT set `journal_mode = WAL` in workers.
+- **Cross-DB**: `document_tags` stores denormalized `tag_name`/`tag_color` to avoid cross-DB JOINs. `refreshInvestigationCounts(mainDb, invDb, id)` reads from investigation DB, writes to main DB.
+- **Threading**: `server/lib/threading.js` accepts `db` as first parameter (investigation DB connection).
 
 Notable document columns: `doc_type` (file/email/attachment/chat), `parent_id` (attachment→email), `thread_id`, `message_id`, `in_reply_to`, `email_references`, `content_hash`, `is_duplicate`, `investigation_id`, `doc_identifier` (CASE_CUST_00001 format), `recipient_count`, full email headers (from/to/cc/bcc/subject/date), document metadata (author/title/created_at/keywords).
 
@@ -150,9 +154,9 @@ Notable document columns: `doc_type` (file/email/attachment/chat), `parent_id` (
 - **Authentication**: Local email/password auth via bcryptjs + JWT (24h expiry). First registered user auto-becomes admin. `authenticate` middleware populates `req.user` globally; `requireAuth` enforces on all `/api/*` except `/api/auth/login`, `/api/auth/register`, `/api/auth/setup-status`, `/api/health`. Frontend stores JWT in localStorage, `apiFetch()` wrapper auto-attaches `Authorization: Bearer` header, global 401 triggers logout.
 - **Authorization**: 3 roles — Admin (full access + user management), Reviewer (CRUD within assigned investigations), Viewer (read-only on assigned investigations). `requireRole(...roles)` middleware gates routes. `requireInvestigationAccess` checks `investigation_members` table (admins bypass). Investigation list auto-filtered by membership for non-admins. Search auto-scoped to user's investigations.
 - **Audit logging**: All significant actions logged to `audit_logs` table via `logAudit()` from `server/lib/audit.js`. Action constants in `ACTIONS` object (auth.login, document.upload, review.update, etc.). Admin-only `/api/audit-logs` endpoint with pagination and action prefix filtering.
-- **Investigations**: Multi-case support; all documents, imports, and searches scoped to active investigation via `investigation_id`; investigation selector in sidebar; explicit membership via `investigation_members` table; member management endpoints `GET/POST/DELETE /:id/members` (admin only)
+- **Investigations**: Multi-case support with per-investigation SQLite databases; all documents, imports, and searches scoped to active investigation; `withInvestigationDb` middleware resolves and attaches DB connections from LRU pool; investigation selector in sidebar; explicit membership via `investigation_members` table; member management endpoints `GET/POST/DELETE /:id/members` (admin only); investigation deletion removes DB file + uploads directory
 - **PST import**: Two-phase ingestion via native `readpst -e -D` CLI — Phase 1 parses emails + writes attachments, Phase 2 extracts text via subprocess with timeout; job tracking in `import_jobs` table, polled from frontend every 3s; stuck jobs marked as failed on server restart (no auto-resume)
-- **Worker thread DB**: Workers open their own `better-sqlite3` connection with `timeout: 15000` and `busy_timeout = 10000`; do NOT set `journal_mode = WAL` in workers (already set by main process, setting it again deadlocks)
+- **Worker thread DB**: Workers use `openWorkerDb(investigationId)` from `server/lib/investigation-db.js` for standalone connections (not pooled); `timeout: 15000` and `busy_timeout = 15000`; do NOT set `journal_mode = WAL` in workers (already set by main process, setting it again deadlocks); caller must close in `finally` block
 - **Email threading**: Resolves `thread_id` via `In-Reply-To`/`References` headers with exact message-ID matching; backfill unifies orphan threads on late-arriving emails
 - **Email hierarchy**: `doc_type` (file/email/attachment/chat) with `parent_id` linking attachments to parent emails
 - **Deduplication**: MD5 `content_hash` on upload; `is_duplicate` flag for duplicate detection
