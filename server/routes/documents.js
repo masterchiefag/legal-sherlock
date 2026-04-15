@@ -6,6 +6,7 @@ import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
 import mainDb from '../db.js';
+import { openWorkerDb } from '../lib/investigation-db.js';
 import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
 import { resolveThreadId, backfillThread } from '../lib/threading.js';
@@ -282,7 +283,7 @@ import { execFile } from 'child_process';
 import { promisify } from 'util';
 const execFileAsync = promisify(execFile);
 
-function spawnPstWorker(invDb, jobId, filename, filepath, originalname, investigation_id, custodian, extractionOnly = false, preserveSource = false) {
+function spawnPstWorker(jobId, filename, filepath, originalname, investigation_id, custodian, extractionOnly = false, preserveSource = false) {
     const workerPath = path.join(__dirname, '..', 'workers', 'pst-worker.js');
     const worker = new Worker(workerPath, {
         workerData: { jobId, filename, filepath, originalname, investigation_id, custodian, resume: extractionOnly, extractionOnly, preserveSource }
@@ -296,7 +297,15 @@ function spawnPstWorker(invDb, jobId, filename, filepath, originalname, investig
         if (code !== 0) {
             console.error(`⚠ PST Worker for job ${jobId} stopped with exit code ${code}`);
         }
-        finalizeStuckJob(invDb, jobId, `Worker exited with code ${code}`);
+        let db;
+        try {
+            db = openWorkerDb(investigation_id);
+            finalizeStuckJob(db, jobId, `Worker exited with code ${code}`);
+        } catch (err) {
+            console.error(`⚠ Failed to finalize PST job ${jobId}:`, err.message);
+        } finally {
+            try { db?.close(); } catch {}
+        }
     });
 
     return worker;
@@ -305,7 +314,7 @@ function spawnPstWorker(invDb, jobId, filename, filepath, originalname, investig
 // ═══════════════════════════════════════════════════
 // Chat/SQLite processing pipeline (Delegated to Worker)
 // ═══════════════════════════════════════════════════
-function spawnChatWorker(invDb, jobId, filename, filepath, originalname, investigation_id, custodian, zipPath = null, sqliteEntry = null) {
+function spawnChatWorker(jobId, filename, filepath, originalname, investigation_id, custodian, zipPath = null, sqliteEntry = null) {
     const workerPath = path.join(__dirname, '..', 'workers', 'chat-worker.js');
     const worker = new Worker(workerPath, {
         workerData: { jobId, filename, filepath, originalname, investigation_id, custodian, zipPath, sqliteEntry }
@@ -319,7 +328,15 @@ function spawnChatWorker(invDb, jobId, filename, filepath, originalname, investi
         if (code !== 0) {
             console.error(`⚠ Chat Worker for job ${jobId} stopped with exit code ${code}`);
         }
-        finalizeStuckJob(invDb, jobId, `Worker exited with code ${code}`);
+        let db;
+        try {
+            db = openWorkerDb(investigation_id);
+            finalizeStuckJob(db, jobId, `Worker exited with code ${code}`);
+        } catch (err) {
+            console.error(`⚠ Failed to finalize chat job ${jobId}:`, err.message);
+        } finally {
+            try { db?.close(); } catch {}
+        }
     });
 
     return worker;
@@ -328,7 +345,7 @@ function spawnChatWorker(invDb, jobId, filename, filepath, originalname, investi
 // ═══════════════════════════════════════════════════
 // ZIP processing pipeline (Delegated to Worker)
 // ═══════════════════════════════════════════════════
-function spawnZipWorker(invDb, jobId, filename, filepath, originalname, investigation_id, custodian) {
+function spawnZipWorker(jobId, filename, filepath, originalname, investigation_id, custodian) {
     const workerPath = path.join(__dirname, '..', 'workers', 'zip-worker.js');
     const worker = new Worker(workerPath, {
         workerData: { jobId, filename, filepath, originalname, investigation_id, custodian }
@@ -342,7 +359,15 @@ function spawnZipWorker(invDb, jobId, filename, filepath, originalname, investig
         if (code !== 0) {
             console.error(`⚠ ZIP Worker for job ${jobId} stopped with exit code ${code}`);
         }
-        finalizeStuckJob(invDb, jobId, `Worker exited with code ${code}`);
+        let db;
+        try {
+            db = openWorkerDb(investigation_id);
+            finalizeStuckJob(db, jobId, `Worker exited with code ${code}`);
+        } catch (err) {
+            console.error(`⚠ Failed to finalize ZIP job ${jobId}:`, err.message);
+        } finally {
+            try { db?.close(); } catch {}
+        }
     });
 
     return worker;
@@ -464,7 +489,7 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
                 `).run(jobId, file.originalname, file.path, investigation_id, custodian || null);
 
                 console.log(`[upload] spawning PST worker for "${file.originalname}" (job ${jobId.substring(0, 8)}..., custodian: ${custodian || 'none'})`);
-                spawnPstWorker(req.invDb, jobId, file.filename, file.path, file.originalname, investigation_id, custodian);
+                spawnPstWorker(jobId, file.filename, file.path, file.originalname, investigation_id, custodian);
 
                 // Return 202 Accepted instead of waiting for results
                 return res.status(202).json({
@@ -481,7 +506,7 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
                 `).run(jobId, file.originalname, file.path, investigation_id, custodian || null);
 
                 console.log(`[upload] spawning Chat worker for "${file.originalname}" (job ${jobId.substring(0, 8)}..., custodian: ${custodian || 'none'})`);
-                spawnChatWorker(req.invDb, jobId, file.filename, file.path, file.originalname, investigation_id, custodian);
+                spawnChatWorker(jobId, file.filename, file.path, file.originalname, investigation_id, custodian);
 
                 return res.status(202).json({
                     message: "Chat DB uploaded. Processing in background.",
@@ -518,7 +543,7 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
                 if (sqliteEntry) {
                     // WhatsApp chat+media ZIP — route to chat worker
                     console.log(`✦ Detected WhatsApp ZIP: ${sqliteEntry}`);
-                    spawnChatWorker(req.invDb, jobId, file.filename, file.path, file.originalname, investigation_id, custodian, file.path, sqliteEntry);
+                    spawnChatWorker(jobId, file.filename, file.path, file.originalname, investigation_id, custodian, file.path, sqliteEntry);
 
                     return res.status(202).json({
                         message: "WhatsApp chat+media ZIP uploaded. Processing in background.",
@@ -528,7 +553,7 @@ router.post('/upload', requireRole('admin', 'reviewer'), (req, res, next) => {
                 }
 
                 console.log(`[upload] spawning ZIP worker for "${file.originalname}" (job ${jobId.substring(0, 8)}..., custodian: ${custodian || 'none'})`);
-                spawnZipWorker(req.invDb, jobId, file.filename, file.path, file.originalname, investigation_id, custodian);
+                spawnZipWorker(jobId, file.filename, file.path, file.originalname, investigation_id, custodian);
 
                 return res.status(202).json({
                     message: "ZIP archive uploaded. Processing in background.",
@@ -586,7 +611,7 @@ router.post('/import-local', requireRole('admin', 'reviewer'), (req, res) => {
 
         const sizeMb = (stat.size / 1024 / 1024).toFixed(1);
         console.log(`[import-local] importing "${originalname}" (${sizeMb} MB) from ${resolvedPath} to investigation ${investigation_id.substring(0, 8)}... (job ${jobId.substring(0, 8)}...)`);
-        spawnPstWorker(req.invDb, jobId, originalname, resolvedPath, originalname, investigation_id, custodian || null, false, true);
+        spawnPstWorker(jobId, originalname, resolvedPath, originalname, investigation_id, custodian || null, false, true);
 
         logAudit(mainDb, {
             userId: req.user.id,
@@ -766,7 +791,15 @@ router.post('/jobs/:id/resume', requireRole('admin', 'reviewer'), (req, res) => 
 
         worker.on('exit', (code) => {
             if (code !== 0) console.error(`⚠ PST Worker resume for job ${job.id} stopped with exit code ${code}`);
-            finalizeStuckJob(req.invDb, job.id, `Resume worker exited with code ${code}`);
+            let db;
+            try {
+                db = openWorkerDb(job.investigation_id);
+                finalizeStuckJob(db, job.id, `Resume worker exited with code ${code}`);
+            } catch (err) {
+                console.error(`⚠ Failed to finalize resumed job ${job.id}:`, err.message);
+            } finally {
+                try { db?.close(); } catch {}
+            }
         });
 
         res.json({ message: 'Import resumed', jobId: job.id });
