@@ -13,7 +13,7 @@ Entry Points                     Workers / Handlers                  Shared Post
 Upload Page (.eml)               documents.js  processEmlFile()  -+   disableFtsTriggers()
 Upload Page (.pdf/.docx/etc)     documents.js  processRegularFile()   enableFtsTriggers()
                                                |                  |   rebuildFtsIndex()
-Upload Page (.pst/.ost) -------> pst-worker.js (2 phases)       --+   dropBulkIndexes()
+Upload Page (.pst/.ost) -------> pst-worker.js (7 phases)       --+   dropBulkIndexes()
 Upload Page (.zip)   ----------> zip-worker.js                  --+   recreateBulkIndexes()
 Upload Page (.zip+ChatStorage)-> chat-worker.js                 --+   refreshInvestigationCounts()
 Upload Page (.sqlite/.db) -----> chat-worker.js                 --+   walCheckpoint()
@@ -87,7 +87,7 @@ The upload handler inspects each file's extension and dispatches accordingly:
 **Spawned by**: `spawnPstWorker()` in documents.js
 **Job tracking**: `import_jobs` table
 
-### Three-phase process
+### Seven-phase process
 
 **Phase 1 -- Parse emails + extract attachments**
 
@@ -108,9 +108,42 @@ Forwarded/attached Outlook emails are stored as opaque `.msg` files by readpst. 
 4. Inserts as children of the MSG doc: `Email → MSG → extracted files`
 5. Updates MSG document's `text_content` with embedded email body (makes forwarded email text searchable)
 
+**Phase 1.6 -- ZIP extraction**
+
+Relativity flattens ZIP containers — extracts all files inside as child documents. Without this, PDFs/DOCX inside ZIPs are invisible to search. Uses `zipinfo` to list contents and `unzip -p` to extract. Impact: ~2,500-3,000 additional documents in large PSTs.
+
+1. Queries all non-duplicate `.zip` attachments, deduplicates by content_hash
+2. For each unique ZIP: lists contents via `zipinfo`, extracts each file via `unzip -p`
+3. Hashes, deduplicates, writes to disk, inserts as children of the ZIP document
+4. Skips images/media/executables (same `SKIP_EXTS` as other phases)
+
+**Phase 1.7 -- PDF portfolio extraction**
+
+Some PDFs contain embedded file attachments (PDF portfolios / PDF packages). Relativity extracts these as separate documents. Uses `pdfdetach` from poppler-utils. Impact: ~2,500 additional documents.
+
+1. Scans all non-duplicate PDF attachments with `pdfdetach -list` (fast catalog read)
+2. For PDFs with embedded files: extracts all via `pdfdetach -saveall` to temp directory
+3. Hashes, deduplicates, inserts as children of the PDF document
+
+**Phase 1.8 -- TNEF extraction**
+
+Outlook's Transport Neutral Encapsulation Format (winmail.dat) wraps attachments in a binary blob. Small impact (~5 docs) but trivial to handle. Uses `tnef` CLI.
+
+1. Queries winmail.dat / noname.dat / application/ms-tnef attachments
+2. Extracts via `tnef -C <tmpdir> --overwrite`, inserts children
+
+**Phase 1.9 -- Recursive container pass**
+
+Phases 1.5-1.8 handle one level of extraction. But containers can be nested (ZIP inside ZIP, PDF portfolio inside ZIP, MSG inside ZIP). Relativity recurses. This phase loops until no new containers are found, with a hard limit of 5 passes to prevent ZIP bombs.
+
+1. Finds newly-inserted containers that haven't been processed yet
+2. Processes each by type (reuses logic from phases 1.5-1.8)
+3. Also re-scans newly extracted PDFs for portfolio detection
+4. Repeats until no new files are extracted or depth limit reached
+
 **Phase 2 -- Text extraction**
 
-1. Runs `extractText()` on attachments that were inserted with `status = 'processing'`
+1. Runs `extractText()` on attachments that were inserted with `status = 'processing'` (including all newly extracted files from phases 1.5-1.9)
 2. Concurrency capped at `PHASE2_CONCURRENCY = 4`
 3. Updates each attachment's `text_content` and sets `status = 'ready'`
 
@@ -135,6 +168,7 @@ Forwarded/attached Outlook emails are stored as opaque `.msg` files by readpst. 
 - Worker DB connections use `timeout: 15000` and `busy_timeout = 10000` to handle contention with the main process.
 - Stuck jobs (status `processing` or `pending` at server startup) are auto-marked as `failed` with a "Server restarted" error. No auto-resume.
 - Embedded MSG files (forwarded emails) are parsed in Phase 1.5 via `@kenjiuno/msgreader`. Without this, ~30-50% of document attachments can be invisible. See [pst-parsing-nuances.md](./pst-parsing-nuances.md).
+- Container extraction (Phases 1.6-1.9) uses external CLI tools: `zipinfo`/`unzip` (ZIP), `pdfdetach` (PDF portfolios, from poppler-utils), `tnef` (winmail.dat). These must be installed on the host.
 - The `extractionOnly` flag skips Phase 1 and only runs Phase 2 (text extraction) on existing attachments. Used for resuming failed extraction.
 - Threading uses `threading-cached.js` (in-memory LRU cache) in the PST worker for speed, vs `threading.js` (DB-only) in other workers.
 

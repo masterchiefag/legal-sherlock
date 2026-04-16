@@ -125,9 +125,69 @@ Example: A PST with 52,716 raw emails may have only 48,476 unique `message_id` v
 The `pst-attachment-audit.js` script (in `server/scripts/`) can compare PST attachment counts against Sherlock's database. Common sources of discrepancy:
 
 - **Inline images**: readpst extracts CID-referenced images (logo.png in email signatures). These are counted but not always relevant.
-- **Embedded MSG files**: Main source of missing documents (see above).
-- **TNEF/winmail.dat**: Outlook's Transport Neutral Encapsulation Format wraps attachments in a binary blob. readpst usually unpacks these, but edge cases exist.
+- **Embedded MSG files**: Parsed in Phase 1.5 via msgreader (~282 PDFs in Yesha case).
+- **ZIP contents**: Extracted in Phase 1.6 (~2,500-3,000 PDFs in Yesha case). This was the single biggest gap.
+- **PDF portfolios**: Extracted in Phase 1.7 (~2,500 PDFs in Yesha case). Second biggest gap.
+- **TNEF/winmail.dat**: Extracted in Phase 1.8 (~5 docs). Small but handled for completeness.
 - **Calendar attachments (.ics)**: Sherlock stores these but doesn't extract text from them.
+
+---
+
+## Container Extraction (Phases 1.6-1.9)
+
+After Phase 1.5 (MSG extraction), the pipeline now extracts files from all container types to match Relativity's behavior:
+
+### Phase 1.6: ZIP Extraction
+
+- Queries all non-duplicate `.zip` attachments
+- Uses `zipinfo` to list contents, `unzip -p` to extract individual files
+- Inserts extracted files as children of the ZIP document
+- Deduplicates by MD5 hash against all previously seen files
+- **Impact**: ~2,500-3,000 additional documents in the Yesha case
+
+### Phase 1.7: PDF Portfolio Extraction
+
+- Scans all non-duplicate PDF attachments with `pdfdetach -list` (fast catalog-only read)
+- For PDFs with embedded files: extracts via `pdfdetach -saveall` to a temp directory
+- **Dependencies**: `pdfdetach` from poppler-utils (same package as `pdftoppm` used for OCR)
+- **Impact**: ~2,500 additional documents (1,140 parent PDFs contained 2,506 embedded files in Yesha case)
+
+### Phase 1.8: TNEF Extraction
+
+- Handles winmail.dat / noname.dat / application/ms-tnef attachments
+- Uses `tnef -C <tmpdir> --overwrite` CLI
+- **Impact**: ~5 documents (tiny but trivial to handle)
+
+### Phase 1.9: Recursive Container Pass
+
+- Relativity recurses into nested containers (ZIP inside ZIP, PDF portfolio inside ZIP, etc.)
+- Loops up to 5 passes, processing any newly-inserted containers from prior phases
+- Also re-scans newly extracted PDFs for portfolio detection
+- Stops when no new files are extracted or depth limit reached
+
+### System Dependencies
+
+| Tool | Package | Purpose | Phase |
+|------|---------|---------|-------|
+| `zipinfo` | Built-in (macOS) / `unzip` package (Linux) | List ZIP contents | 1.6, 1.9 |
+| `unzip` | Built-in (macOS) / `unzip` package (Linux) | Extract ZIP files | 1.6, 1.9 |
+| `pdfdetach` | `poppler-utils` | Detect + extract PDF portfolios | 1.7, 1.9 |
+| `tnef` | `tnef` | Extract winmail.dat | 1.8, 1.9 |
+
+### Relativity Gap Analysis (Yesha Maniar 30GB PST)
+
+Comparison against Relativity export (81,580 rows):
+
+| Gap Source | Estimated Docs | Phase | Status |
+|------------|---------------|-------|--------|
+| ZIP flattening | ~2,500-3,000 | 1.6 | Implemented |
+| PDF portfolios | ~2,506 | 1.7 | Implemented |
+| MSG/EML containers | ~282 | 1.5 | Implemented |
+| TNEF/winmail.dat | ~5 | 1.8 | Implemented |
+| Nested containers | ~100-500 | 1.9 | Implemented |
+| **Total** | **~5,100-6,000** | | |
+
+This should close the gap from ~76K to ~81-82K documents, aligning closely with Relativity's 81,580.
 
 ---
 
@@ -156,8 +216,8 @@ All in `server/scripts/`:
 | Script | Purpose |
 |--------|---------|
 | `pst-attachment-audit.js` | Walk PST with pst-extractor, compare attachment manifest against Sherlock DB |
-| `ingest-zip-attachments.js` | One-off: extract ZIP attachment contents and ingest as children |
-| `ingest-remaining-containers.js` | One-off: extract RAR, 7z, EML, MSG, TNEF containers |
+| `ingest-zip-attachments.js` | One-off: extract ZIP attachment contents and ingest as children (now superseded by Phase 1.6 in pipeline, kept for standalone re-runs) |
+| `ingest-remaining-containers.js` | One-off: extract RAR, 7z, EML, MSG, TNEF containers (now mostly superseded by Phases 1.5-1.8) |
 
 Usage:
 ```bash
@@ -178,8 +238,9 @@ When comparing Sherlock output against another tool (Relativity, Nuix, etc.):
 4. **Check dedup methodology** — same hash algorithm? Same scope?
 5. **Account for skipped types** — Sherlock skips images in Phase 1.5 MSG extraction; some tools count everything
 
-Expected sources of remaining differences after MSG parsing:
-- Nested MSG files (MSG inside MSG) — currently skipped at depth > 0
-- Password-protected containers
+Expected sources of remaining differences after full container extraction (Phases 1.5-1.9):
+- Password-protected containers (ZIP, PDF, RAR)
+- RAR/7z archives (not yet extracted in pipeline; handled by `ingest-remaining-containers.js` one-off)
 - Corrupted files that one parser handles but another doesn't
 - Different treatment of inline images vs. true attachments
+- Edge cases in PDF portfolio detection (some non-standard PDF packages may not be detected by pdfdetach)
