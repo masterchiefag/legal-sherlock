@@ -238,6 +238,8 @@ export async function parseEml(filePathOrBuffer) {
     // matches the .eml on disk and picks them up for child-attachment extraction.
     // Filenames also get run through recoverFilenameIfStripped() to undo postal-mime's
     // paren-stripping bug (issue #68) — ~4% of attachments in PST-sourced mail.
+    // contentId / disposition / related are propagated for the HTML email renderer
+    // (feat/html-email-rendering) which needs them to resolve inline CID images.
     const rawQuotedFilenames = extractRawQuotedFilenames(raw);
     const rawAttachments = parsed.attachments || [];
     const attachments = rawAttachments.map((att, idx) => {
@@ -261,6 +263,9 @@ export async function parseEml(filePathOrBuffer) {
             size: content.byteLength || content.length || 0,
             content,
             md5,
+            contentId: att.contentId ? att.contentId.replace(/^</, '').replace(/>$/, '') : null,
+            disposition: att.disposition || null,
+            related: att.related || false,
         };
     });
 
