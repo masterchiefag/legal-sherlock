@@ -464,18 +464,27 @@ async function main() {
             for (const op of ops) op();
         });
 
+        const msgAttsByExt = {}; // track extracted attachment types for summary
+
         for (let mi = 0; mi < msgDocs.length; mi++) {
             const msgDoc = msgDocs[mi];
             const msgPath = path.join(UPLOADS_DIR, msgDoc.filename);
 
             if (!fs.existsSync(msgPath)) {
                 msgSkipped++;
+                if (msgSkipped <= 5) console.log(`  ✦ Phase 1.5: MSG file missing on disk: ${msgDoc.original_name} (${msgDoc.filename})`);
                 continue;
             }
 
             try {
                 const msgBuffer = fs.readFileSync(msgPath);
                 const { metadata, attachments: msgAtts } = parseMsg(msgBuffer);
+
+                // Verbose logging for first 5 MSGs so we can confirm parsing works early
+                if (msgProcessed < 5) {
+                    console.log(`  ✦ Phase 1.5 [${msgProcessed + 1}]: "${metadata.subject}" from ${metadata.from || '?'}`);
+                    console.log(`    Body: ${metadata.textBody?.length || 0} chars, Attachments: ${msgAtts.length} [${msgAtts.map(a => a.filename).join(', ')}]`);
+                }
 
                 // Update the MSG document's text_content with the embedded email body
                 // so the forwarded email's content becomes searchable
@@ -496,6 +505,9 @@ async function main() {
                 let childIdx = 0;
                 for (const att of msgAtts) {
                     childIdx++;
+                    // Track by extension for summary
+                    const ext = (att.filename.match(/\.([^.]+)$/) || [, 'unknown'])[1].toLowerCase();
+                    msgAttsByExt[ext] = (msgAttsByExt[ext] || 0) + 1;
                     const attId = uuidv4();
                     const attExt = path.extname(att.filename) || '.bin';
                     const attBasename = `${attId}${attExt}`;
@@ -571,6 +583,15 @@ async function main() {
         }
 
         console.log(`✦ Phase 1.5 complete: ${msgProcessed} MSGs processed, ${msgAttInserted} attachments extracted (${msgAttDupes} dupes), ${msgTextUpdated} MSG bodies updated, ${msgSkipped} skipped, ${msgErrors} errors`);
+
+        // Log per-extension breakdown of extracted MSG attachments
+        if (Object.keys(msgAttsByExt).length > 0) {
+            const sorted = Object.entries(msgAttsByExt).sort((a, b) => b[1] - a[1]);
+            console.log(`✦ Phase 1.5 extracted attachment types:`);
+            for (const [ext, count] of sorted.slice(0, 15)) {
+                console.log(`    .${ext}: ${count}`);
+            }
+        }
 
         // Record Phase 1.5 completion
         db.prepare("UPDATE import_jobs SET phase = 'msg_extraction_done' WHERE id = ?").run(jobId);
