@@ -87,7 +87,7 @@ The upload handler inspects each file's extension and dispatches accordingly:
 **Spawned by**: `spawnPstWorker()` in documents.js
 **Job tracking**: `import_jobs` table
 
-### Two-phase process
+### Three-phase process
 
 **Phase 1 -- Parse emails + extract attachments**
 
@@ -97,6 +97,16 @@ The upload handler inspects each file's extension and dispatches accordingly:
 4. Insert emails and attachments in batched transactions (`DB_BATCH_SIZE = 500`)
 5. Attachment dedup: MD5 hash checked in-memory first, then against DB
 6. Attachments > 100MB (`MAX_ATTACHMENT_SIZE`) are skipped (not written to disk)
+
+**Phase 1.5 -- Embedded MSG extraction**
+
+Forwarded/attached Outlook emails are stored as opaque `.msg` files by readpst. This phase parses them to extract their document attachments, which would otherwise be invisible. See [pst-parsing-nuances.md](./pst-parsing-nuances.md) for full details.
+
+1. Queries all non-duplicate `.msg` attachments in the investigation
+2. Parses each with `@kenjiuno/msgreader` via `server/lib/msg-parser.js`
+3. Extracts document attachments (skips images), writes to disk with dedup
+4. Inserts as children of the MSG doc: `Email → MSG → extracted files`
+5. Updates MSG document's `text_content` with embedded email body (makes forwarded email text searchable)
 
 **Phase 2 -- Text extraction**
 
@@ -124,6 +134,7 @@ The upload handler inspects each file's extension and dispatches accordingly:
 - Workers open their own `better-sqlite3` connection. They must NOT set `journal_mode = WAL` (already set by main process; doing so deadlocks).
 - Worker DB connections use `timeout: 15000` and `busy_timeout = 10000` to handle contention with the main process.
 - Stuck jobs (status `processing` or `pending` at server startup) are auto-marked as `failed` with a "Server restarted" error. No auto-resume.
+- Embedded MSG files (forwarded emails) are parsed in Phase 1.5 via `@kenjiuno/msgreader`. Without this, ~30-50% of document attachments can be invisible. See [pst-parsing-nuances.md](./pst-parsing-nuances.md).
 - The `extractionOnly` flag skips Phase 1 and only runs Phase 2 (text extraction) on existing attachments. Used for resuming failed extraction.
 - Threading uses `threading-cached.js` (in-memory LRU cache) in the PST worker for speed, vs `threading.js` (DB-only) in other workers.
 
