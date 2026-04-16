@@ -287,7 +287,10 @@ function initSchema(db) {
             is_cloud_only INTEGER DEFAULT 0,
             -- OCR
             ocr_applied INTEGER DEFAULT 0,
-            ocr_time_ms INTEGER
+            ocr_time_ms INTEGER,
+            -- HTML email rendering
+            has_html_body INTEGER DEFAULT 0,
+            inline_images_meta TEXT
         );
 
         CREATE TABLE IF NOT EXISTS document_tags (
@@ -540,6 +543,14 @@ function runMigrations(db) {
         // Raw PR_MESSAGE_CLASS for forensic fidelity — e.g. 'IPM.Appointment',
         // 'IPM.Task', 'IPM.StickyNote', 'IPM.Schedule.Meeting.Request'
         db.exec(`ALTER TABLE documents ADD COLUMN mapi_class TEXT`);
+    }
+
+    // HTML email rendering columns (feat/html-email-rendering)
+    if (!columnExists(db, 'documents', 'has_html_body')) {
+        db.exec(`ALTER TABLE documents ADD COLUMN has_html_body INTEGER DEFAULT 0`);
+    }
+    if (!columnExists(db, 'documents', 'inline_images_meta')) {
+        db.exec(`ALTER TABLE documents ADD COLUMN inline_images_meta TEXT`);
     }
 
     // Ensure FTS exists and is healthy
