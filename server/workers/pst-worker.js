@@ -12,6 +12,7 @@ import mainDb from '../db.js';
 import { openWorkerDb } from '../lib/investigation-db.js';
 import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
+import { parseMsg } from '../lib/msg-parser.js';
 import { disableFtsTriggers, enableFtsTriggers, rebuildFtsIndex, dropBulkIndexes, recreateBulkIndexes, refreshInvestigationCounts, walCheckpoint, backfillDuplicateText } from '../lib/worker-helpers.js';
 import { resolveThreadId, backfillThread, updateCacheOnly, resolveThreadIdFromCache, initCache } from '../lib/threading-cached.js';
 import { getSetting } from '../lib/settings.js';
@@ -416,6 +417,163 @@ async function main() {
 
         // Checkpoint WAL after bulk writes
         walCheckpoint(db);
+
+        // ═══════════════════════════════════════════
+        // Phase 1.5: Extract embedded MSG attachments
+        // readpst -e stores forwarded/attached emails as opaque .msg files.
+        // These contain document attachments (PDFs, DOCX, etc.) invisible
+        // to search and review. Parse them with msgreader and insert their
+        // contents as children: Email → MSG attachment → extracted files.
+        // ═══════════════════════════════════════════
+        console.log('✦ PST Import Phase 1.5: Extracting embedded MSG attachments...');
+        db.prepare("UPDATE import_jobs SET phase = 'msg_extraction' WHERE id = ?").run(jobId);
+
+        const msgDocs = db.prepare(`
+            SELECT id, filename, original_name, doc_identifier, custodian, parent_id, content_hash
+            FROM documents
+            WHERE investigation_id = ? AND doc_type = 'attachment' AND is_duplicate = 0
+              AND (LOWER(original_name) LIKE '%.msg' OR LOWER(filename) LIKE '%.msg')
+        `).all(investigation_id);
+
+        console.log(`✦ Phase 1.5: Found ${msgDocs.length} unique MSG attachments to process`);
+
+        let msgProcessed = 0;
+        let msgAttInserted = 0;
+        let msgAttDupes = 0;
+        let msgErrors = 0;
+        let msgSkipped = 0;
+        let msgTextUpdated = 0;
+        const msgBatchBuffer = [];
+
+        const insertMsgChild = db.prepare(`
+            INSERT INTO documents (
+                id, filename, original_name, mime_type, size_bytes, text_content, status,
+                doc_type, parent_id, thread_id,
+                doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
+                content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+            ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
+                ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?)
+        `);
+
+        const updateMsgText = db.prepare(
+            "UPDATE documents SET text_content = ?, text_content_size = ? WHERE id = ?"
+        );
+
+        const flushMsgBatch = db.transaction((ops) => {
+            for (const op of ops) op();
+        });
+
+        for (let mi = 0; mi < msgDocs.length; mi++) {
+            const msgDoc = msgDocs[mi];
+            const msgPath = path.join(UPLOADS_DIR, msgDoc.filename);
+
+            if (!fs.existsSync(msgPath)) {
+                msgSkipped++;
+                continue;
+            }
+
+            try {
+                const msgBuffer = fs.readFileSync(msgPath);
+                const { metadata, attachments: msgAtts } = parseMsg(msgBuffer);
+
+                // Update the MSG document's text_content with the embedded email body
+                // so the forwarded email's content becomes searchable
+                if (metadata.textBody && metadata.textBody.length > 0) {
+                    const bodyText = `[Embedded email] From: ${metadata.from || 'unknown'}\nTo: ${metadata.to || ''}\nSubject: ${metadata.subject || ''}\nDate: ${metadata.date || ''}\n\n${metadata.textBody}`;
+                    msgBatchBuffer.push(() => {
+                        updateMsgText.run(bodyText, bodyText.length, msgDoc.id);
+                    });
+                    msgTextUpdated++;
+                }
+
+                // Get the thread_id from the parent email (for the MSG's children)
+                const parentThread = db.prepare(
+                    "SELECT thread_id FROM documents WHERE id = ?"
+                ).get(msgDoc.parent_id);
+                const threadId = parentThread?.thread_id || null;
+
+                let childIdx = 0;
+                for (const att of msgAtts) {
+                    childIdx++;
+                    const attId = uuidv4();
+                    const attExt = path.extname(att.filename) || '.bin';
+                    const attBasename = `${attId}${attExt}`;
+                    const attFilename = `${investigation_id}/${attBasename}`;
+                    const attPath = path.join(UPLOADS_DIR, attFilename);
+
+                    // Hash for dedup
+                    const attHash = crypto.createHash('md5').update(att.content).digest('hex');
+                    const isDuplicate = seenHashes.has(attHash) ? 1 : 0;
+
+                    let finalFilename = attFilename;
+                    if (isDuplicate) {
+                        finalFilename = seenHashes.get(attHash);
+                        msgAttDupes++;
+                    } else {
+                        seenHashes.set(attHash, attFilename);
+                        await fsp.writeFile(attPath, att.content);
+                    }
+
+                    const docIdentifier = msgDoc.doc_identifier
+                        ? `${msgDoc.doc_identifier}_${String(childIdx).padStart(3, '0')}`
+                        : null;
+
+                    msgBatchBuffer.push(() => {
+                        insertMsgChild.run(
+                            attId, finalFilename, att.filename,
+                            att.contentType, att.size,
+                            msgDoc.id, threadId,
+                            null, null, null, null, null, null,
+                            attHash, isDuplicate, investigation_id, msgDoc.custodian || custodian || null,
+                            docIdentifier
+                        );
+                    });
+
+                    msgAttInserted++;
+                    totalAttachments++;
+                }
+
+                msgProcessed++;
+            } catch (err) {
+                msgErrors++;
+                if (msgErrors <= 20) {
+                    console.warn(`  ✦ Phase 1.5 error: ${msgDoc.original_name} — ${err.message}`);
+                }
+                errorLog.push({ phase: 'msg_extraction', docId: msgDoc.id, filename: msgDoc.original_name, error: err.message });
+            }
+
+            // Flush in batches
+            if (msgBatchBuffer.length >= DB_BATCH_SIZE) {
+                try {
+                    flushMsgBatch(msgBatchBuffer);
+                    msgBatchBuffer.length = 0;
+                } catch (err) {
+                    console.error(`✦ Phase 1.5 FLUSH ERROR: ${err.message}`);
+                    msgBatchBuffer.length = 0;
+                }
+            }
+
+            if ((mi + 1) % 500 === 0 || mi === msgDocs.length - 1) {
+                updateProgress.run(totalEmails, totalAttachments, 'msg_extraction', jobId);
+                console.log(`✦ Phase 1.5: ${mi + 1}/${msgDocs.length} MSGs — ${msgAttInserted} files extracted (${msgAttDupes} dupes, ${msgErrors} errors)`);
+            }
+        }
+
+        // Final flush
+        if (msgBatchBuffer.length > 0) {
+            try {
+                flushMsgBatch(msgBatchBuffer);
+                msgBatchBuffer.length = 0;
+            } catch (err) {
+                console.error(`✦ Phase 1.5 final FLUSH ERROR: ${err.message}`);
+            }
+        }
+
+        console.log(`✦ Phase 1.5 complete: ${msgProcessed} MSGs processed, ${msgAttInserted} attachments extracted (${msgAttDupes} dupes), ${msgTextUpdated} MSG bodies updated, ${msgSkipped} skipped, ${msgErrors} errors`);
+
+        // Record Phase 1.5 completion
+        db.prepare("UPDATE import_jobs SET phase = 'msg_extraction_done' WHERE id = ?").run(jobId);
 
         } // end if (!extractionOnly)
 
