@@ -150,6 +150,27 @@ describe('getInvestigationDb', () => {
     const nullExt = db.prepare("SELECT file_ext(NULL) AS ext").get();
     expect(nullExt.ext).toBe('unknown');
   });
+
+  it('should handle filenames with no extension (readpst paren-stripping)', () => {
+    const id = makeTestId();
+    const { db } = getInvestigationDb(id);
+
+    // Filename with trailing space (paren-stripped, lost extension)
+    const stripped = db.prepare("SELECT file_ext('NSDL-Fees Calculator Tool ') AS ext").get();
+    expect(stripped.ext).toBe('unknown');
+
+    // Filename with double spaces (paren-stripped, extension survived)
+    const doubleSpace = db.prepare("SELECT file_ext('R.S. No. 206  - Industrial N.A. land.docx') AS ext").get();
+    expect(doubleSpace.ext).toBe('.docx');
+
+    // Disk filename can serve as fallback
+    const fallback = db.prepare(`
+      SELECT CASE WHEN file_ext('NSDL-Fees Calculator Tool ') != 'unknown' THEN file_ext('NSDL-Fees Calculator Tool ')
+                  ELSE file_ext('abc-123.xlsx')
+             END as ext
+    `).get();
+    expect(fallback.ext).toBe('.xlsx');
+  });
 });
 
 // ─── openWorkerDb ────────────────────────────────────────────────────────────

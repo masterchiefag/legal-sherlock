@@ -189,7 +189,12 @@ router.get('/stats', (req, res) => {
 
             // File extension breakdown via SQL (replaces 100K+ row fetch into JS)
             const attachmentTypes = invReadDb.prepare(`
-                SELECT file_ext(original_name) as ext, COUNT(*) as count,
+                SELECT
+                    CASE WHEN file_ext(original_name) != 'unknown' THEN file_ext(original_name)
+                         WHEN filename IS NOT NULL THEN file_ext(filename)
+                         ELSE 'unknown'
+                    END as ext,
+                    COUNT(*) as count,
                     SUM(CASE WHEN is_duplicate = 0 THEN 1 ELSE 0 END) as unique_count
                 FROM documents WHERE doc_type IN ('attachment', 'file')
                 GROUP BY ext ORDER BY count DESC LIMIT 20

@@ -199,3 +199,34 @@ describe('HTML sanitization', () => {
         expect(result).not.toContain('<input');
     });
 });
+
+// ─── File extension resolution (readpst fallback) ──────────────────────────
+
+function resolveExt(originalName, diskFilename) {
+    const origExt = originalName?.includes('.') ? originalName.split('.').pop().toLowerCase() : '';
+    const diskExt = diskFilename?.includes('.') ? diskFilename.split('.').pop().toLowerCase() : '';
+    return origExt || diskExt || '';
+}
+
+describe('File extension resolution', () => {
+    it('uses original_name extension when present', () => {
+        expect(resolveExt('report.pdf', 'abc-123.pdf')).toBe('pdf');
+    });
+
+    it('falls back to disk filename when original_name has no extension', () => {
+        expect(resolveExt('NSDL-Fees Calculator Tool ', 'abc-123.xlsx')).toBe('xlsx');
+    });
+
+    it('falls back to disk filename for attachment_NNNN (no extension)', () => {
+        expect(resolveExt('attachment_1776336142593', 'inv-id/doc-id.bin')).toBe('bin');
+    });
+
+    it('handles both missing gracefully', () => {
+        expect(resolveExt('noext', null)).toBe('');
+        expect(resolveExt(null, null)).toBe('');
+    });
+
+    it('handles readpst double-space names (extension survived)', () => {
+        expect(resolveExt('R.S. No. 206  - Industrial N.A. land.docx', 'abc.docx')).toBe('docx');
+    });
+});
