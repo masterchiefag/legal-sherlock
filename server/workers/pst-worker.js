@@ -13,6 +13,7 @@ import { openWorkerDb } from '../lib/investigation-db.js';
 import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
 import { parseMsg } from '../lib/msg-parser.js';
+import { listZipContents, extractFileFromZip, detectPdfEmbeddedFiles, extractPdfEmbeddedFiles, extractTnefContents, cleanupTmpDir, SKIP_EXTS as CONTAINER_SKIP_EXTS, mimeFromExt as containerMimeFromExt } from '../lib/container-helpers.js';
 import { disableFtsTriggers, enableFtsTriggers, rebuildFtsIndex, dropBulkIndexes, recreateBulkIndexes, refreshInvestigationCounts, walCheckpoint, backfillDuplicateText } from '../lib/worker-helpers.js';
 import { resolveThreadId, backfillThread, updateCacheOnly, resolveThreadIdFromCache, initCache } from '../lib/threading-cached.js';
 import { getSetting } from '../lib/settings.js';
@@ -653,6 +654,879 @@ async function main() {
 
         // Record Phase 1.5 completion
         db.prepare("UPDATE import_jobs SET phase = 'msg_extraction_done' WHERE id = ?").run(jobId);
+
+        // ═══════════════════════════════════════════
+        // Phase 1.6: Extract ZIP attachments
+        // Relativity flattens ZIPs — extracts all files inside as child documents.
+        // Without this, PDFs/DOCX/etc inside ZIPs are invisible to search.
+        // Impact: ~2,500-3,000 additional documents in typical large PSTs.
+        // ═══════════════════════════════════════════
+        console.log('✦ PST Import Phase 1.6: Extracting ZIP attachments...');
+        db.prepare("UPDATE import_jobs SET phase = 'zip_extraction' WHERE id = ?").run(jobId);
+
+        {
+            const zipPhaseStart = Date.now();
+            let zipProcessed = 0;
+            let zipFilesInserted = 0;
+            let zipFilesDupes = 0;
+            let zipFilesSkipped = 0;
+            let zipErrors = 0;
+            let zipMissing = 0;
+            const zipAttsByExt = {};
+
+            // Find all non-duplicate ZIP attachments
+            const zipDocs = db.prepare(`
+                SELECT id, filename, original_name, doc_identifier, parent_id, custodian,
+                       content_hash, mime_type
+                FROM documents
+                WHERE investigation_id = ? AND doc_type = 'attachment' AND is_duplicate = 0
+                  AND (LOWER(original_name) LIKE '%.zip' OR mime_type = 'application/zip')
+                ORDER BY original_name
+            `).all(investigation_id);
+
+            // Dedup ZIPs by content_hash — process each unique ZIP only once
+            const processedZipHashes = new Set();
+            const uniqueZips = [];
+            for (const zip of zipDocs) {
+                if (zip.content_hash && processedZipHashes.has(zip.content_hash)) continue;
+                if (zip.content_hash) processedZipHashes.add(zip.content_hash);
+                uniqueZips.push(zip);
+            }
+
+            console.log(`✦ Phase 1.6: found ${zipDocs.length} ZIP attachments (${uniqueZips.length} unique by hash)`);
+
+            // Prepared statement for ZIP children (same schema as Phase 1.5 insertMsgChild)
+            const insertZipChild = db.prepare(`
+                INSERT INTO documents (
+                    id, filename, original_name, mime_type, size_bytes, text_content, status,
+                    doc_type, parent_id, thread_id,
+                    doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
+                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+                ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
+                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?)
+            `);
+
+            const zipBatchBuffer = [];
+            const flushZipBatch = db.transaction((ops) => {
+                for (const op of ops) op();
+            });
+
+            for (let zi = 0; zi < uniqueZips.length; zi++) {
+                const zip = uniqueZips[zi];
+                const zipPath = path.join(UPLOADS_DIR, zip.filename);
+
+                if (!fs.existsSync(zipPath)) {
+                    zipMissing++;
+                    if (zipMissing <= 5) console.log(`  ✦ Phase 1.6: ZIP file missing on disk: ${zip.original_name} (${zip.filename})`);
+                    continue;
+                }
+
+                try {
+                    const entries = await listZipContents(zipPath);
+
+                    if (entries.length === 0) {
+                        zipProcessed++;
+                        continue;
+                    }
+
+                    // Verbose logging for first 5 ZIPs
+                    if (zipProcessed < 5) {
+                        console.log(`  ✦ Phase 1.6 [${zipProcessed + 1}]: "${zip.original_name}" — ${entries.length} files inside`);
+                        const sampleNames = entries.slice(0, 5).map(e => path.basename(e.path));
+                        console.log(`    Sample files: ${sampleNames.join(', ')}${entries.length > 5 ? ` ... and ${entries.length - 5} more` : ''}`);
+                    }
+
+                    // Get thread_id from the ZIP's parent chain
+                    const parentThread = db.prepare(
+                        "SELECT thread_id FROM documents WHERE id = ?"
+                    ).get(zip.parent_id);
+                    const threadId = parentThread?.thread_id || null;
+
+                    let childIdx = 0;
+
+                    for (const entry of entries) {
+                        const ext = path.extname(entry.path).toLowerCase();
+                        const originalName = path.basename(entry.path);
+
+                        // Skip images/media/executables
+                        if (CONTAINER_SKIP_EXTS.has(ext)) {
+                            zipFilesSkipped++;
+                            continue;
+                        }
+
+                        try {
+                            const fileBuffer = await extractFileFromZip(zipPath, entry.path);
+                            const contentHash = crypto.createHash('md5').update(fileBuffer).digest('hex');
+
+                            // Dedup against all known hashes
+                            const isDuplicate = seenHashes.has(contentHash) ? 1 : 0;
+
+                            const fileId = uuidv4();
+                            const fileExt = ext || '.bin';
+                            let diskFilename;
+
+                            if (!isDuplicate) {
+                                diskFilename = `${investigation_id}/${fileId}${fileExt}`;
+                                seenHashes.set(contentHash, diskFilename);
+                                await fsp.writeFile(path.join(UPLOADS_DIR, diskFilename), fileBuffer);
+                            } else {
+                                diskFilename = seenHashes.get(contentHash);
+                                zipFilesDupes++;
+                            }
+
+                            // Track by extension for summary
+                            const extKey = ext || '.unknown';
+                            zipAttsByExt[extKey] = (zipAttsByExt[extKey] || 0) + 1;
+
+                            childIdx++;
+                            const docIdentifier = zip.doc_identifier
+                                ? `${zip.doc_identifier}_${String(childIdx).padStart(3, '0')}`
+                                : null;
+
+                            const mime = containerMimeFromExt(ext);
+
+                            zipBatchBuffer.push(() => {
+                                insertZipChild.run(
+                                    fileId, diskFilename, originalName,
+                                    mime, fileBuffer.length,
+                                    zip.id, threadId,
+                                    null, null, null, null, null, null,
+                                    contentHash, isDuplicate, investigation_id,
+                                    zip.custodian || custodian || null,
+                                    docIdentifier
+                                );
+                            });
+
+                            zipFilesInserted++;
+                            totalAttachments++;
+                        } catch (err) {
+                            zipErrors++;
+                            if (zipErrors <= 20) {
+                                errorLog.push({ phase: 'zip_extraction', zip: zip.original_name, file: entry.path, error: err.message });
+                            }
+                        }
+                    }
+
+                    zipProcessed++;
+                } catch (err) {
+                    zipErrors++;
+                    if (zipErrors <= 20) {
+                        console.warn(`  ✦ Phase 1.6 error: ${zip.original_name} — ${err.message}`);
+                        errorLog.push({ phase: 'zip_extraction', docId: zip.id, filename: zip.original_name, error: err.message });
+                    }
+                }
+
+                // Flush in batches
+                if (zipBatchBuffer.length >= DB_BATCH_SIZE) {
+                    try {
+                        flushZipBatch(zipBatchBuffer);
+                        zipBatchBuffer.length = 0;
+                    } catch (err) {
+                        console.error(`✦ Phase 1.6 FLUSH ERROR: ${err.message}`);
+                        zipBatchBuffer.length = 0;
+                    }
+                }
+
+                // Progress logging
+                if ((zi + 1) % 100 === 0 || zi === uniqueZips.length - 1) {
+                    updateProgress.run(totalEmails, totalAttachments, 'zip_extraction', jobId);
+                    console.log(`✦ Phase 1.6: ${zi + 1}/${uniqueZips.length} ZIPs — ${zipFilesInserted} files extracted (${zipFilesDupes} dupes, ${zipFilesSkipped} skipped, ${zipErrors} errors)`);
+                }
+            }
+
+            // Final flush
+            if (zipBatchBuffer.length > 0) {
+                try {
+                    flushZipBatch(zipBatchBuffer);
+                    zipBatchBuffer.length = 0;
+                } catch (err) {
+                    console.error(`✦ Phase 1.6 final FLUSH ERROR: ${err.message}`);
+                }
+            }
+
+            const zipElapsed = ((Date.now() - zipPhaseStart) / 1000).toFixed(1);
+            console.log(`✦ Phase 1.6 complete: ${zipProcessed} ZIPs processed, ${zipFilesInserted} files extracted (${zipFilesDupes} dupes, ${zipFilesSkipped} skipped, ${zipMissing} missing, ${zipErrors} errors) in ${zipElapsed}s`);
+
+            // Log per-extension breakdown
+            if (Object.keys(zipAttsByExt).length > 0) {
+                const sorted = Object.entries(zipAttsByExt).sort((a, b) => b[1] - a[1]);
+                console.log(`✦ Phase 1.6 extracted file types:`);
+                for (const [ext, count] of sorted.slice(0, 20)) {
+                    console.log(`    ${ext}: ${count}`);
+                }
+            }
+        }
+
+        db.prepare("UPDATE import_jobs SET phase = 'zip_extraction_done' WHERE id = ?").run(jobId);
+
+        // ═══════════════════════════════════════════
+        // Phase 1.7: Extract PDF portfolio attachments
+        // Some PDFs contain embedded file attachments (PDF portfolios / PDF packages).
+        // Relativity extracts these as separate documents. We use pdfdetach (poppler-utils)
+        // to detect and extract embedded files. Impact: ~2,500 additional documents.
+        // ═══════════════════════════════════════════
+        console.log('✦ PST Import Phase 1.7: Extracting PDF portfolio attachments...');
+        db.prepare("UPDATE import_jobs SET phase = 'pdf_portfolio_extraction' WHERE id = ?").run(jobId);
+
+        {
+            const pdfPhaseStart = Date.now();
+            let pdfsScanned = 0;
+            let portfoliosFound = 0;
+            let pdfFilesInserted = 0;
+            let pdfFilesDupes = 0;
+            let pdfFilesSkipped = 0;
+            let pdfErrors = 0;
+            const pdfAttsByExt = {};
+
+            // Find all non-duplicate PDF attachments
+            const pdfDocs = db.prepare(`
+                SELECT id, filename, original_name, doc_identifier, parent_id, custodian,
+                       content_hash
+                FROM documents
+                WHERE investigation_id = ? AND doc_type = 'attachment' AND is_duplicate = 0
+                  AND (LOWER(original_name) LIKE '%.pdf' OR mime_type = 'application/pdf')
+                ORDER BY original_name
+            `).all(investigation_id);
+
+            // Dedup PDFs by content_hash
+            const processedPdfHashes = new Set();
+            const uniquePdfs = [];
+            for (const pdf of pdfDocs) {
+                if (pdf.content_hash && processedPdfHashes.has(pdf.content_hash)) continue;
+                if (pdf.content_hash) processedPdfHashes.add(pdf.content_hash);
+                uniquePdfs.push(pdf);
+            }
+
+            console.log(`✦ Phase 1.7: scanning ${uniquePdfs.length} unique PDFs for embedded files (pdfdetach -list)...`);
+
+            // Prepared statement (same schema as ZIP children)
+            const insertPdfChild = db.prepare(`
+                INSERT INTO documents (
+                    id, filename, original_name, mime_type, size_bytes, text_content, status,
+                    doc_type, parent_id, thread_id,
+                    doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
+                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+                ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
+                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?)
+            `);
+
+            const pdfBatchBuffer = [];
+            const flushPdfBatch = db.transaction((ops) => {
+                for (const op of ops) op();
+            });
+
+            // Process PDFs in batches — pdfdetach -list is fast but we don't want to
+            // spam thousands of subprocess calls without flushing DB writes
+            for (let pi = 0; pi < uniquePdfs.length; pi++) {
+                const pdf = uniquePdfs[pi];
+                const pdfPath = path.join(UPLOADS_DIR, pdf.filename);
+
+                if (!fs.existsSync(pdfPath)) continue;
+
+                try {
+                    // Step 1: Detect — fast catalog read, returns [] for normal PDFs
+                    const embeddedNames = await detectPdfEmbeddedFiles(pdfPath);
+                    pdfsScanned++;
+
+                    if (embeddedNames.length === 0) continue;
+
+                    portfoliosFound++;
+
+                    // Verbose logging for first 5 portfolios
+                    if (portfoliosFound <= 5) {
+                        console.log(`  ✦ Phase 1.7 portfolio [${portfoliosFound}]: "${pdf.original_name}" — ${embeddedNames.length} embedded files`);
+                        console.log(`    Files: ${embeddedNames.slice(0, 5).join(', ')}${embeddedNames.length > 5 ? ` ... and ${embeddedNames.length - 5} more` : ''}`);
+                    }
+
+                    // Step 2: Extract all embedded files to temp dir
+                    const { tmpDir, files } = await extractPdfEmbeddedFiles(pdfPath);
+
+                    // Get thread_id from parent chain
+                    const parentThread = db.prepare(
+                        "SELECT thread_id FROM documents WHERE id = ?"
+                    ).get(pdf.parent_id);
+                    const threadId = parentThread?.thread_id || null;
+
+                    let childIdx = 0;
+
+                    for (const file of files) {
+                        const ext = path.extname(file.name).toLowerCase();
+
+                        // Skip images/media/executables
+                        if (CONTAINER_SKIP_EXTS.has(ext)) {
+                            pdfFilesSkipped++;
+                            continue;
+                        }
+
+                        try {
+                            const fileBuffer = await fsp.readFile(file.path);
+                            const contentHash = crypto.createHash('md5').update(fileBuffer).digest('hex');
+                            const isDuplicate = seenHashes.has(contentHash) ? 1 : 0;
+
+                            const fileId = uuidv4();
+                            const fileExt = ext || '.bin';
+                            let diskFilename;
+
+                            if (!isDuplicate) {
+                                diskFilename = `${investigation_id}/${fileId}${fileExt}`;
+                                seenHashes.set(contentHash, diskFilename);
+                                await fsp.writeFile(path.join(UPLOADS_DIR, diskFilename), fileBuffer);
+                            } else {
+                                diskFilename = seenHashes.get(contentHash);
+                                pdfFilesDupes++;
+                            }
+
+                            // Track by extension
+                            const extKey = ext || '.unknown';
+                            pdfAttsByExt[extKey] = (pdfAttsByExt[extKey] || 0) + 1;
+
+                            childIdx++;
+                            const docIdentifier = pdf.doc_identifier
+                                ? `${pdf.doc_identifier}_${String(childIdx).padStart(3, '0')}`
+                                : null;
+
+                            const mime = containerMimeFromExt(ext);
+
+                            pdfBatchBuffer.push(() => {
+                                insertPdfChild.run(
+                                    fileId, diskFilename, file.name,
+                                    mime, fileBuffer.length,
+                                    pdf.id, threadId,
+                                    null, null, null, null, null, null,
+                                    contentHash, isDuplicate, investigation_id,
+                                    pdf.custodian || custodian || null,
+                                    docIdentifier
+                                );
+                            });
+
+                            pdfFilesInserted++;
+                            totalAttachments++;
+                        } catch (err) {
+                            pdfErrors++;
+                            if (pdfErrors <= 20) {
+                                errorLog.push({ phase: 'pdf_portfolio_extraction', pdf: pdf.original_name, file: file.name, error: err.message });
+                            }
+                        }
+                    }
+
+                    // Clean up temp dir
+                    await cleanupTmpDir(tmpDir);
+                } catch (err) {
+                    pdfErrors++;
+                    if (pdfErrors <= 20) {
+                        console.warn(`  ✦ Phase 1.7 error: ${pdf.original_name} — ${err.message}`);
+                        errorLog.push({ phase: 'pdf_portfolio_extraction', docId: pdf.id, filename: pdf.original_name, error: err.message });
+                    }
+                }
+
+                // Flush in batches
+                if (pdfBatchBuffer.length >= DB_BATCH_SIZE) {
+                    try {
+                        flushPdfBatch(pdfBatchBuffer);
+                        pdfBatchBuffer.length = 0;
+                    } catch (err) {
+                        console.error(`✦ Phase 1.7 FLUSH ERROR: ${err.message}`);
+                        pdfBatchBuffer.length = 0;
+                    }
+                }
+
+                // Progress logging every 1000 PDFs scanned (since most won't be portfolios)
+                if ((pi + 1) % 1000 === 0 || pi === uniquePdfs.length - 1) {
+                    updateProgress.run(totalEmails, totalAttachments, 'pdf_portfolio_extraction', jobId);
+                    console.log(`✦ Phase 1.7: scanned ${pdfsScanned}/${uniquePdfs.length} PDFs — ${portfoliosFound} portfolios found, ${pdfFilesInserted} files extracted (${pdfFilesDupes} dupes, ${pdfErrors} errors)`);
+                }
+            }
+
+            // Final flush
+            if (pdfBatchBuffer.length > 0) {
+                try {
+                    flushPdfBatch(pdfBatchBuffer);
+                    pdfBatchBuffer.length = 0;
+                } catch (err) {
+                    console.error(`✦ Phase 1.7 final FLUSH ERROR: ${err.message}`);
+                }
+            }
+
+            const pdfElapsed = ((Date.now() - pdfPhaseStart) / 1000).toFixed(1);
+            console.log(`✦ Phase 1.7 complete: ${pdfsScanned} PDFs scanned, ${portfoliosFound} portfolios → ${pdfFilesInserted} files extracted (${pdfFilesDupes} dupes, ${pdfFilesSkipped} skipped, ${pdfErrors} errors) in ${pdfElapsed}s`);
+
+            // Log per-extension breakdown
+            if (Object.keys(pdfAttsByExt).length > 0) {
+                const sorted = Object.entries(pdfAttsByExt).sort((a, b) => b[1] - a[1]);
+                console.log(`✦ Phase 1.7 extracted file types:`);
+                for (const [ext, count] of sorted.slice(0, 20)) {
+                    console.log(`    ${ext}: ${count}`);
+                }
+            }
+        }
+
+        db.prepare("UPDATE import_jobs SET phase = 'pdf_portfolio_extraction_done' WHERE id = ?").run(jobId);
+
+        // ═══════════════════════════════════════════
+        // Phase 1.8: Extract TNEF (winmail.dat) attachments
+        // Outlook's Transport Neutral Encapsulation Format wraps attachments
+        // in a binary blob. Small impact (~5 docs) but easy to handle.
+        // ═══════════════════════════════════════════
+        console.log('✦ PST Import Phase 1.8: Extracting TNEF/winmail.dat attachments...');
+        db.prepare("UPDATE import_jobs SET phase = 'tnef_extraction' WHERE id = ?").run(jobId);
+
+        {
+            const tnefPhaseStart = Date.now();
+            let tnefProcessed = 0;
+            let tnefFilesInserted = 0;
+            let tnefFilesDupes = 0;
+            let tnefErrors = 0;
+            const tnefAttsByExt = {};
+
+            // Find TNEF/winmail.dat attachments
+            const tnefDocs = db.prepare(`
+                SELECT id, filename, original_name, doc_identifier, parent_id, custodian, content_hash
+                FROM documents
+                WHERE investigation_id = ? AND doc_type = 'attachment' AND is_duplicate = 0
+                  AND (LOWER(original_name) LIKE '%winmail%'
+                       OR LOWER(original_name) = 'noname.dat'
+                       OR mime_type = 'application/ms-tnef'
+                       OR mime_type = 'application/vnd.ms-tnef')
+                ORDER BY original_name
+            `).all(investigation_id);
+
+            console.log(`✦ Phase 1.8: found ${tnefDocs.length} TNEF attachments`);
+
+            const insertTnefChild = db.prepare(`
+                INSERT INTO documents (
+                    id, filename, original_name, mime_type, size_bytes, text_content, status,
+                    doc_type, parent_id, thread_id,
+                    doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
+                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+                ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
+                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?)
+            `);
+
+            const tnefBatchBuffer = [];
+            const flushTnefBatch = db.transaction((ops) => {
+                for (const op of ops) op();
+            });
+
+            for (const tnefDoc of tnefDocs) {
+                const tnefPath = path.join(UPLOADS_DIR, tnefDoc.filename);
+
+                if (!fs.existsSync(tnefPath)) {
+                    if (tnefProcessed < 5) console.log(`  ✦ Phase 1.8: TNEF file missing: ${tnefDoc.original_name}`);
+                    continue;
+                }
+
+                try {
+                    const { tmpDir, files } = await extractTnefContents(tnefPath);
+
+                    if (files.length > 0 && tnefProcessed < 5) {
+                        console.log(`  ✦ Phase 1.8 [${tnefProcessed + 1}]: "${tnefDoc.original_name}" — ${files.length} files inside [${files.map(f => f.name).join(', ')}]`);
+                    }
+
+                    // Get thread_id from parent chain
+                    const parentThread = db.prepare(
+                        "SELECT thread_id FROM documents WHERE id = ?"
+                    ).get(tnefDoc.parent_id);
+                    const threadId = parentThread?.thread_id || null;
+
+                    let childIdx = 0;
+
+                    for (const file of files) {
+                        const ext = path.extname(file.name).toLowerCase();
+                        if (CONTAINER_SKIP_EXTS.has(ext)) continue;
+
+                        try {
+                            const fileBuffer = await fsp.readFile(file.path);
+                            const contentHash = crypto.createHash('md5').update(fileBuffer).digest('hex');
+                            const isDuplicate = seenHashes.has(contentHash) ? 1 : 0;
+
+                            const fileId = uuidv4();
+                            const fileExt = ext || '.bin';
+                            let diskFilename;
+
+                            if (!isDuplicate) {
+                                diskFilename = `${investigation_id}/${fileId}${fileExt}`;
+                                seenHashes.set(contentHash, diskFilename);
+                                await fsp.writeFile(path.join(UPLOADS_DIR, diskFilename), fileBuffer);
+                            } else {
+                                diskFilename = seenHashes.get(contentHash);
+                                tnefFilesDupes++;
+                            }
+
+                            const extKey = ext || '.unknown';
+                            tnefAttsByExt[extKey] = (tnefAttsByExt[extKey] || 0) + 1;
+
+                            childIdx++;
+                            const docIdentifier = tnefDoc.doc_identifier
+                                ? `${tnefDoc.doc_identifier}_${String(childIdx).padStart(3, '0')}`
+                                : null;
+
+                            const mime = containerMimeFromExt(ext);
+
+                            tnefBatchBuffer.push(() => {
+                                insertTnefChild.run(
+                                    fileId, diskFilename, file.name,
+                                    mime, fileBuffer.length,
+                                    tnefDoc.id, threadId,
+                                    null, null, null, null, null, null,
+                                    contentHash, isDuplicate, investigation_id,
+                                    tnefDoc.custodian || custodian || null,
+                                    docIdentifier
+                                );
+                            });
+
+                            tnefFilesInserted++;
+                            totalAttachments++;
+                        } catch (err) {
+                            tnefErrors++;
+                            errorLog.push({ phase: 'tnef_extraction', tnef: tnefDoc.original_name, file: file.name, error: err.message });
+                        }
+                    }
+
+                    await cleanupTmpDir(tmpDir);
+                    tnefProcessed++;
+                } catch (err) {
+                    tnefErrors++;
+                    if (tnefErrors <= 10) {
+                        console.warn(`  ✦ Phase 1.8 error: ${tnefDoc.original_name} — ${err.message}`);
+                        errorLog.push({ phase: 'tnef_extraction', docId: tnefDoc.id, filename: tnefDoc.original_name, error: err.message });
+                    }
+                }
+            }
+
+            // Final flush
+            if (tnefBatchBuffer.length > 0) {
+                try {
+                    flushTnefBatch(tnefBatchBuffer);
+                    tnefBatchBuffer.length = 0;
+                } catch (err) {
+                    console.error(`✦ Phase 1.8 final FLUSH ERROR: ${err.message}`);
+                }
+            }
+
+            const tnefElapsed = ((Date.now() - tnefPhaseStart) / 1000).toFixed(1);
+            console.log(`✦ Phase 1.8 complete: ${tnefProcessed} TNEF containers processed, ${tnefFilesInserted} files extracted (${tnefFilesDupes} dupes, ${tnefErrors} errors) in ${tnefElapsed}s`);
+
+            if (Object.keys(tnefAttsByExt).length > 0) {
+                const sorted = Object.entries(tnefAttsByExt).sort((a, b) => b[1] - a[1]);
+                console.log(`✦ Phase 1.8 extracted file types:`);
+                for (const [ext, count] of sorted) {
+                    console.log(`    ${ext}: ${count}`);
+                }
+            }
+        }
+
+        db.prepare("UPDATE import_jobs SET phase = 'tnef_extraction_done' WHERE id = ?").run(jobId);
+
+        // ═══════════════════════════════════════════
+        // Phase 1.9: Recursive container pass
+        // Phases 1.5-1.8 handle one level of extraction. But containers can
+        // be nested: ZIP inside ZIP, PDF portfolio inside ZIP, MSG inside ZIP.
+        // Relativity recurses. We loop until no new containers are found,
+        // with a hard depth limit of 5 passes to prevent ZIP bombs.
+        // ═══════════════════════════════════════════
+        console.log('✦ PST Import Phase 1.9: Recursive container pass...');
+        db.prepare("UPDATE import_jobs SET phase = 'recursive_extraction' WHERE id = ?").run(jobId);
+
+        {
+            const recurseStart = Date.now();
+            const processedContainerIds = new Set();
+            // Mark all containers already processed in earlier phases
+            // (ZIPs from 1.6, PDFs from 1.7, TNEFs from 1.8, MSGs from 1.5)
+            const alreadyProcessed = db.prepare(`
+                SELECT DISTINCT parent_id FROM documents
+                WHERE parent_id IS NOT NULL AND investigation_id = ?
+            `).all(investigation_id);
+            for (const row of alreadyProcessed) {
+                processedContainerIds.add(row.parent_id);
+            }
+
+            const insertRecurseChild = db.prepare(`
+                INSERT INTO documents (
+                    id, filename, original_name, mime_type, size_bytes, text_content, status,
+                    doc_type, parent_id, thread_id,
+                    doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
+                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+                ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
+                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?)
+            `);
+
+            const recurseBatchBuffer = [];
+            const flushRecurseBatch = db.transaction((ops) => {
+                for (const op of ops) op();
+            });
+
+            let totalRecurseInserted = 0;
+            let totalRecurseDupes = 0;
+            let totalRecurseErrors = 0;
+            let passNumber = 0;
+            const MAX_RECURSE_PASSES = 5;
+
+            while (passNumber < MAX_RECURSE_PASSES) {
+                passNumber++;
+
+                // Find newly-inserted containers that haven't been processed yet
+                const newContainers = db.prepare(`
+                    SELECT id, filename, original_name, doc_identifier, parent_id, custodian,
+                           content_hash, mime_type
+                    FROM documents
+                    WHERE investigation_id = ? AND doc_type = 'attachment' AND is_duplicate = 0
+                      AND (LOWER(original_name) LIKE '%.zip' OR mime_type = 'application/zip'
+                           OR LOWER(original_name) LIKE '%.msg' OR mime_type = 'application/vnd.ms-outlook'
+                           OR LOWER(original_name) LIKE '%.eml' OR mime_type = 'message/rfc822'
+                           OR LOWER(original_name) LIKE '%winmail%' OR LOWER(original_name) = 'noname.dat'
+                           OR mime_type = 'application/ms-tnef' OR mime_type = 'application/vnd.ms-tnef')
+                `).all(investigation_id).filter(doc => !processedContainerIds.has(doc.id));
+
+                if (newContainers.length === 0) {
+                    console.log(`✦ Phase 1.9 pass ${passNumber}: no new containers found — done`);
+                    break;
+                }
+
+                console.log(`✦ Phase 1.9 pass ${passNumber}: found ${newContainers.length} new containers to process`);
+                let passInserted = 0;
+
+                for (const container of newContainers) {
+                    processedContainerIds.add(container.id);
+                    const containerPath = path.join(UPLOADS_DIR, container.filename);
+                    if (!fs.existsSync(containerPath)) continue;
+
+                    const on = (container.original_name || '').toLowerCase();
+                    const ext = path.extname(on);
+
+                    // Get thread_id from parent chain
+                    const parentThread = db.prepare(
+                        "SELECT thread_id FROM documents WHERE id = ?"
+                    ).get(container.parent_id);
+                    const threadId = parentThread?.thread_id || null;
+
+                    let extractedFiles = [];
+                    let tmpDir = null;
+
+                    try {
+                        if (ext === '.zip' || container.mime_type === 'application/zip') {
+                            // ZIP container
+                            const entries = await listZipContents(containerPath);
+                            for (const entry of entries) {
+                                const entryExt = path.extname(entry.path).toLowerCase();
+                                if (CONTAINER_SKIP_EXTS.has(entryExt)) continue;
+                                try {
+                                    const buf = await extractFileFromZip(containerPath, entry.path);
+                                    extractedFiles.push({ name: path.basename(entry.path), buffer: buf });
+                                } catch (_) { /* skip individual file errors */ }
+                            }
+                        } else if (ext === '.msg' || container.mime_type === 'application/vnd.ms-outlook') {
+                            // MSG container — use parseMsg
+                            try {
+                                const msgBuffer = fs.readFileSync(containerPath);
+                                const result = parseMsg(msgBuffer);
+                                for (const att of result.attachments) {
+                                    extractedFiles.push({ name: att.filename, buffer: att.content });
+                                }
+                                // Update container text_content
+                                if (result.metadata.textBody) {
+                                    const bodyText = `[Embedded email] From: ${result.metadata.from || 'unknown'}\nSubject: ${result.metadata.subject || ''}\n\n${result.metadata.textBody}`;
+                                    db.prepare("UPDATE documents SET text_content = ?, text_content_size = ? WHERE id = ?")
+                                        .run(bodyText, bodyText.length, container.id);
+                                }
+                            } catch (_) { /* skip parse errors */ }
+                        } else if (ext === '.eml' || container.mime_type === 'message/rfc822') {
+                            // EML container
+                            try {
+                                const emlBuffer = fs.readFileSync(containerPath);
+                                const eml = await parseEml(emlBuffer);
+                                for (const att of (eml.attachments || [])) {
+                                    extractedFiles.push({ name: att.filename, buffer: att.content });
+                                }
+                            } catch (_) { /* skip parse errors */ }
+                        } else if (on.includes('winmail') || on === 'noname.dat' ||
+                                   container.mime_type === 'application/ms-tnef' || container.mime_type === 'application/vnd.ms-tnef') {
+                            // TNEF container
+                            try {
+                                const result = await extractTnefContents(containerPath);
+                                tmpDir = result.tmpDir;
+                                for (const file of result.files) {
+                                    const buf = await fsp.readFile(file.path);
+                                    extractedFiles.push({ name: file.name, buffer: buf });
+                                }
+                            } catch (_) { /* skip errors */ }
+                        }
+
+                        // Insert extracted files
+                        let childIdx = 0;
+                        for (const file of extractedFiles) {
+                            const fileExt = path.extname(file.name).toLowerCase();
+                            if (CONTAINER_SKIP_EXTS.has(fileExt)) continue;
+
+                            const contentHash = crypto.createHash('md5').update(file.buffer).digest('hex');
+                            const isDuplicate = seenHashes.has(contentHash) ? 1 : 0;
+
+                            const fileId = uuidv4();
+                            let diskFilename;
+
+                            if (!isDuplicate) {
+                                diskFilename = `${investigation_id}/${fileId}${fileExt || '.bin'}`;
+                                seenHashes.set(contentHash, diskFilename);
+                                await fsp.writeFile(path.join(UPLOADS_DIR, diskFilename), file.buffer);
+                            } else {
+                                diskFilename = seenHashes.get(contentHash);
+                                totalRecurseDupes++;
+                            }
+
+                            childIdx++;
+                            const docIdentifier = container.doc_identifier
+                                ? `${container.doc_identifier}_${String(childIdx).padStart(3, '0')}`
+                                : null;
+
+                            const mime = containerMimeFromExt(fileExt);
+
+                            recurseBatchBuffer.push(() => {
+                                insertRecurseChild.run(
+                                    fileId, diskFilename, file.name,
+                                    mime, file.buffer.length,
+                                    container.id, threadId,
+                                    null, null, null, null, null, null,
+                                    contentHash, isDuplicate, investigation_id,
+                                    container.custodian || custodian || null,
+                                    docIdentifier
+                                );
+                            });
+
+                            passInserted++;
+                            totalRecurseInserted++;
+                            totalAttachments++;
+                        }
+
+                        if (tmpDir) await cleanupTmpDir(tmpDir);
+                    } catch (err) {
+                        totalRecurseErrors++;
+                        if (totalRecurseErrors <= 20) {
+                            console.warn(`  ✦ Phase 1.9 error: ${container.original_name} — ${err.message}`);
+                            errorLog.push({ phase: 'recursive_extraction', docId: container.id, filename: container.original_name, error: err.message });
+                        }
+                        if (tmpDir) await cleanupTmpDir(tmpDir);
+                    }
+                }
+
+                // Flush after each pass
+                if (recurseBatchBuffer.length > 0) {
+                    try {
+                        flushRecurseBatch(recurseBatchBuffer);
+                        recurseBatchBuffer.length = 0;
+                    } catch (err) {
+                        console.error(`✦ Phase 1.9 FLUSH ERROR: ${err.message}`);
+                        recurseBatchBuffer.length = 0;
+                    }
+                }
+
+                console.log(`✦ Phase 1.9 pass ${passNumber}: inserted ${passInserted} files from ${newContainers.length} containers`);
+
+                // Also check newly extracted PDFs for portfolios in the recursive pass
+                const newPdfs = db.prepare(`
+                    SELECT id, filename, original_name, doc_identifier, parent_id, custodian, content_hash
+                    FROM documents
+                    WHERE investigation_id = ? AND doc_type = 'attachment' AND is_duplicate = 0
+                      AND (LOWER(original_name) LIKE '%.pdf' OR mime_type = 'application/pdf')
+                `).all(investigation_id).filter(doc => !processedContainerIds.has(doc.id));
+
+                let portfolioPassInserted = 0;
+                for (const pdf of newPdfs) {
+                    processedContainerIds.add(pdf.id);
+                    const pdfPath = path.join(UPLOADS_DIR, pdf.filename);
+                    if (!fs.existsSync(pdfPath)) continue;
+
+                    try {
+                        const embeddedNames = await detectPdfEmbeddedFiles(pdfPath);
+                        if (embeddedNames.length === 0) continue;
+
+                        const { tmpDir: pdfTmpDir, files } = await extractPdfEmbeddedFiles(pdfPath);
+                        const parentThread = db.prepare("SELECT thread_id FROM documents WHERE id = ?").get(pdf.parent_id);
+                        const pdfThreadId = parentThread?.thread_id || null;
+
+                        let pdfChildIdx = 0;
+                        for (const file of files) {
+                            const fileExt = path.extname(file.name).toLowerCase();
+                            if (CONTAINER_SKIP_EXTS.has(fileExt)) continue;
+
+                            const fileBuffer = await fsp.readFile(file.path);
+                            const contentHash = crypto.createHash('md5').update(fileBuffer).digest('hex');
+                            const isDuplicate = seenHashes.has(contentHash) ? 1 : 0;
+
+                            const fileId = uuidv4();
+                            let diskFilename;
+
+                            if (!isDuplicate) {
+                                diskFilename = `${investigation_id}/${fileId}${fileExt || '.bin'}`;
+                                seenHashes.set(contentHash, diskFilename);
+                                await fsp.writeFile(path.join(UPLOADS_DIR, diskFilename), fileBuffer);
+                            } else {
+                                diskFilename = seenHashes.get(contentHash);
+                                totalRecurseDupes++;
+                            }
+
+                            pdfChildIdx++;
+                            const docIdentifier = pdf.doc_identifier
+                                ? `${pdf.doc_identifier}_${String(pdfChildIdx).padStart(3, '0')}`
+                                : null;
+
+                            const mime = containerMimeFromExt(fileExt);
+
+                            recurseBatchBuffer.push(() => {
+                                insertRecurseChild.run(
+                                    fileId, diskFilename, file.name,
+                                    mime, fileBuffer.length,
+                                    pdf.id, pdfThreadId,
+                                    null, null, null, null, null, null,
+                                    contentHash, isDuplicate, investigation_id,
+                                    pdf.custodian || custodian || null,
+                                    docIdentifier
+                                );
+                            });
+
+                            portfolioPassInserted++;
+                            totalRecurseInserted++;
+                            totalAttachments++;
+                        }
+
+                        await cleanupTmpDir(pdfTmpDir);
+                    } catch (_) { /* skip errors */ }
+                }
+
+                if (recurseBatchBuffer.length > 0) {
+                    try {
+                        flushRecurseBatch(recurseBatchBuffer);
+                        recurseBatchBuffer.length = 0;
+                    } catch (err) {
+                        console.error(`✦ Phase 1.9 PDF portfolio FLUSH ERROR: ${err.message}`);
+                        recurseBatchBuffer.length = 0;
+                    }
+                }
+
+                if (portfolioPassInserted > 0) {
+                    console.log(`✦ Phase 1.9 pass ${passNumber}: also extracted ${portfolioPassInserted} files from nested PDF portfolios`);
+                }
+
+                if (passInserted === 0 && portfolioPassInserted === 0) {
+                    console.log(`✦ Phase 1.9: no new files extracted in pass ${passNumber} — stopping`);
+                    break;
+                }
+            }
+
+            if (passNumber >= MAX_RECURSE_PASSES) {
+                console.warn(`✦ Phase 1.9: hit max recursion depth (${MAX_RECURSE_PASSES} passes) — some nested containers may remain unprocessed`);
+            }
+
+            const recurseElapsed = ((Date.now() - recurseStart) / 1000).toFixed(1);
+            console.log(`✦ Phase 1.9 complete: ${passNumber} passes, ${totalRecurseInserted} files extracted (${totalRecurseDupes} dupes, ${totalRecurseErrors} errors) in ${recurseElapsed}s`);
+        }
+
+        db.prepare("UPDATE import_jobs SET phase = 'container_extraction_done' WHERE id = ?").run(jobId);
+
+        // WAL checkpoint after all container extraction phases
+        walCheckpoint(db);
 
         } // end if (!extractionOnly)
 
