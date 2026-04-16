@@ -78,7 +78,7 @@ const { db, readDb } = getInvestigationDb(investigationId);
 // readDb = read-only connection (WAL, busy_timeout=1000, mmap=256MB)
 ```
 
-Both connections register a custom `file_ext()` SQL function for extension extraction.
+Both connections register a custom `file_ext()` SQL function for extension extraction. Documents also have an indexed `file_extension` column (without dot, e.g., `pdf`, `docx`) populated at ingestion from `original_name` → MIME type → disk filename fallback chain. Use this column for filtering and grouping instead of `file_ext()` for better performance.
 
 New databases get the full schema applied via `initSchema()`. Existing databases run idempotent migrations via `runMigrations()`.
 

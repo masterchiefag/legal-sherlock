@@ -17,6 +17,7 @@ import { listZipContents, extractFileFromZip, detectPdfEmbeddedFiles, extractPdf
 import { disableFtsTriggers, enableFtsTriggers, rebuildFtsIndex, dropBulkIndexes, recreateBulkIndexes, refreshInvestigationCounts, walCheckpoint, backfillDuplicateText, replicateChildrenToDuplicates } from '../lib/worker-helpers.js';
 import { resolveThreadId, backfillThread, updateCacheOnly, resolveThreadIdFromCache, initCache } from '../lib/threading-cached.js';
 import { getSetting } from '../lib/settings.js';
+import { resolveFileExtension } from '../lib/file-extension.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -91,8 +92,8 @@ const insertEmail = db.prepare(`
         email_bcc, email_headers_raw, email_received_chain,
         email_originating_ip, email_auth_results, email_server_info, email_delivery_date,
         investigation_id, custodian, folder_path, text_content_size, doc_identifier, recipient_count,
-        dedup_md5, has_html_body, inline_images_meta
-    ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        dedup_md5, has_html_body, inline_images_meta, file_extension
+    ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const insertAttachment = db.prepare(`
@@ -100,10 +101,10 @@ const insertAttachment = db.prepare(`
         id, filename, original_name, mime_type, size_bytes, text_content, status,
         doc_type, parent_id, thread_id,
         doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
-        content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+        content_hash, is_duplicate, investigation_id, custodian, doc_identifier, file_extension
     ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
         ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?)
+        ?, ?, ?, ?, ?, ?)
 `);
 
 // MAPI non-email items: calendar / task / note / contact.
@@ -724,10 +725,10 @@ async function main() {
                 id, filename, original_name, mime_type, size_bytes, text_content, status,
                 doc_type, parent_id, thread_id,
                 doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
-                content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+                content_hash, is_duplicate, investigation_id, custodian, doc_identifier, file_extension
             ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
                 ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?)
+                ?, ?, ?, ?, ?, ?)
         `);
 
         const updateMsgText = db.prepare(
@@ -830,7 +831,7 @@ async function main() {
                             msgDoc.id, threadId,
                             null, null, null, null, null, null,
                             attHash, isDuplicate, investigation_id, msgDoc.custodian || custodian || null,
-                            docIdentifier
+                            docIdentifier, resolveFileExtension(att.filename, att.contentType, finalFilename)
                         );
                     });
 
@@ -934,10 +935,10 @@ async function main() {
                     id, filename, original_name, mime_type, size_bytes, text_content, status,
                     doc_type, parent_id, thread_id,
                     doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
-                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier, file_extension
                 ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
                     ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?)
             `);
 
             const zipBatchBuffer = [];
@@ -1027,7 +1028,7 @@ async function main() {
                                     null, null, null, null, null, null,
                                     contentHash, isDuplicate, investigation_id,
                                     zip.custodian || custodian || null,
-                                    docIdentifier
+                                    docIdentifier, resolveFileExtension(originalName, mime, diskFilename)
                                 );
                             });
 
@@ -1114,10 +1115,10 @@ async function main() {
                     id, filename, original_name, mime_type, size_bytes, text_content, status,
                     doc_type, parent_id, thread_id,
                     doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
-                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier, file_extension
                 ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
                     ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?)
             `);
 
             const rarBatchBuffer = [];
@@ -1170,15 +1171,16 @@ async function main() {
                                 ? `${rarDoc.doc_identifier}_${String(childIdx).padStart(3, '0')}`
                                 : null;
 
+                            const rarMime = containerMimeFromExt(ext);
                             rarBatchBuffer.push(() => {
                                 insertRarChild.run(
                                     fileId, diskFilename, file.name,
-                                    containerMimeFromExt(ext), fileBuffer.length,
+                                    rarMime, fileBuffer.length,
                                     rarDoc.id, threadId,
                                     null, null, null, null, null, null,
                                     contentHash, isDuplicate, investigation_id,
                                     rarDoc.custodian || custodian || null,
-                                    docIdentifier
+                                    docIdentifier, resolveFileExtension(file.name, rarMime, diskFilename)
                                 );
                             });
 
@@ -1255,10 +1257,10 @@ async function main() {
                     id, filename, original_name, mime_type, size_bytes, text_content, status,
                     doc_type, parent_id, thread_id,
                     doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
-                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier, file_extension
                 ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
                     ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?)
             `);
 
             const pdfBatchBuffer = [];
@@ -1346,7 +1348,7 @@ async function main() {
                                     null, null, null, null, null, null,
                                     contentHash, isDuplicate, investigation_id,
                                     pdf.custodian || custodian || null,
-                                    docIdentifier
+                                    docIdentifier, resolveFileExtension(file.name, mime, diskFilename)
                                 );
                             });
 
@@ -1448,10 +1450,10 @@ async function main() {
                     id, filename, original_name, mime_type, size_bytes, text_content, status,
                     doc_type, parent_id, thread_id,
                     doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
-                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier, file_extension
                 ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
                     ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?)
             `);
 
             const tnefBatchBuffer = [];
@@ -1522,7 +1524,7 @@ async function main() {
                                     null, null, null, null, null, null,
                                     contentHash, isDuplicate, investigation_id,
                                     tnefDoc.custodian || custodian || null,
-                                    docIdentifier
+                                    docIdentifier, resolveFileExtension(file.name, mime, diskFilename)
                                 );
                             });
 
@@ -1597,10 +1599,10 @@ async function main() {
                     id, filename, original_name, mime_type, size_bytes, text_content, status,
                     doc_type, parent_id, thread_id,
                     doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
-                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier, file_extension
                 ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
                     ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?)
             `);
 
             const recurseBatchBuffer = [];
@@ -1751,7 +1753,7 @@ async function main() {
                                     null, null, null, null, null, null,
                                     contentHash, isDuplicate, investigation_id,
                                     container.custodian || custodian || null,
-                                    docIdentifier
+                                    docIdentifier, resolveFileExtension(file.name, mime, diskFilename)
                                 );
                             });
 
@@ -1842,7 +1844,7 @@ async function main() {
                                     null, null, null, null, null, null,
                                     contentHash, isDuplicate, investigation_id,
                                     pdf.custodian || custodian || null,
-                                    docIdentifier
+                                    docIdentifier, resolveFileExtension(file.name, mime, diskFilename)
                                 );
                             });
 
@@ -2335,7 +2337,7 @@ async function processEmail(eml) {
             eml._folderPath || null, textBody.length || 0,
             emailDocId, recipientCount,
             eml.dedupMd5 || null,
-            hasHtmlBody, inlineMeta
+            hasHtmlBody, inlineMeta, 'eml'
         );
     });
 
@@ -2418,6 +2420,7 @@ async function processEmail(eml) {
             ? `[File too large: ${(att.size / 1e6).toFixed(0)}MB — raw file not saved to conserve disk space]`
             : null;
         const attDocIdentifier = attIdentifier(emailDocId, attIdx);
+        const attFileExt = resolveFileExtension(att.filename, att.contentType, dbFilename);
         batchBuffer.push(() => {
             insertAttachment.run(
                 attId, dbFilename, att.filename,
@@ -2425,7 +2428,7 @@ async function processEmail(eml) {
                 emailId, threadId,
                 oversizeNote, null, null, null, null, null,
                 attHash, isDuplicate, investigation_id, custodian || null,
-                attDocIdentifier
+                attDocIdentifier, attFileExt
             );
         });
 

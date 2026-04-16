@@ -13,6 +13,7 @@ import Database from 'better-sqlite3';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import { MIME_TO_EXT } from './file-extension.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const DATA_DIR = path.join(__dirname, '..', '..', 'data');
@@ -290,7 +291,9 @@ function initSchema(db) {
             ocr_time_ms INTEGER,
             -- HTML email rendering
             has_html_body INTEGER DEFAULT 0,
-            inline_images_meta TEXT
+            inline_images_meta TEXT,
+            -- Computed file extension (without dot, e.g. 'pdf', 'docx')
+            file_extension TEXT DEFAULT ''
         );
 
         CREATE TABLE IF NOT EXISTS document_tags (
@@ -444,6 +447,7 @@ function createIndexes(db) {
         CREATE INDEX IF NOT EXISTS idx_review_batches_investigation ON review_batches(investigation_id);
         CREATE INDEX IF NOT EXISTS idx_review_batches_assignee ON review_batches(assignee_id);
         CREATE INDEX IF NOT EXISTS idx_review_batch_documents_doc ON review_batch_documents(document_id);
+        CREATE INDEX IF NOT EXISTS idx_documents_file_extension ON documents(file_extension);
     `);
 }
 
@@ -551,6 +555,33 @@ function runMigrations(db) {
     }
     if (!columnExists(db, 'documents', 'inline_images_meta')) {
         db.exec(`ALTER TABLE documents ADD COLUMN inline_images_meta TEXT`);
+    }
+
+    // Computed file_extension column
+    if (!columnExists(db, 'documents', 'file_extension')) {
+        db.exec(`ALTER TABLE documents ADD COLUMN file_extension TEXT DEFAULT ''`);
+        // Backfill emails and chats first (email original_name contains subject after " — ", file_ext() picks up noise)
+        db.exec(`UPDATE documents SET file_extension = 'eml' WHERE doc_type = 'email'`);
+        db.exec(`UPDATE documents SET file_extension = 'txt' WHERE doc_type = 'chat'`);
+        // Backfill non-emails: original_name ext → MIME type → disk filename ext
+        const mimeCases = Object.entries(MIME_TO_EXT)
+            .map(([mime, ext]) => `WHEN mime_type = '${mime}' THEN '${ext}'`)
+            .join('\n                ');
+        db.exec(`
+            UPDATE documents SET file_extension =
+                CASE
+                    WHEN file_ext(original_name) != 'unknown'
+                        THEN LOWER(REPLACE(file_ext(original_name), '.', ''))
+                    ${mimeCases}
+                    WHEN filename IS NOT NULL AND file_ext(filename) != 'unknown'
+                        THEN LOWER(REPLACE(file_ext(filename), '.', ''))
+                    ELSE ''
+                END
+            WHERE doc_type NOT IN ('email', 'chat')
+        `);
+        const backfilled = db.prepare(`SELECT COUNT(*) as c FROM documents WHERE file_extension != ''`).get().c;
+        const total = db.prepare(`SELECT COUNT(*) as c FROM documents`).get().c;
+        console.log(`[inv-db] backfilled file_extension: ${backfilled}/${total} documents`);
     }
 
     // Ensure FTS exists and is healthy

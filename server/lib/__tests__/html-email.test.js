@@ -200,33 +200,72 @@ describe('HTML sanitization', () => {
     });
 });
 
-// ─── File extension resolution (readpst fallback) ──────────────────────────
+// ─── resolveFileExtension (shared helper) ───────────────────────────────────
 
-function resolveExt(originalName, diskFilename) {
-    const origExt = originalName?.includes('.') ? originalName.split('.').pop().toLowerCase() : '';
-    const diskExt = diskFilename?.includes('.') ? diskFilename.split('.').pop().toLowerCase() : '';
-    return origExt || diskExt || '';
-}
+import { resolveFileExtension, MIME_TO_EXT } from '../file-extension.js';
 
-describe('File extension resolution', () => {
+describe('resolveFileExtension', () => {
     it('uses original_name extension when present', () => {
-        expect(resolveExt('report.pdf', 'abc-123.pdf')).toBe('pdf');
+        expect(resolveFileExtension('report.pdf', 'application/pdf', 'abc-123.pdf')).toBe('pdf');
     });
 
-    it('falls back to disk filename when original_name has no extension', () => {
-        expect(resolveExt('NSDL-Fees Calculator Tool ', 'abc-123.xlsx')).toBe('xlsx');
+    it('uses original_name extension even when MIME disagrees', () => {
+        // Trust the filename over MIME for normal cases
+        expect(resolveFileExtension('data.csv', 'text/plain', 'abc.csv')).toBe('csv');
     });
 
-    it('falls back to disk filename for attachment_NNNN (no extension)', () => {
-        expect(resolveExt('attachment_1776336142593', 'inv-id/doc-id.bin')).toBe('bin');
+    it('falls back to MIME type when original_name has no extension', () => {
+        expect(resolveFileExtension('NSDL-Fees Calculator Tool ', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', 'abc.xlsx')).toBe('xlsx');
     });
 
-    it('handles both missing gracefully', () => {
-        expect(resolveExt('noext', null)).toBe('');
-        expect(resolveExt(null, null)).toBe('');
+    it('falls back to MIME for text/calendar (ICS files)', () => {
+        expect(resolveFileExtension('Meeting Request', 'text/calendar', 'abc.bin')).toBe('ics');
+    });
+
+    it('falls back to MIME for message/rfc822', () => {
+        expect(resolveFileExtension('Forwarded Email', 'message/rfc822', 'abc.bin')).toBe('eml');
+    });
+
+    it('falls back to disk filename when MIME is octet-stream', () => {
+        expect(resolveFileExtension('attachment_1776336142593', 'application/octet-stream', 'inv-id/doc-id.xlsx')).toBe('xlsx');
+    });
+
+    it('returns bin for octet-stream with .bin disk file', () => {
+        expect(resolveFileExtension('attachment_1776336142593', 'application/octet-stream', 'inv-id/doc-id.bin')).toBe('bin');
+    });
+
+    it('handles all null/empty inputs gracefully', () => {
+        expect(resolveFileExtension(null, null, null)).toBe('');
+        expect(resolveFileExtension('', '', '')).toBe('');
+        expect(resolveFileExtension('noext', null, null)).toBe('');
     });
 
     it('handles readpst double-space names (extension survived)', () => {
-        expect(resolveExt('R.S. No. 206  - Industrial N.A. land.docx', 'abc.docx')).toBe('docx');
+        expect(resolveFileExtension('R.S. No. 206  - Industrial N.A. land.docx', null, 'abc.docx')).toBe('docx');
+    });
+
+    it('handles common MIME types correctly', () => {
+        expect(resolveFileExtension(null, 'application/pdf', null)).toBe('pdf');
+        expect(resolveFileExtension(null, 'image/jpeg', null)).toBe('jpg');
+        expect(resolveFileExtension(null, 'image/png', null)).toBe('png');
+        expect(resolveFileExtension(null, 'application/msword', null)).toBe('doc');
+        expect(resolveFileExtension(null, 'application/vnd.openxmlformats-officedocument.wordprocessingml.document', null)).toBe('docx');
+    });
+
+    it('returns empty for unknown MIME with no other signals', () => {
+        expect(resolveFileExtension(null, 'application/octet-stream', null)).toBe('');
+        expect(resolveFileExtension(null, 'application/x-unknown', null)).toBe('');
+    });
+
+    it('rejects non-alphanumeric extensions', () => {
+        // Trailing spaces or special chars shouldn't be treated as extensions
+        expect(resolveFileExtension('file.a b c', null, null)).toBe('');
+    });
+
+    it('MIME_TO_EXT map covers key formats', () => {
+        expect(MIME_TO_EXT['text/calendar']).toBe('ics');
+        expect(MIME_TO_EXT['message/rfc822']).toBe('eml');
+        expect(MIME_TO_EXT['application/zip']).toBe('zip');
+        expect(MIME_TO_EXT['application/vnd.ms-outlook']).toBe('msg');
     });
 });

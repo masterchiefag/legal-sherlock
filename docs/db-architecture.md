@@ -82,7 +82,7 @@ Request → withInvestigationDb middleware → getInvestigationDb(id)
 Both connections are configured with:
 - WAL mode, `busy_timeout = 15000` (write) / `1000` (read)
 - 64MB page cache, 256MB mmap
-- Custom `file_ext()` SQL function
+- Custom `file_ext()` SQL function (legacy — prefer the indexed `file_extension` column for queries)
 
 ### Worker Path (Standalone)
 

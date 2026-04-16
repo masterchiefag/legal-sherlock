@@ -15,6 +15,7 @@ import { resolveThreadId, backfillThread } from '../lib/threading.js';
 import { requireRole, requireInvestigationAccess } from '../middleware/auth.js';
 import { logAudit, ACTIONS } from '../lib/audit.js';
 import { parseQuery, buildSearchFilter } from '../lib/search-filter.js';
+import { resolveFileExtension } from '../lib/file-extension.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const UPLOADS_DIR = path.join(__dirname, '..', '..', 'uploads');
@@ -390,9 +391,9 @@ async function processRegularFile(invDb, file, investigation_id, custodian) {
     const fileDocId = generateDocIdentifier(invDb, investigation_id, custodian, 'file');
 
     invDb.prepare(`
-    INSERT INTO documents (id, filename, original_name, mime_type, size_bytes, status, doc_type, content_hash, is_duplicate, investigation_id, custodian, doc_identifier)
-    VALUES (?, ?, ?, ?, ?, 'processing', 'file', ?, ?, ?, ?, ?)
-  `).run(id, file.filename, file.originalname, file.mimetype, file.size, contentHash, isDuplicate, investigation_id, custodian || null, fileDocId);
+    INSERT INTO documents (id, filename, original_name, mime_type, size_bytes, status, doc_type, content_hash, is_duplicate, investigation_id, custodian, doc_identifier, file_extension)
+    VALUES (?, ?, ?, ?, ?, 'processing', 'file', ?, ?, ?, ?, ?, ?)
+  `).run(id, file.filename, file.originalname, file.mimetype, file.size, contentHash, isDuplicate, investigation_id, custodian || null, fileDocId, resolveFileExtension(file.originalname, file.mimetype, file.filename));
 
     try {
         const text = await extractText(file.path, file.mimetype);
@@ -957,11 +958,11 @@ router.get('/:id/neighbors', (req, res) => {
 // Get XLSX/XLS sheet data for native preview
 router.get('/:id/sheets', async (req, res) => {
     try {
-        const doc = req.invReadDb.prepare('SELECT filename, original_name FROM documents WHERE id = ?').get(req.params.id);
+        const doc = req.invReadDb.prepare('SELECT filename, original_name, file_extension FROM documents WHERE id = ?').get(req.params.id);
         if (!doc) return res.status(404).json({ error: 'Document not found' });
         if (!doc.filename) return res.status(404).json({ error: 'File not available on disk' });
 
-        const ext = doc.original_name?.split('.').pop().toLowerCase();
+        const ext = doc.file_extension || doc.original_name?.split('.').pop().toLowerCase();
         if (!['xls', 'xlsx'].includes(ext)) {
             return res.status(400).json({ error: 'Not a spreadsheet file' });
         }
@@ -994,11 +995,11 @@ router.get('/:id/sheets', async (req, res) => {
 // Get DOCX HTML preview via mammoth
 router.get('/:id/preview', async (req, res) => {
     try {
-        const doc = req.invReadDb.prepare('SELECT filename, original_name FROM documents WHERE id = ?').get(req.params.id);
+        const doc = req.invReadDb.prepare('SELECT filename, original_name, file_extension FROM documents WHERE id = ?').get(req.params.id);
         if (!doc) return res.status(404).json({ error: 'Document not found' });
         if (!doc.filename) return res.status(404).json({ error: 'File not available on disk' });
 
-        const ext = doc.original_name?.split('.').pop().toLowerCase();
+        const ext = doc.file_extension || doc.original_name?.split('.').pop().toLowerCase();
         if (ext !== 'docx') {
             return res.status(400).json({ error: 'Not a DOCX file' });
         }
@@ -1102,7 +1103,7 @@ router.get('/:id', (req, res) => {
 
         // Fetch child attachments
         doc.attachments = req.invReadDb.prepare(`
-      SELECT id, original_name, mime_type, size_bytes, filename
+      SELECT id, original_name, mime_type, size_bytes, filename, file_extension
       FROM documents
       WHERE parent_id = ?
     `).all(req.params.id);
@@ -1115,7 +1116,7 @@ router.get('/:id', (req, res) => {
       `).get(doc.parent_id);
 
             doc.siblings = req.invReadDb.prepare(`
-        SELECT id, original_name, mime_type, size_bytes, filename
+        SELECT id, original_name, mime_type, size_bytes, filename, file_extension
         FROM documents
         WHERE parent_id = ? AND id != ?
       `).all(doc.parent_id, req.params.id);

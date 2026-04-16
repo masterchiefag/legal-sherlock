@@ -321,11 +321,11 @@ function DocumentReview({ addToast, user, activeInvestigationId }) {
     const isNote = doc.doc_type === 'note';
     const isContact = doc.doc_type === 'contact';
     const isMapiNonEmail = isCalendar || isTask || isNote || isContact;
-    // Prefer original_name's extension, fall back to the disk filename's ext
-    // for rows where original_name lacks one (zip-worker extractions, etc).
+    // Prefer the indexed file_extension column when populated; fall back to
+    // original_name's extension, then the disk filename's ext (zip-worker rows).
     const origExt = doc.original_name?.includes('.') ? doc.original_name.split('.').pop().toLowerCase() : '';
     const diskExt = doc.filename?.includes('.') ? doc.filename.split('.').pop().toLowerCase() : '';
-    const ext = origExt || diskExt || '';
+    const ext = doc.file_extension || origExt || diskExt || '';
     const nativeViewerExts = ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'xls', 'xlsx', 'docx'];
     const hasNativeViewer = (nativeViewerExts.includes(ext) && doc.status !== 'processing' && doc.filename) || doc.has_html_body;
 
@@ -528,7 +528,7 @@ function DocumentReview({ addToast, user, activeInvestigationId }) {
                         </div>
                         <div style={{ display: 'flex', flexWrap: 'wrap', gap: '6px' }}>
                             {doc.attachments.map(att => {
-                                const ext = att.original_name?.split('.').pop().toLowerCase() || '';
+                                const ext = att.file_extension || att.original_name?.split('.').pop()?.toLowerCase() || '';
                                 return (
                                     <div key={att.id} style={{
                                         display: 'flex', alignItems: 'center', gap: '8px',
@@ -1574,7 +1574,7 @@ function DocumentReview({ addToast, user, activeInvestigationId }) {
                         </summary>
                         <div style={{ display: 'flex', flexDirection: 'column', gap: '6px' }}>
                             {doc.siblings.map(att => {
-                                const ext = att.original_name?.split('.').pop().toLowerCase() || '';
+                                const ext = att.file_extension || att.original_name?.split('.').pop()?.toLowerCase() || '';
                                 return (
                                     <div key={att.id} className="file-item" style={{ cursor: 'pointer', display: 'flex', alignItems: 'center' }}>
                                         <Link
