@@ -1882,8 +1882,15 @@ async function processEmail(eml) {
         const attFilename = `${investigation_id}/${attBasename}`;
         const attPath = path.join(UPLOADS_DIR, attFilename);
 
-        // Skip writing large attachments to disk (>100MB) — record in DB with note
-        const isOversized = att.size > MAX_ATTACHMENT_SIZE;
+        // Skip writing large attachments to disk (>100MB) — record in DB with note.
+        // Exception: container types (ZIP, RAR, 7z, MSG, EML, TNEF) are always written
+        // because Phases 1.5-1.9 need them on disk to extract their contents.
+        const CONTAINER_EXEMPT_EXTS = new Set(['.zip', '.rar', '.7z', '.msg', '.eml']);
+        const attExtLower = attExt.toLowerCase();
+        const isContainer = CONTAINER_EXEMPT_EXTS.has(attExtLower)
+            || (att.filename || '').toLowerCase().includes('winmail')
+            || att.contentType === 'application/ms-tnef';
+        const isOversized = !isContainer && att.size > MAX_ATTACHMENT_SIZE;
 
         // Hash in memory — check in-memory map instead of DB query per attachment
         const tHash = Date.now();
