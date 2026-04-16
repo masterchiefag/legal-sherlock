@@ -39,6 +39,8 @@ function DocumentReview({ addToast, user, activeInvestigationId }) {
     const [sheetsLoading, setSheetsLoading] = useState(false);
     const [docxHtml, setDocxHtml] = useState(null);
     const [docxLoading, setDocxLoading] = useState(false);
+    const [emailHtml, setEmailHtml] = useState(null);
+    const [htmlLoading, setHtmlLoading] = useState(false);
 
     // Prev/next navigation
     const [neighbors, setNeighbors] = useState(null); // { prev_id, next_id, position, total }
@@ -169,6 +171,14 @@ function DocumentReview({ addToast, user, activeInvestigationId }) {
                 .then(r => r.json())
                 .then(data => { setDocxHtml(data.html); setDocxLoading(false); })
                 .catch(() => setDocxLoading(false));
+        }
+        if (doc.has_html_body) {
+            setHtmlLoading(true);
+            setEmailHtml(null);
+            apiFetch(`/api/documents/${id}/html?${invQuery}`)
+                .then(r => r.json())
+                .then(data => { setEmailHtml(data.html); setHtmlLoading(false); setViewerTab('viewer'); })
+                .catch(() => setHtmlLoading(false));
         }
     }, [id, doc?.original_name, doc?.filename]);
 
@@ -313,7 +323,7 @@ function DocumentReview({ addToast, user, activeInvestigationId }) {
     const isMapiNonEmail = isCalendar || isTask || isNote || isContact;
     const ext = doc.original_name?.split('.').pop().toLowerCase() || '';
     const nativeViewerExts = ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'xls', 'xlsx', 'docx'];
-    const hasNativeViewer = nativeViewerExts.includes(ext) && doc.status !== 'processing' && doc.filename;
+    const hasNativeViewer = (nativeViewerExts.includes(ext) && doc.status !== 'processing' && doc.filename) || doc.has_html_body;
 
     return (
         <div className="doc-viewer fade-in">
@@ -563,9 +573,10 @@ function DocumentReview({ addToast, user, activeInvestigationId }) {
                     const isPdf = ext === 'pdf';
                     const isXls = ['xls', 'xlsx'].includes(ext);
                     const isDocx = ext === 'docx';
+                    const isHtmlEmail = !!doc.has_html_body;
 
-                    // Oversized files — no raw file on disk
-                    if (!doc.filename) {
+                    // Oversized files — no raw file on disk (but email HTML still available)
+                    if (!doc.filename && !isHtmlEmail) {
                         const sizeMB = doc.size_bytes ? (doc.size_bytes / 1e6).toFixed(0) : '?';
                         return (
                             <div style={{ padding: '24px', textAlign: 'center' }}>
@@ -591,7 +602,7 @@ function DocumentReview({ addToast, user, activeInvestigationId }) {
                                         className={`viewer-tab ${viewerTab === 'viewer' ? 'active' : ''}`}
                                         onClick={() => setViewerTab('viewer')}
                                     >
-                                        Viewer
+                                        {isHtmlEmail ? 'Email' : 'Viewer'}
                                     </button>
                                     <button
                                         className={`viewer-tab ${viewerTab === 'text' ? 'active' : ''}`}
@@ -747,6 +758,35 @@ function DocumentReview({ addToast, user, activeInvestigationId }) {
                                                         />
                                                     )}
                                                 </div>
+                                            </div>
+                                        )}
+                                        {isHtmlEmail && (
+                                            <div style={{ display: 'flex', flexDirection: 'column', height: '80vh' }}>
+                                                {htmlLoading && (
+                                                    <div style={{ textAlign: 'center', padding: '32px' }}>
+                                                        <div className="spinner" style={{ marginBottom: '8px' }}></div>
+                                                        <p style={{ color: 'var(--text-muted)', fontSize: '13px' }}>Loading email...</p>
+                                                    </div>
+                                                )}
+                                                {emailHtml && (
+                                                    <iframe
+                                                        srcDoc={emailHtml}
+                                                        sandbox="allow-same-origin"
+                                                        title="Email HTML"
+                                                        style={{ width: '100%', flex: 1, border: 'none', borderRadius: '8px', background: '#fff' }}
+                                                        onLoad={e => {
+                                                            const body = e.target.contentDocument?.body;
+                                                            if (body) {
+                                                                e.target.style.height = Math.max(body.scrollHeight + 40, 400) + 'px';
+                                                            }
+                                                        }}
+                                                    />
+                                                )}
+                                                {!htmlLoading && !emailHtml && (
+                                                    <div className="empty-state">
+                                                        <p className="empty-state-text">HTML view not available for this email.</p>
+                                                    </div>
+                                                )}
                                             </div>
                                         )}
                                     </>
@@ -1002,6 +1042,17 @@ function DocumentReview({ addToast, user, activeInvestigationId }) {
                                 <span style={{ color: 'var(--text-primary)' }}>{doc.recipient_count}</span>
                             </div>
                         )}
+                        {isEmail && doc.inline_images_meta && (() => {
+                            try {
+                                const meta = JSON.parse(doc.inline_images_meta);
+                                return (
+                                    <div className="flex justify-between">
+                                        <span className="text-muted">Inline Images</span>
+                                        <span style={{ color: 'var(--text-primary)' }}>{meta.count} ({formatSize(meta.totalSize)})</span>
+                                    </div>
+                                );
+                            } catch { return null; }
+                        })()}
                     </div>
                     </details>
                 </div>
