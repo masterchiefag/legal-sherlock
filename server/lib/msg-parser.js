@@ -61,7 +61,9 @@ function parseMsgInner(msgBuffer, opts) {
         msgBuffer.byteOffset,
         msgBuffer.byteOffset + msgBuffer.byteLength
     );
-    const reader = new MsgReader.default(arrayBuffer);
+    // MsgReader import resolves differently in Node (object with .default) vs vitest (direct class)
+    const MsgReaderClass = typeof MsgReader === 'function' ? MsgReader : MsgReader.default;
+    const reader = new MsgReaderClass(arrayBuffer);
     const fields = reader.getFileData();
 
     if (fields.error) {
