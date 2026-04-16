@@ -428,14 +428,54 @@ async function main() {
         console.log('✦ PST Import Phase 1.5: Extracting embedded MSG attachments...');
         db.prepare("UPDATE import_jobs SET phase = 'msg_extraction' WHERE id = ?").run(jobId);
 
-        const msgDocs = db.prepare(`
+        // Query MSG files by name, MIME type, AND extensionless octet-stream blobs.
+        // readpst -e embeds forwarded emails inside .eml files as binary attachments
+        // with generic names like "attachment_12345" and application/octet-stream MIME.
+        // We detect these by reading the OLE magic bytes (D0 CF 11 E0) from disk.
+        const OLE_MAGIC = Buffer.from([0xD0, 0xCF, 0x11, 0xE0]);
+
+        // Step 1: Get explicitly named .msg files + embedded .eml attachments
+        const explicitMsgs = db.prepare(`
+            SELECT id, filename, original_name, doc_identifier, custodian, parent_id, content_hash,
+                   mime_type
+            FROM documents
+            WHERE investigation_id = ? AND doc_type = 'attachment' AND is_duplicate = 0
+              AND (LOWER(original_name) LIKE '%.msg' OR LOWER(filename) LIKE '%.msg'
+                   OR mime_type = 'application/vnd.ms-outlook'
+                   OR mime_type = 'message/rfc822')
+        `).all(investigation_id);
+
+        // Step 2: Get extensionless octet-stream blobs that could be embedded MSGs
+        const candidateBlobs = db.prepare(`
             SELECT id, filename, original_name, doc_identifier, custodian, parent_id, content_hash
             FROM documents
             WHERE investigation_id = ? AND doc_type = 'attachment' AND is_duplicate = 0
-              AND (LOWER(original_name) LIKE '%.msg' OR LOWER(filename) LIKE '%.msg')
-        `).all(investigation_id);
+              AND mime_type = 'application/octet-stream'
+              AND original_name NOT LIKE '%.%'
+              AND size_bytes > 1000
+              AND size_bytes < ?
+        `).all(investigation_id, MAX_ATTACHMENT_SIZE);
 
-        console.log(`✦ Phase 1.5: Found ${msgDocs.length} unique MSG attachments to process`);
+        // Step 3: Check OLE magic bytes on candidates
+        let oleMsgCount = 0;
+        const detectedMsgs = [];
+        for (const blob of candidateBlobs) {
+            try {
+                const blobPath = path.join(UPLOADS_DIR, blob.filename);
+                if (!fs.existsSync(blobPath)) continue;
+                const fd = fs.openSync(blobPath, 'r');
+                const header = Buffer.alloc(4);
+                fs.readSync(fd, header, 0, 4, 0);
+                fs.closeSync(fd);
+                if (header.equals(OLE_MAGIC)) {
+                    detectedMsgs.push(blob);
+                    oleMsgCount++;
+                }
+            } catch (_) { /* skip unreadable files */ }
+        }
+
+        const msgDocs = [...explicitMsgs, ...detectedMsgs];
+        console.log(`✦ Phase 1.5: Found ${msgDocs.length} MSG attachments to process (${explicitMsgs.length} by name/MIME, ${oleMsgCount} detected by OLE magic from ${candidateBlobs.length} candidates)`);
 
         let msgProcessed = 0;
         let msgAttInserted = 0;
@@ -478,15 +518,33 @@ async function main() {
 
             try {
                 const msgBuffer = fs.readFileSync(msgPath);
-                const { metadata, attachments: msgAtts } = parseMsg(msgBuffer);
+                const isEmlContainer = msgDoc.mime_type === 'message/rfc822';
 
-                // Verbose logging for first 5 MSGs so we can confirm parsing works early
+                // Parse as MSG (OLE binary) or EML (RFC 5322 text)
+                let metadata, msgAtts;
+                if (isEmlContainer) {
+                    const eml = await parseEml(msgBuffer);
+                    metadata = {
+                        subject: eml.subject,
+                        from: eml.from,
+                        to: eml.to,
+                        textBody: eml.textBody,
+                        date: eml.date,
+                    };
+                    msgAtts = eml.attachments;
+                } else {
+                    const result = parseMsg(msgBuffer);
+                    metadata = result.metadata;
+                    msgAtts = result.attachments;
+                }
+
+                // Verbose logging for first 5 containers so we can confirm parsing works early
                 if (msgProcessed < 5) {
-                    console.log(`  ✦ Phase 1.5 [${msgProcessed + 1}]: "${metadata.subject}" from ${metadata.from || '?'}`);
+                    console.log(`  ✦ Phase 1.5 [${msgProcessed + 1}]: ${isEmlContainer ? '(EML)' : '(MSG)'} "${metadata.subject}" from ${metadata.from || '?'}`);
                     console.log(`    Body: ${metadata.textBody?.length || 0} chars, Attachments: ${msgAtts.length} [${msgAtts.map(a => a.filename).join(', ')}]`);
                 }
 
-                // Update the MSG document's text_content with the embedded email body
+                // Update the container document's text_content with the embedded email body
                 // so the forwarded email's content becomes searchable
                 if (metadata.textBody && metadata.textBody.length > 0) {
                     const bodyText = `[Embedded email] From: ${metadata.from || 'unknown'}\nTo: ${metadata.to || ''}\nSubject: ${metadata.subject || ''}\nDate: ${metadata.date || ''}\n\n${metadata.textBody}`;
