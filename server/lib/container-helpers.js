@@ -232,6 +232,56 @@ export async function extractTnefContents(tnefPath) {
     return { tmpDir, files };
 }
 
+// ═══════════════════════════════════════════════════
+// Archive helpers (RAR, 7z via unar)
+// ═══════════════════════════════════════════════════
+
+/**
+ * Recursively walk a directory and return all files.
+ * @param {string} dir
+ * @returns {Promise<Array<{name: string, path: string, size: number}>>}
+ */
+async function walkDir(dir) {
+    const files = [];
+    const entries = await fsp.readdir(dir, { withFileTypes: true });
+    for (const entry of entries) {
+        const fullPath = path.join(dir, entry.name);
+        if (entry.isDirectory()) {
+            const subFiles = await walkDir(fullPath);
+            files.push(...subFiles);
+        } else if (entry.isFile()) {
+            const stat = await fsp.stat(fullPath);
+            if (stat.size > 0) {
+                files.push({
+                    name: entry.name,
+                    path: fullPath,
+                    size: stat.size,
+                });
+            }
+        }
+    }
+    return files;
+}
+
+/**
+ * Extract a RAR, 7z, or other archive using unar (universal archive extractor).
+ * unar handles RAR, 7z, ZIP, tar.gz, and many other formats.
+ *
+ * @param {string} archivePath - Absolute path to the archive
+ * @returns {Promise<{tmpDir: string, files: Array<{name: string, path: string, size: number}>}>}
+ */
+export async function extractArchive(archivePath) {
+    const tmpDir = await fsp.mkdtemp(path.join(os.tmpdir(), 'sherlock-unar-'));
+
+    await execFileAsync('unar', ['-o', tmpDir, '-f', archivePath], {
+        timeout: 120000,
+        maxBuffer: 50 * 1024 * 1024,
+    });
+
+    const files = await walkDir(tmpDir);
+    return { tmpDir, files };
+}
+
 /**
  * Clean up a temp directory (best-effort, non-throwing).
  * @param {string} tmpDir

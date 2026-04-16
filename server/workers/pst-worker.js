@@ -13,7 +13,7 @@ import { openWorkerDb } from '../lib/investigation-db.js';
 import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
 import { parseMsg } from '../lib/msg-parser.js';
-import { listZipContents, extractFileFromZip, detectPdfEmbeddedFiles, extractPdfEmbeddedFiles, extractTnefContents, cleanupTmpDir, SKIP_EXTS as CONTAINER_SKIP_EXTS, mimeFromExt as containerMimeFromExt } from '../lib/container-helpers.js';
+import { listZipContents, extractFileFromZip, detectPdfEmbeddedFiles, extractPdfEmbeddedFiles, extractTnefContents, extractArchive, cleanupTmpDir, SKIP_EXTS as CONTAINER_SKIP_EXTS, mimeFromExt as containerMimeFromExt } from '../lib/container-helpers.js';
 import { disableFtsTriggers, enableFtsTriggers, rebuildFtsIndex, dropBulkIndexes, recreateBulkIndexes, refreshInvestigationCounts, walCheckpoint, backfillDuplicateText } from '../lib/worker-helpers.js';
 import { resolveThreadId, backfillThread, updateCacheOnly, resolveThreadIdFromCache, initCache } from '../lib/threading-cached.js';
 import { getSetting } from '../lib/settings.js';
@@ -858,6 +858,122 @@ async function main() {
             }
         }
 
+        // ── Phase 1.6b: RAR/7z extraction via unar ──
+        console.log('✦ PST Import Phase 1.6b: Extracting RAR/7z archives...');
+        {
+            let rarProcessed = 0;
+            let rarFilesInserted = 0;
+            let rarFilesDupes = 0;
+            let rarErrors = 0;
+
+            const rarDocs = db.prepare(`
+                SELECT id, filename, original_name, doc_identifier, parent_id, custodian, content_hash
+                FROM documents
+                WHERE investigation_id = ? AND doc_type = 'attachment' AND is_duplicate = 0
+                  AND (LOWER(original_name) LIKE '%.rar' OR LOWER(original_name) LIKE '%.7z')
+                ORDER BY original_name
+            `).all(investigation_id);
+
+            console.log(`✦ Phase 1.6b: found ${rarDocs.length} RAR/7z archives`);
+
+            const insertRarChild = db.prepare(`
+                INSERT INTO documents (
+                    id, filename, original_name, mime_type, size_bytes, text_content, status,
+                    doc_type, parent_id, thread_id,
+                    doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
+                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+                ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
+                    ?, ?, ?, ?, ?, ?,
+                    ?, ?, ?, ?, ?)
+            `);
+
+            const rarBatchBuffer = [];
+            const flushRarBatch = db.transaction((ops) => {
+                for (const op of ops) op();
+            });
+
+            for (const rarDoc of rarDocs) {
+                const rarPath = path.join(UPLOADS_DIR, rarDoc.filename);
+                if (!fs.existsSync(rarPath)) {
+                    console.log(`  ✦ Phase 1.6b: archive missing on disk: ${rarDoc.original_name}`);
+                    continue;
+                }
+
+                try {
+                    const { tmpDir, files } = await extractArchive(rarPath);
+
+                    if (rarProcessed < 5 && files.length > 0) {
+                        console.log(`  ✦ Phase 1.6b [${rarProcessed + 1}]: "${rarDoc.original_name}" — ${files.length} files inside`);
+                        console.log(`    Sample: ${files.slice(0, 5).map(f => f.name).join(', ')}`);
+                    }
+
+                    const parentThread = db.prepare("SELECT thread_id FROM documents WHERE id = ?").get(rarDoc.parent_id);
+                    const threadId = parentThread?.thread_id || null;
+
+                    let childIdx = 0;
+                    for (const file of files) {
+                        const ext = path.extname(file.name).toLowerCase();
+                        if (CONTAINER_SKIP_EXTS.has(ext)) continue;
+
+                        try {
+                            const fileBuffer = await fsp.readFile(file.path);
+                            const contentHash = crypto.createHash('md5').update(fileBuffer).digest('hex');
+                            const isDuplicate = seenHashes.has(contentHash) ? 1 : 0;
+
+                            const fileId = uuidv4();
+                            let diskFilename;
+
+                            if (!isDuplicate) {
+                                diskFilename = `${investigation_id}/${fileId}${ext || '.bin'}`;
+                                seenHashes.set(contentHash, diskFilename);
+                                await fsp.writeFile(path.join(UPLOADS_DIR, diskFilename), fileBuffer);
+                            } else {
+                                diskFilename = seenHashes.get(contentHash);
+                                rarFilesDupes++;
+                            }
+
+                            childIdx++;
+                            const docIdentifier = rarDoc.doc_identifier
+                                ? `${rarDoc.doc_identifier}_${String(childIdx).padStart(3, '0')}`
+                                : null;
+
+                            rarBatchBuffer.push(() => {
+                                insertRarChild.run(
+                                    fileId, diskFilename, file.name,
+                                    containerMimeFromExt(ext), fileBuffer.length,
+                                    rarDoc.id, threadId,
+                                    null, null, null, null, null, null,
+                                    contentHash, isDuplicate, investigation_id,
+                                    rarDoc.custodian || custodian || null,
+                                    docIdentifier
+                                );
+                            });
+
+                            rarFilesInserted++;
+                            totalAttachments++;
+                        } catch (err) {
+                            rarErrors++;
+                            if (rarErrors <= 10) errorLog.push({ phase: 'rar_extraction', archive: rarDoc.original_name, file: file.name, error: err.message });
+                        }
+                    }
+
+                    await cleanupTmpDir(tmpDir);
+                    rarProcessed++;
+                } catch (err) {
+                    rarErrors++;
+                    console.warn(`  ✦ Phase 1.6b error: ${rarDoc.original_name} — ${err.message}`);
+                    errorLog.push({ phase: 'rar_extraction', docId: rarDoc.id, filename: rarDoc.original_name, error: err.message });
+                }
+            }
+
+            if (rarBatchBuffer.length > 0) {
+                try { flushRarBatch(rarBatchBuffer); rarBatchBuffer.length = 0; }
+                catch (err) { console.error(`✦ Phase 1.6b FLUSH ERROR: ${err.message}`); }
+            }
+
+            console.log(`✦ Phase 1.6b complete: ${rarProcessed} archives processed, ${rarFilesInserted} files extracted (${rarFilesDupes} dupes, ${rarErrors} errors)`);
+        }
+
         db.prepare("UPDATE import_jobs SET phase = 'zip_extraction_done' WHERE id = ?").run(jobId);
 
         // ═══════════════════════════════════════════
@@ -1275,6 +1391,7 @@ async function main() {
                     FROM documents
                     WHERE investigation_id = ? AND doc_type = 'attachment' AND is_duplicate = 0
                       AND (LOWER(original_name) LIKE '%.zip' OR mime_type = 'application/zip'
+                           OR LOWER(original_name) LIKE '%.rar' OR LOWER(original_name) LIKE '%.7z'
                            OR LOWER(original_name) LIKE '%.msg' OR mime_type = 'application/vnd.ms-outlook'
                            OR LOWER(original_name) LIKE '%.eml' OR mime_type = 'message/rfc822'
                            OR LOWER(original_name) LIKE '%winmail%' OR LOWER(original_name) = 'noname.dat'
@@ -1318,6 +1435,16 @@ async function main() {
                                     extractedFiles.push({ name: path.basename(entry.path), buffer: buf });
                                 } catch (_) { /* skip individual file errors */ }
                             }
+                        } else if (ext === '.rar' || ext === '.7z') {
+                            // RAR/7z archive via unar
+                            try {
+                                const result = await extractArchive(containerPath);
+                                tmpDir = result.tmpDir;
+                                for (const file of result.files) {
+                                    const buf = await fsp.readFile(file.path);
+                                    extractedFiles.push({ name: file.name, buffer: buf });
+                                }
+                            } catch (_) { /* skip extraction errors */ }
                         } else if (ext === '.msg' || container.mime_type === 'application/vnd.ms-outlook') {
                             // MSG container — use parseMsg
                             try {
