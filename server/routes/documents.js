@@ -2,9 +2,11 @@ import express from 'express';
 import multer from 'multer';
 import path from 'path';
 import fs from 'fs';
+import fsp from 'fs/promises';
 import crypto from 'crypto';
 import { fileURLToPath } from 'url';
 import { v4 as uuidv4 } from 'uuid';
+import DOMPurify from 'isomorphic-dompurify';
 import mainDb from '../db.js';
 import { openWorkerDb } from '../lib/investigation-db.js';
 import { extractText, extractMetadata } from '../lib/extract.js';
@@ -1010,6 +1012,57 @@ router.get('/:id/preview', async (req, res) => {
     } catch (err) {
         console.error('Error converting DOCX:', err);
         res.status(500).json({ error: 'Failed to convert document' });
+    }
+});
+
+// ─── Serve sanitized HTML email body with resolved image paths ──────────────
+router.get('/:id/html', async (req, res) => {
+    try {
+        const doc = req.invReadDb.prepare(
+            'SELECT id, has_html_body, investigation_id FROM documents WHERE id = ?'
+        ).get(req.params.id);
+
+        if (!doc || !doc.has_html_body) {
+            return res.status(404).json({ error: 'No HTML body available' });
+        }
+
+        const htmlPath = path.join(UPLOADS_DIR, doc.investigation_id, 'html', `${doc.id}.html`);
+        let rawHtml;
+        try {
+            rawHtml = await fsp.readFile(htmlPath, 'utf-8');
+        } catch (err) {
+            console.warn(`[documents] HTML file not found: ${htmlPath}`);
+            return res.status(404).json({ error: 'HTML file not found on disk' });
+        }
+
+        // Rewrite relative image paths to absolute URLs served by express.static
+        // HTML on disk: src="{emailId}/image001.png"
+        // Rewrite to:   src="/uploads/{inv_id}/html/{emailId}/image001.png"
+        const imgBase = `/uploads/${doc.investigation_id}/html/`;
+        const rewritten = rawHtml.replace(
+            /src="([a-f0-9]+-[a-f0-9-]+\/[^"]+)"/gi,
+            (match, relPath) => `src="${imgBase}${relPath}"`
+        );
+
+        // Sanitize HTML — defense in depth (iframe sandbox is the hard boundary)
+        const clean = DOMPurify.sanitize(rewritten, {
+            WHOLE_DOCUMENT: true, // preserve <html><head><style>...</style></head><body>...</body></html>
+            FORBID_TAGS: ['script', 'iframe', 'object', 'embed', 'form', 'input', 'base', 'textarea', 'button'],
+            FORBID_ATTR: ['onerror', 'onload', 'onclick', 'onmouseover', 'onfocus', 'onblur', 'onsubmit', 'onchange', 'onkeydown', 'onkeyup', 'onkeypress'],
+            ALLOW_DATA_ATTR: false,
+        });
+
+        // Block external content: strip external image sources (tracking pixels, remote resources)
+        // Only allow local /uploads/ paths
+        const blocked = clean.replace(
+            /(<img[^>]*)\ssrc="(https?:\/\/[^"]+)"/gi,
+            (match, prefix) => `${prefix} data-blocked-src="[external image blocked]"`
+        );
+
+        res.json({ html: blocked });
+    } catch (err) {
+        console.error('[documents] Error serving HTML:', err);
+        res.status(500).json({ error: 'Internal server error' });
     }
 });
 
