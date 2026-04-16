@@ -321,7 +321,11 @@ function DocumentReview({ addToast, user, activeInvestigationId }) {
     const isNote = doc.doc_type === 'note';
     const isContact = doc.doc_type === 'contact';
     const isMapiNonEmail = isCalendar || isTask || isNote || isContact;
-    const ext = doc.original_name?.split('.').pop().toLowerCase() || '';
+    // Prefer original_name's extension, fall back to the disk filename's ext
+    // for rows where original_name lacks one (zip-worker extractions, etc).
+    const origExt = doc.original_name?.includes('.') ? doc.original_name.split('.').pop().toLowerCase() : '';
+    const diskExt = doc.filename?.includes('.') ? doc.filename.split('.').pop().toLowerCase() : '';
+    const ext = origExt || diskExt || '';
     const nativeViewerExts = ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'xls', 'xlsx', 'docx'];
     const hasNativeViewer = (nativeViewerExts.includes(ext) && doc.status !== 'processing' && doc.filename) || doc.has_html_body;
 
