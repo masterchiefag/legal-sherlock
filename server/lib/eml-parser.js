@@ -117,7 +117,15 @@ export async function parseEml(filePathOrBuffer) {
     const from = parsed.from ? formatAddresses(Array.isArray(parsed.from) ? parsed.from : [parsed.from]) : '';
     const to = parsed.to ? formatAddresses(Array.isArray(parsed.to) ? parsed.to : [parsed.to]) : '';
     const cc = parsed.cc ? formatAddresses(Array.isArray(parsed.cc) ? parsed.cc : [parsed.cc]) : '';
-    const bcc = parsed.bcc ? formatAddresses(Array.isArray(parsed.bcc) ? parsed.bcc : [parsed.bcc]) : '';
+    // BCC: RFC 2822 says sent mail SHOULD NOT carry a bcc: header (recipients don't
+    // see each other's BCCs). libpst recovers the MAPI-stored BCC list and emits it
+    // under `x-libpst-forensic-bcc`. If postal-mime's standard `bcc` is empty, fall
+    // back to the forensic variant so reviewers can see who was BCC'd on sent mail.
+    let bcc = parsed.bcc ? formatAddresses(Array.isArray(parsed.bcc) ? parsed.bcc : [parsed.bcc]) : '';
+    if (!bcc) {
+        const forensicBcc = getHeader('x-libpst-forensic-bcc');
+        if (forensicBcc) bcc = String(forensicBcc).trim();
+    }
 
     const warnings = [];
 
