@@ -1,5 +1,6 @@
 import PostalMime from 'postal-mime';
 import fs from 'fs';
+import crypto from 'crypto';
 
 /**
  * Parse an .eml file and extract all structured data including transport metadata.
@@ -48,11 +49,65 @@ function formatAddresses(addrList) {
         .join(', ');
 }
 
-export { stripHtml, cleanId, formatAddresses, parseReceivedHeaders };
+/**
+ * Extract just the email addresses from an addrList, lowercased + sorted + comma-joined.
+ * Used for stable dedup hashing — we ignore display name noise and ordering.
+ */
+function canonicalAddresses(addrList) {
+    if (!addrList || !Array.isArray(addrList)) return '';
+    const addrs = addrList
+        .map(a => (a.address || '').toLowerCase().trim())
+        .filter(Boolean);
+    addrs.sort();
+    return addrs.join(',');
+}
+
+/**
+ * Compute the canonical content MD5 for email-level dedup.
+ *
+ * See GitHub issue #61: Gmail preserves a draft's Message-ID into the sent copy's
+ * RFC822 headers, so keying dedup on msg-id silently drops the sent email (with its
+ * real attachments). We instead fingerprint the canonical content — critically
+ * including a sorted list of attachment MD5s so the draft (no real attachments) and
+ * the sent copy (same envelope + real attachments) hash differently and both survive.
+ *
+ * Input format (joined with "\n"):
+ *   1. from email (lowercase, trimmed)
+ *   2. to addrs (lowercase, sorted, comma-joined)
+ *   3. cc addrs (same)
+ *   4. bcc addrs (same)
+ *   5. subject (trimmed)
+ *   6. date ISO string (or empty)
+ *   7. text body (whitespace-collapsed, trimmed)
+ *   8. sorted attachment content MD5s (comma-joined)
+ */
+function computeDedupMd5({ fromAddr, to, cc, bcc, subject, date, textBody, attachmentMd5s }) {
+    const attList = [...(attachmentMd5s || [])].sort().join(',');
+    const bodyNorm = (textBody || '').replace(/\s+/g, ' ').trim();
+    const parts = [
+        fromAddr || '',
+        canonicalAddresses(to),
+        canonicalAddresses(cc),
+        canonicalAddresses(bcc),
+        (subject || '').trim(),
+        date || '',
+        bodyNorm,
+        attList,
+    ];
+    return crypto.createHash('md5').update(parts.join('\n'), 'utf8').digest('hex');
+}
+
+export { stripHtml, cleanId, formatAddresses, parseReceivedHeaders, computeDedupMd5, canonicalAddresses };
 
 export async function parseEml(filePathOrBuffer) {
     const raw = Buffer.isBuffer(filePathOrBuffer) ? filePathOrBuffer : fs.readFileSync(filePathOrBuffer);
-    const parser = new PostalMime();
+    // forceRfc822Attachments: surface `message/rfc822` MIME parts (embedded forwarded
+    // emails, MAPI attachMethod=5) in parsed.attachments instead of inlining them into
+    // the parent's text body. Phase 1.5 in pst-worker already queries for mime_type =
+    // 'message/rfc822' to extract children — this flag is what gets the rows in front of
+    // that query. Without it Sherlock had 11 embedded-MSG rows for 1,582 in Relativity.
+    // NB: postal-mime takes options via the constructor, not via parse().
+    const parser = new PostalMime({ forceRfc822Attachments: true });
     const parsed = await parser.parse(raw);
 
     // References can be a string of space-separated message IDs
@@ -105,27 +160,62 @@ export async function parseEml(filePathOrBuffer) {
         ? receivedChain[receivedChain.length - 1].date || null
         : null;
 
-    // Extract attachments
-    const attachments = (parsed.attachments || []).map(att => ({
-        filename: att.filename || `attachment_${Date.now()}`,
-        contentType: att.mimeType || 'application/octet-stream',
-        size: att.content?.byteLength || att.content?.length || 0,
-        content: Buffer.from(att.content), // postal-mime gives ArrayBuffer/Uint8Array
-    }));
+    // Extract attachments.
+    // For each, compute MD5 of content — we'll use it both downstream (worker attachment
+    // dedup) AND locally in the dedup_md5 canonical form. Also synthesize a filename for
+    // unnamed message/rfc822 parts so Phase 1.5's `LIKE '%.msg' OR LIKE '%.eml'` query
+    // matches the .eml on disk and picks them up for child-attachment extraction.
+    const rawAttachments = parsed.attachments || [];
+    const attachments = rawAttachments.map((att, idx) => {
+        const content = Buffer.from(att.content);
+        const md5 = crypto.createHash('md5').update(content).digest('hex');
+        const mimeType = att.mimeType || 'application/octet-stream';
+        let filename = att.filename;
+        if (!filename) {
+            if (mimeType === 'message/rfc822') {
+                filename = `forwarded_message_${idx + 1}.eml`;
+            } else {
+                filename = `attachment_${idx + 1}`;
+            }
+        }
+        return {
+            filename,
+            contentType: mimeType,
+            size: content.byteLength || content.length || 0,
+            content,
+            md5,
+        };
+    });
 
     // postal-mime uses .from/.to as {name, address} or arrays
-    const from = parsed.from ? formatAddresses(Array.isArray(parsed.from) ? parsed.from : [parsed.from]) : '';
-    const to = parsed.to ? formatAddresses(Array.isArray(parsed.to) ? parsed.to : [parsed.to]) : '';
-    const cc = parsed.cc ? formatAddresses(Array.isArray(parsed.cc) ? parsed.cc : [parsed.cc]) : '';
+    const fromArr = parsed.from ? (Array.isArray(parsed.from) ? parsed.from : [parsed.from]) : [];
+    const toArr = parsed.to ? (Array.isArray(parsed.to) ? parsed.to : [parsed.to]) : [];
+    const ccArr = parsed.cc ? (Array.isArray(parsed.cc) ? parsed.cc : [parsed.cc]) : [];
+    let bccArr = parsed.bcc ? (Array.isArray(parsed.bcc) ? parsed.bcc : [parsed.bcc]) : [];
     // BCC: RFC 2822 says sent mail SHOULD NOT carry a bcc: header (recipients don't
     // see each other's BCCs). libpst recovers the MAPI-stored BCC list and emits it
     // under `x-libpst-forensic-bcc`. If postal-mime's standard `bcc` is empty, fall
-    // back to the forensic variant so reviewers can see who was BCC'd on sent mail.
-    let bcc = parsed.bcc ? formatAddresses(Array.isArray(parsed.bcc) ? parsed.bcc : [parsed.bcc]) : '';
-    if (!bcc) {
+    // back to the forensic variant so reviewers can see who was BCC'd on sent mail —
+    // and so the dedup_md5 hash participates in BCC identity instead of hashing on
+    // an empty list (two sent emails with identical envelopes but different BCCs
+    // would otherwise collide).
+    if (bccArr.length === 0) {
         const forensicBcc = getHeader('x-libpst-forensic-bcc');
-        if (forensicBcc) bcc = String(forensicBcc).trim();
+        if (forensicBcc) {
+            bccArr = String(forensicBcc).split(',')
+                .map(s => s.trim())
+                .filter(Boolean)
+                .map(raw => {
+                    // Accept "Name <email>" or bare "email"
+                    const m = raw.match(/^(.*?)\s*<(.+?)>\s*$/);
+                    return m ? { name: m[1].trim(), address: m[2].trim() } : { address: raw };
+                });
+        }
     }
+    const from = formatAddresses(fromArr);
+    const to = formatAddresses(toArr);
+    const cc = formatAddresses(ccArr);
+    const bcc = formatAddresses(bccArr);
 
     const warnings = [];
 
@@ -141,6 +231,21 @@ export async function parseEml(filePathOrBuffer) {
         }
     }
 
+    const textBody = parsed.text || stripHtml(parsed.html) || '';
+
+    // Email-level content fingerprint — see GitHub issue #61 and computeDedupMd5() above
+    const fromAddr = (fromArr[0]?.address || '').toLowerCase().trim();
+    const dedupMd5 = computeDedupMd5({
+        fromAddr,
+        to: toArr,
+        cc: ccArr,
+        bcc: bccArr,
+        subject: parsed.subject,
+        date: emailDate,
+        textBody,
+        attachmentMd5s: attachments.map(a => a.md5),
+    });
+
     return {
         messageId: cleanId(parsed.messageId),
         inReplyTo: cleanId(parsed.inReplyTo),
@@ -151,7 +256,7 @@ export async function parseEml(filePathOrBuffer) {
         bcc,
         subject: parsed.subject || '(no subject)',
         date: emailDate,
-        textBody: parsed.text || stripHtml(parsed.html) || '',
+        textBody,
         htmlBody: parsed.html || '',
         // Transport metadata
         headersRaw,
@@ -161,6 +266,7 @@ export async function parseEml(filePathOrBuffer) {
         serverInfo,
         deliveryDate,
         attachments,
+        dedupMd5,
         _warnings: warnings,
     };
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { stripHtml, cleanId, formatAddresses, parseReceivedHeaders, parseEml } from '../eml-parser.js';
+import { stripHtml, cleanId, formatAddresses, parseReceivedHeaders, computeDedupMd5, canonicalAddresses, parseEml } from '../eml-parser.js';
 
 describe('stripHtml', () => {
   it('returns empty for null/undefined', () => {
@@ -179,5 +179,226 @@ describe('parseEml bcc fallback', () => {
     ].join('\r\n');
     const parsed = await parseEml(Buffer.from(eml));
     expect(parsed.bcc).toBe('');
+  });
+});
+
+describe('canonicalAddresses', () => {
+  it('returns empty string for null / non-array', () => {
+    expect(canonicalAddresses(null)).toBe('');
+    expect(canonicalAddresses(undefined)).toBe('');
+    expect(canonicalAddresses('not-an-array')).toBe('');
+  });
+
+  it('lowercases, sorts, and comma-joins email addresses', () => {
+    const list = [
+      { name: 'Zelda', address: 'Zelda@Example.COM' },
+      { name: 'Alice', address: 'alice@example.com' },
+    ];
+    expect(canonicalAddresses(list)).toBe('alice@example.com,zelda@example.com');
+  });
+
+  it('skips entries without an address', () => {
+    const list = [{ name: 'No Address' }, { address: 'real@x.com' }, {}];
+    expect(canonicalAddresses(list)).toBe('real@x.com');
+  });
+});
+
+describe('computeDedupMd5', () => {
+  const base = {
+    fromAddr: 'alice@example.com',
+    to: [{ address: 'bob@example.com' }],
+    cc: [],
+    bcc: [],
+    subject: 'Re: test',
+    date: '2024-06-01T10:00:00.000Z',
+    textBody: 'Hello Bob',
+    attachmentMd5s: [],
+  };
+
+  it('returns a 32-char hex MD5', () => {
+    const h = computeDedupMd5(base);
+    expect(h).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it('is stable across repeated calls', () => {
+    expect(computeDedupMd5(base)).toBe(computeDedupMd5({ ...base }));
+  });
+
+  it('differs when attachments differ (the Gmail draft/sent fix, issue #61)', () => {
+    const draft = computeDedupMd5({ ...base, attachmentMd5s: ['aa', 'bb'] });
+    const sent  = computeDedupMd5({ ...base, attachmentMd5s: ['aa', 'bb', 'cc', 'dd'] });
+    expect(draft).not.toBe(sent);
+  });
+
+  it('ignores attachment ordering (sorted before hashing)', () => {
+    const a = computeDedupMd5({ ...base, attachmentMd5s: ['aa', 'bb', 'cc'] });
+    const b = computeDedupMd5({ ...base, attachmentMd5s: ['cc', 'aa', 'bb'] });
+    expect(a).toBe(b);
+  });
+
+  it('normalizes whitespace in the body', () => {
+    const a = computeDedupMd5({ ...base, textBody: 'Hello   Bob' });
+    const b = computeDedupMd5({ ...base, textBody: ' Hello Bob ' });
+    const c = computeDedupMd5({ ...base, textBody: 'Hello\n\tBob' });
+    expect(a).toBe(b);
+    expect(a).toBe(c);
+  });
+
+  it('is case-insensitive for recipient addresses', () => {
+    const lower = computeDedupMd5({ ...base, to: [{ address: 'bob@example.com' }] });
+    const upper = computeDedupMd5({ ...base, to: [{ address: 'BOB@EXAMPLE.COM' }] });
+    expect(lower).toBe(upper);
+  });
+
+  it('distinguishes different senders', () => {
+    const a = computeDedupMd5({ ...base });
+    const b = computeDedupMd5({ ...base, fromAddr: 'someone-else@example.com' });
+    expect(a).not.toBe(b);
+  });
+
+  it('handles missing fields (no crash)', () => {
+    const h = computeDedupMd5({});
+    expect(h).toMatch(/^[0-9a-f]{32}$/);
+  });
+});
+
+describe('parseEml (integration)', () => {
+  // Build a minimal EML with an embedded message/rfc822 part — the pattern readpst
+  // emits for MAPI attachMethod=5 embedded emails. This test locks in the fix for
+  // the "11 embedded MSGs vs Relativity's 1,582" gap.
+  it('surfaces message/rfc822 sub-parts as attachments with forceRfc822Attachments', async () => {
+    const boundary = 'testbnd_abc';
+    const innerEml = [
+      'From: inner@example.com',
+      'To: outer@example.com',
+      'Subject: Inner Forwarded',
+      'Date: Sat, 01 Jun 2024 09:00:00 +0000',
+      'Message-ID: <inner-msg-id@example.com>',
+      'Content-Type: text/plain',
+      '',
+      'I am the inner email content.',
+    ].join('\r\n');
+    const outerEml = [
+      'From: outer@example.com',
+      'To: dest@example.com',
+      'Subject: Outer',
+      'Date: Sat, 01 Jun 2024 10:00:00 +0000',
+      'Message-ID: <outer-msg-id@example.com>',
+      'MIME-Version: 1.0',
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      '',
+      `--${boundary}`,
+      'Content-Type: text/plain',
+      '',
+      'Please see attached email.',
+      '',
+      `--${boundary}`,
+      'Content-Type: message/rfc822',
+      'Content-Disposition: inline',
+      '',
+      innerEml,
+      '',
+      `--${boundary}--`,
+      '',
+    ].join('\r\n');
+
+    const parsed = await parseEml(Buffer.from(outerEml));
+    const rfc = parsed.attachments.find(a => a.contentType === 'message/rfc822');
+    expect(rfc).toBeDefined();
+    expect(rfc.content.length).toBeGreaterThan(0);
+    // Unnamed parts get synthesized so Phase 1.5's *.eml filter matches
+    expect(rfc.filename).toMatch(/\.eml$/i);
+  });
+
+  it('populates dedupMd5 on every parsed email', async () => {
+    const eml = [
+      'From: x@example.com',
+      'To: y@example.com',
+      'Subject: plain',
+      'Date: Sat, 01 Jun 2024 10:00:00 +0000',
+      'Message-ID: <m@example.com>',
+      'Content-Type: text/plain',
+      '',
+      'hi',
+    ].join('\r\n');
+    const parsed = await parseEml(Buffer.from(eml));
+    expect(parsed.dedupMd5).toMatch(/^[0-9a-f]{32}$/);
+  });
+
+  it('produces different dedupMd5 when attachments differ but envelope is the same (issue #61)', async () => {
+    const makeEml = (attachBlock) => [
+      'From: yesha@example.com',
+      'To: tamal@example.com',
+      'Subject: Re: Docs required',
+      'Date: Thu, 17 Nov 2022 12:48:18 +0530',
+      'Message-ID: <CAA_wxhu=draft-reused@example.com>', // same msg-id for both!
+      'MIME-Version: 1.0',
+      'Content-Type: multipart/mixed; boundary="b"',
+      '',
+      '--b',
+      'Content-Type: text/plain',
+      '',
+      'hello',
+      '',
+      attachBlock,
+      '--b--',
+      '',
+    ].join('\r\n');
+
+    const draft = makeEml([
+      '--b',
+      'Content-Type: text/plain; name="sig.txt"',
+      'Content-Disposition: attachment; filename="sig.txt"',
+      '',
+      'signature',
+      '',
+    ].join('\r\n'));
+
+    const sent = makeEml([
+      '--b',
+      'Content-Type: text/plain; name="sig.txt"',
+      'Content-Disposition: attachment; filename="sig.txt"',
+      '',
+      'signature',
+      '',
+      '--b',
+      'Content-Type: application/pdf; name="board-reso.pdf"',
+      'Content-Disposition: attachment; filename="board-reso.pdf"',
+      'Content-Transfer-Encoding: base64',
+      '',
+      Buffer.from('pretend pdf content').toString('base64'),
+      '',
+    ].join('\r\n'));
+
+    const pDraft = await parseEml(Buffer.from(draft));
+    const pSent  = await parseEml(Buffer.from(sent));
+    expect(pDraft.messageId).toBe(pSent.messageId); // msg-id collision (Gmail quirk)
+    expect(pDraft.dedupMd5).not.toBe(pSent.dedupMd5); // but content hash differs → both survive
+  });
+
+  it('produces the same dedupMd5 when only wrapping whitespace differs', async () => {
+    const a = [
+      'From: x@example.com',
+      'To: y@example.com',
+      'Subject: Same',
+      'Date: Sat, 01 Jun 2024 10:00:00 +0000',
+      'Message-ID: <m1@example.com>',
+      'Content-Type: text/plain',
+      '',
+      'hello world',
+    ].join('\r\n');
+    const b = [
+      'From: x@example.com',
+      'To: y@example.com',
+      'Subject: Same',
+      'Date: Sat, 01 Jun 2024 10:00:00 +0000',
+      'Message-ID: <m2@example.com>', // different msg-id — but content is the same
+      'Content-Type: text/plain',
+      '',
+      'hello    world', // extra whitespace — should normalize
+    ].join('\r\n');
+    const pa = await parseEml(Buffer.from(a));
+    const pb = await parseEml(Buffer.from(b));
+    expect(pa.dedupMd5).toBe(pb.dedupMd5);
   });
 });
