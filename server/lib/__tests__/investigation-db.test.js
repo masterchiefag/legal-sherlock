@@ -69,6 +69,18 @@ describe('getInvestigationDb', () => {
     expect(tables).toContain('documents_fts');
   });
 
+  it('should include dedup_md5 + duplicate_folders columns with index on dedup_md5', () => {
+    const id = makeTestId();
+    const { db } = getInvestigationDb(id);
+
+    const cols = db.prepare("PRAGMA table_info(documents)").all().map(c => c.name);
+    expect(cols).toContain('dedup_md5');
+    expect(cols).toContain('duplicate_folders');
+
+    const indexes = db.prepare("PRAGMA index_list(documents)").all().map(i => i.name);
+    expect(indexes).toContain('idx_documents_dedup_md5');
+  });
+
   it('should return the same connection on subsequent calls (pool hit)', () => {
     const id = makeTestId();
     const first = getInvestigationDb(id);

@@ -254,6 +254,14 @@ function initSchema(db) {
             -- Deduplication
             content_hash TEXT,
             is_duplicate INTEGER DEFAULT 0,
+            -- Email-level content fingerprint (MD5 of canonical form incl. sorted attachment MD5s).
+            -- See server/lib/eml-parser.js computeDedupMd5() for the exact input. Used to detect
+            -- the same email materialized into multiple PST folders (labels, Sent+Inbox for A->A, ...)
+            -- without being fooled by Gmail's draft/sent Message-ID collision (see GitHub issue #61).
+            dedup_md5 TEXT,
+            -- JSON array of additional folder paths where the same content hash appeared.
+            -- Populated on the primary row when a dedup-skip fires.
+            duplicate_folders TEXT,
             -- Custodian / investigation
             custodian TEXT,
             investigation_id TEXT,
@@ -406,6 +414,7 @@ function createIndexes(db) {
         CREATE INDEX IF NOT EXISTS idx_documents_thread_doctype ON documents(thread_id, doc_type);
         CREATE INDEX IF NOT EXISTS idx_documents_content_hash ON documents(content_hash);
         CREATE INDEX IF NOT EXISTS idx_documents_is_duplicate ON documents(is_duplicate);
+        CREATE INDEX IF NOT EXISTS idx_documents_dedup_md5 ON documents(dedup_md5);
         CREATE INDEX IF NOT EXISTS idx_documents_custodian ON documents(custodian);
         CREATE INDEX IF NOT EXISTS idx_documents_email_date ON documents(email_date);
         CREATE INDEX IF NOT EXISTS idx_documents_investigation_id ON documents(investigation_id);
@@ -494,6 +503,16 @@ function runMigrations(db) {
     }
     if (!columnExists(db, 'document_tags', 'tag_color')) {
         db.exec(`ALTER TABLE document_tags ADD COLUMN tag_color TEXT DEFAULT '#3b82f6'`);
+    }
+
+    // Email-level content dedup (GitHub issue #61 — Gmail draft/sent Message-ID collision fix).
+    // Populated by pst-worker during fresh ingest; older rows keep NULL.
+    if (!columnExists(db, 'documents', 'dedup_md5')) {
+        db.exec(`ALTER TABLE documents ADD COLUMN dedup_md5 TEXT`);
+        db.exec(`CREATE INDEX IF NOT EXISTS idx_documents_dedup_md5 ON documents(dedup_md5)`);
+    }
+    if (!columnExists(db, 'documents', 'duplicate_folders')) {
+        db.exec(`ALTER TABLE documents ADD COLUMN duplicate_folders TEXT`);
     }
 
     // Ensure FTS exists and is healthy
