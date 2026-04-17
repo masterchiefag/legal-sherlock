@@ -979,7 +979,7 @@ function DocumentReview({ addToast, user, activeInvestigationId }) {
                 )}
 
                 {/* File Details Section */}
-                {(doc.size_bytes || doc.text_content_size || doc.folder_path) && (
+                {(doc.size_bytes || doc.text_content_size || doc.folder_path || doc.dedup_md5 || doc.duplicate_folders) && (
                     <div className="doc-sidebar-section">
                         <details>
                         <summary style={{ cursor: 'pointer', fontWeight: 600, fontSize: '14px', color: 'var(--text-primary)' }}>
@@ -990,6 +990,35 @@ function DocumentReview({ addToast, user, activeInvestigationId }) {
                                 <div className="flex justify-between">
                                     <span className="text-muted">Folder</span>
                                     <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontSize: '11px', maxWidth: '180px', textAlign: 'right', wordBreak: 'break-all' }}>{doc.folder_path}</span>
+                                </div>
+                            )}
+                            {(() => {
+                                // Same content also appeared in these folders (content-hash dedup, issue #61)
+                                if (!doc.duplicate_folders) return null;
+                                let folders = [];
+                                try { folders = JSON.parse(doc.duplicate_folders); } catch (_) {}
+                                if (!Array.isArray(folders) || folders.length === 0) return null;
+                                return (
+                                    <div className="flex justify-between" style={{ alignItems: 'flex-start' }}>
+                                        <span className="text-muted">Also in</span>
+                                        <span style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontSize: '11px', maxWidth: '180px', textAlign: 'right', wordBreak: 'break-all' }}>
+                                            {folders.map((f, i) => (
+                                                <div key={i}>{f}</div>
+                                            ))}
+                                        </span>
+                                    </div>
+                                );
+                            })()}
+                            {doc.dedup_md5 && (
+                                <div className="flex justify-between">
+                                    <span className="text-muted">Content hash</span>
+                                    <span
+                                        title={doc.dedup_md5}
+                                        style={{ color: 'var(--text-primary)', fontFamily: 'var(--font-mono)', fontSize: '11px', cursor: 'pointer' }}
+                                        onClick={() => { try { navigator.clipboard?.writeText(doc.dedup_md5); } catch (_) {} }}
+                                    >
+                                        {doc.dedup_md5.substring(0, 12)}…
+                                    </span>
                                 </div>
                             )}
                             {doc.size_bytes > 0 && (
