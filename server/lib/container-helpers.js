@@ -16,8 +16,13 @@ import path from 'path';
 import fs from 'fs';
 import fsp from 'fs/promises';
 import os from 'os';
+import JSZip from 'jszip';
 
 const execFileAsync = promisify(execFile);
+
+// Max ZIP size we'll load fully into memory via jszip. Above this, skip jszip
+// and go straight to the streaming unzip CLI fallback to avoid OOM.
+const JSZIP_MAX_BYTES = 500 * 1024 * 1024; // 500 MB
 
 // ═══════════════════════════════════════════════════
 // Extension sets
@@ -81,42 +86,109 @@ export function mimeFromExt(ext) {
 // ═══════════════════════════════════════════════════
 
 /**
- * List files inside a ZIP archive using zipinfo.
- * Filters out directories, __MACOSX junk, and hidden files.
+ * Filter applied uniformly to both jszip and unzip codepaths.
+ * @param {string} p - internal path
+ * @returns {boolean} true if the entry should be kept
+ */
+function keepZipEntry(p) {
+    if (p.endsWith('/')) return false;               // directory entry
+    if (p.startsWith('__MACOSX/')) return false;     // macOS resource fork junk
+    if (p.includes('/.')) return false;              // hidden/dotfiles inside subfolders
+    return true;
+}
+
+/**
+ * Load a ZIP via jszip. Returns null on any failure so callers can fall back.
+ * Skips jszip for ZIPs larger than JSZIP_MAX_BYTES (jszip loads the whole file
+ * into memory; the CLI unzip streams).
+ *
+ * @param {string} zipPath
+ * @returns {Promise<JSZip | null>}
+ */
+async function tryLoadJsZip(zipPath) {
+    try {
+        const stat = await fsp.stat(zipPath);
+        if (stat.size > JSZIP_MAX_BYTES) return null;
+        const buf = await fsp.readFile(zipPath);
+        return await JSZip.loadAsync(buf);
+    } catch (_err) {
+        return null;
+    }
+}
+
+/**
+ * List files inside a ZIP archive.
+ * Primary: jszip (UTF-8 safe — handles Gmail-exported PST ZIPs with non-ASCII
+ * filenames that the system `unzip` CLI mangles; see GitHub issue #66).
+ * Fallback: shell `zipinfo` for ZIPs jszip can't parse (encrypted, obscure
+ * compression, > JSZIP_MAX_BYTES).
+ *
+ * Filters out directories, __MACOSX junk, and hidden files either way.
  *
  * @param {string} zipPath - Absolute path to the ZIP file
  * @returns {Promise<Array<{path: string, size: number}>>}
  */
 export async function listZipContents(zipPath) {
+    // Primary: jszip
+    const zip = await tryLoadJsZip(zipPath);
+    if (zip) {
+        const files = [];
+        for (const [name, entry] of Object.entries(zip.files)) {
+            if (entry.dir) continue;
+            if (!keepZipEntry(name)) continue;
+            // jszip exposes uncompressed size in _data.uncompressedSize
+            const size = entry._data?.uncompressedSize ?? 0;
+            files.push({ path: name, size });
+        }
+        return files;
+    }
+
+    // Fallback: shell zipinfo
     const { stdout } = await execFileAsync('zipinfo', [zipPath], {
         timeout: 120000,
         maxBuffer: 50 * 1024 * 1024,
     });
-
     const files = [];
     for (const line of stdout.split('\n')) {
         // zipinfo detailed format: -rw-rw-rw-  2.0 unx  1483541 bX defN 25-Jan-08 14:54 folder/file.pdf
         const match = line.match(/^[-l]\S+\s+\S+\s+\S+\s+(\d+)\s+\S+\s+\S+\s+\S+\s+\S+\s+(.+)$/);
-        if (match) {
-            const size = parseInt(match[1], 10);
-            const filePath = match[2].trim();
-            // Skip directories, macOS metadata, and hidden files
-            if (!filePath.endsWith('/') && !filePath.startsWith('__MACOSX/') && !filePath.includes('/.')) {
-                files.push({ path: filePath, size });
-            }
-        }
+        if (!match) continue;
+        const size = parseInt(match[1], 10);
+        const filePath = match[2].trim();
+        if (keepZipEntry(filePath)) files.push({ path: filePath, size });
     }
     return files;
 }
 
 /**
- * Extract a single file from a ZIP archive to memory using unzip -p (pipe to stdout).
+ * Extract a single file from a ZIP archive to memory.
+ * Primary: jszip (UTF-8 safe for internal filenames). Fallback: `unzip -p`.
+ *
+ * When callers extract many files from the same archive (common case), the
+ * jszip instance gets rebuilt per-call — load once via `tryLoadJsZip` and
+ * reuse for a hot loop if profiling shows this is a bottleneck.
  *
  * @param {string} zipPath - Absolute path to the ZIP file
  * @param {string} internalPath - Path of the file inside the ZIP
  * @returns {Promise<Buffer>} File content as Buffer
  */
-export function extractFileFromZip(zipPath, internalPath) {
+export async function extractFileFromZip(zipPath, internalPath) {
+    // Primary: jszip
+    const zip = await tryLoadJsZip(zipPath);
+    if (zip) {
+        const entry = zip.file(internalPath);
+        if (entry) {
+            try {
+                return await entry.async('nodebuffer');
+            } catch (_err) {
+                // fall through to unzip
+            }
+        }
+        // jszip parsed the zip but didn't find the file — fall through to
+        // unzip; might be a character-encoding mismatch on the path.
+    }
+
+    // Fallback: unzip -p
     return new Promise((resolve, reject) => {
         const chunks = [];
         const child = spawn('unzip', ['-p', zipPath, internalPath]);

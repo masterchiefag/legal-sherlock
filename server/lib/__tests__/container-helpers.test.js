@@ -1,7 +1,8 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
+import JSZip from 'jszip';
 import {
     mimeFromExt,
     SKIP_EXTS,
@@ -102,6 +103,76 @@ describe('extractFileFromZip', () => {
 
     it('rejects on non-existent internal path', async () => {
         await expect(extractFileFromZip(ZIP_FIXTURE, 'no-such-file.txt')).rejects.toThrow();
+    });
+});
+
+// ═══════════════════════════════════════════════════
+// Unicode filename handling — GitHub issue #66
+// Primary: jszip handles UTF-8 filenames natively.
+// Fallback: shell `unzip -p` (CP437 default encoding) fails on non-ASCII paths
+// when invoked via child_process — measured on Yesha PST: 386/1184 ZIP failures.
+// These tests build small UTF-8 ZIPs on the fly and verify round-trip.
+// ═══════════════════════════════════════════════════
+const UTF8_TMP_DIR = path.join(__dirname, 'fixtures', '_utf8_tmp');
+
+async function buildUtf8Zip(filePath, entries) {
+    const zip = new JSZip();
+    for (const [name, content] of Object.entries(entries)) {
+        zip.file(name, content);
+    }
+    const buf = await zip.generateAsync({ type: 'nodebuffer' });
+    fs.writeFileSync(filePath, buf);
+}
+
+describe('ZIP Unicode filenames (issue #66)', () => {
+    const utf8ZipPath = path.join(UTF8_TMP_DIR, 'utf8-names.zip');
+    const nestedZipPath = path.join(UTF8_TMP_DIR, 'nested-paths.zip');
+
+    beforeAll(async () => {
+        fs.mkdirSync(UTF8_TMP_DIR, { recursive: true });
+        // ZIP with accented filenames — exactly the LAURENT ANDRE YVES MARTENS case
+        // we saw in production logs (`Laurent André Yves Martens.doc`).
+        await buildUtf8Zip(utf8ZipPath, {
+            'Laurent André Yves Martens.doc': Buffer.from('DOC content for André'),
+            'DIR-8 - Martens.doc': Buffer.from('ASCII sibling'),
+            'résumé (final).pdf': Buffer.from('%PDF-1.4 fake resume'),
+        });
+        // ZIP with nested UTF-8 paths
+        await buildUtf8Zip(nestedZipPath, {
+            'MARTENS/DIR-8 - Laurent André Yves Martens.doc': Buffer.from('nested UTF-8'),
+            'MARTENS/MBP-1.docx': Buffer.from('ASCII sibling'),
+        });
+    });
+
+    afterAll(() => {
+        try { fs.rmSync(UTF8_TMP_DIR, { recursive: true, force: true }); } catch (_) {}
+    });
+
+    it('listZipContents surfaces UTF-8 filenames verbatim', async () => {
+        const files = await listZipContents(utf8ZipPath);
+        const names = files.map(f => f.path);
+        expect(names).toContain('Laurent André Yves Martens.doc');
+        expect(names).toContain('résumé (final).pdf');
+        expect(names).toContain('DIR-8 - Martens.doc');
+    });
+
+    it('extractFileFromZip reads UTF-8 named file correctly (Unicode path)', async () => {
+        const buf = await extractFileFromZip(utf8ZipPath, 'Laurent André Yves Martens.doc');
+        expect(Buffer.isBuffer(buf)).toBe(true);
+        expect(buf.toString()).toBe('DOC content for André');
+    });
+
+    it('extractFileFromZip reads nested UTF-8 paths', async () => {
+        const buf = await extractFileFromZip(nestedZipPath, 'MARTENS/DIR-8 - Laurent André Yves Martens.doc');
+        expect(buf.toString()).toBe('nested UTF-8');
+    });
+
+    it('listZipContents + extract still work on plain ASCII sibling', async () => {
+        const files = await listZipContents(utf8ZipPath);
+        const ascii = files.find(f => f.path === 'DIR-8 - Martens.doc');
+        expect(ascii).toBeDefined();
+        const buf = await extractFileFromZip(utf8ZipPath, 'DIR-8 - Martens.doc');
+        expect(buf.toString()).toBe('ASCII sibling');
     });
 });
 
