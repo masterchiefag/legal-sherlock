@@ -486,7 +486,14 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
     const getDocDate = (doc) => {
         const d = doc.primary_date || doc.email_date || doc.doc_created_at;
         if (!d) return '';
-        return new Date(d).toLocaleDateString();
+        // Match DocumentReview's UTC display format (commit 58e8b55) so the table/card
+        // timestamps don't silently drift when the server timezone differs from the user's.
+        return new Date(d).toLocaleString('en-US', {
+            timeZone: 'UTC',
+            dateStyle: 'medium',
+            timeStyle: 'medium',
+            hour12: true,
+        }) + ' UTC';
     };
 
     const truncate = (str, len) => {
