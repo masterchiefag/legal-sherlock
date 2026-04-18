@@ -90,8 +90,9 @@ const insertEmail = db.prepare(`
         email_from, email_to, email_cc, email_subject, email_date,
         email_bcc, email_headers_raw, email_received_chain,
         email_originating_ip, email_auth_results, email_server_info, email_delivery_date,
-        investigation_id, custodian, folder_path, text_content_size, doc_identifier, recipient_count
-    ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        investigation_id, custodian, folder_path, text_content_size, doc_identifier, recipient_count,
+        dedup_md5
+    ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const insertAttachment = db.prepare(`
@@ -149,7 +150,34 @@ function flushPendingOps() {
 
 // In-memory hash set for fast dedup within this import
 const seenHashes = new Map(); // hash → filename (so duplicates can reference existing file)
-const seenMessageIds = new Set(); // deduplicate emails by message_id (OST/PST store same email in multiple folders)
+
+// Email-level content dedup (GitHub issue #61).
+// We replaced msg-id-based dedup with content-hash-based dedup. This is robust to
+// Gmail's draft/sent Message-ID collision, where the sent email's RFC822 headers
+// still carry the draft's Message-ID but the content (and attachments) differ.
+//
+//  dedup_md5 -> { folder: "/Inbox", emailId: "<uuid>" }
+//
+// When the same dedup_md5 appears again in a DIFFERENT folder, we skip the insert
+// and instead append the new folder to the primary row's duplicate_folders JSON
+// column so reviewers can still see every folder it appeared in.
+const seenDedupMd5s = new Map();
+
+// Prepared once; used by the dedup-merge path.
+const selectDuplicateFolders = db.prepare(
+    'SELECT duplicate_folders FROM documents WHERE id = ?'
+);
+const updateDuplicateFolders = db.prepare(
+    'UPDATE documents SET duplicate_folders = ? WHERE id = ?'
+);
+
+function appendDuplicateFolder(primaryEmailId, newFolder) {
+    const row = selectDuplicateFolders.get(primaryEmailId);
+    let list = [];
+    try { list = row?.duplicate_folders ? JSON.parse(row.duplicate_folders) : []; } catch (_) {}
+    if (newFolder && !list.includes(newFolder)) list.push(newFolder);
+    updateDuplicateFolders.run(JSON.stringify(list), primaryEmailId);
+}
 
 // ═══════════════════════════════════════════════════
 // Performance instrumentation
@@ -165,6 +193,8 @@ const perfStats = {
     attWritten: 0,
     attSkippedDupe: 0,
     attSkippedSize: 0,
+    emailSkippedDupe: 0,  // content-hash dedup (same dedup_md5 in different folder)
+    embeddedMsgSurfaced: 0, // rfc822 attachments seen (issue #61)
     largestAttMs: 0,
     largestAttName: '',
 };
@@ -172,7 +202,7 @@ const perfStats = {
 function logPerfSummary() {
     const total = perfStats.parseTime + perfStats.threadTime + perfStats.hashTime + perfStats.writeTime + perfStats.dbFlushTime;
     const pct = (ms) => total > 0 ? ((ms / total) * 100).toFixed(1) + '%' : '0%';
-    console.log(`✦ PERF [${perfStats.emailCount} emails] parse=${(perfStats.parseTime/1000).toFixed(1)}s(${pct(perfStats.parseTime)}) thread=${(perfStats.threadTime/1000).toFixed(1)}s(${pct(perfStats.threadTime)}) hash=${(perfStats.hashTime/1000).toFixed(1)}s(${pct(perfStats.hashTime)}) write=${(perfStats.writeTime/1000).toFixed(1)}s(${pct(perfStats.writeTime)}) dbFlush=${(perfStats.dbFlushTime/1000).toFixed(1)}s(${pct(perfStats.dbFlushTime)}) | att: ${perfStats.attWritten} written, ${perfStats.attSkippedDupe} dupe-skip, ${perfStats.attSkippedSize} size-skip`);
+    console.log(`✦ PERF [${perfStats.emailCount} emails] parse=${(perfStats.parseTime/1000).toFixed(1)}s(${pct(perfStats.parseTime)}) thread=${(perfStats.threadTime/1000).toFixed(1)}s(${pct(perfStats.threadTime)}) hash=${(perfStats.hashTime/1000).toFixed(1)}s(${pct(perfStats.hashTime)}) write=${(perfStats.writeTime/1000).toFixed(1)}s(${pct(perfStats.writeTime)}) dbFlush=${(perfStats.dbFlushTime/1000).toFixed(1)}s(${pct(perfStats.dbFlushTime)}) | email dedup skips: ${perfStats.emailSkippedDupe} | att: ${perfStats.attWritten} written, ${perfStats.attSkippedDupe} dupe-skip, ${perfStats.attSkippedSize} size-skip | rfc822: ${perfStats.embeddedMsgSurfaced} embedded msgs surfaced`);
     if (perfStats.largestAttName) console.log(`✦ PERF slowest write: ${perfStats.largestAttName} (${perfStats.largestAttMs}ms)`);
 }
 
@@ -276,7 +306,8 @@ async function main() {
         // Sequential because: threading/backfill needs consistent DB state,
         // and SQLite single-writer means concurrent DB ops just contend.
         // Optimization: async file writes + in-memory dedup hash set.
-        // Resume mode: skip emails already imported (by message_id).
+        // Resume mode: skip emails already imported (header scan by message_id is a
+        //   cheap pre-filter; the authoritative dedup check below uses content-hash).
         // ═══════════════════════════════════════════
 
         // Build set of already-imported message_ids for resume
@@ -314,9 +345,18 @@ async function main() {
             console.log(`✦ PST Import (RESUME): skipped ${skipped} in ${Date.now() - scanStart}ms, ${filesToProcess.length} to process`);
         }
 
-        // Seed message_id dedup set from known emails (covers resume + multi-folder dedup)
-        if (knownMessageIds.size > 0) {
-            for (const mid of knownMessageIds) seenMessageIds.add(mid);
+        // Seed content-hash dedup state from already-ingested emails. This is what
+        // makes resume-mode dedup consistent with fresh-ingest dedup.
+        if (resume) {
+            const existingDedup = db.prepare(
+                "SELECT id, dedup_md5, folder_path FROM documents WHERE investigation_id = ? AND doc_type = 'email' AND dedup_md5 IS NOT NULL"
+            ).all(investigation_id);
+            for (const e of existingDedup) {
+                seenDedupMd5s.set(e.dedup_md5, { folder: e.folder_path, emailId: e.id });
+            }
+            if (existingDedup.length > 0) {
+                console.log(`✦ PST Import (RESUME): seeded ${existingDedup.length} dedup_md5 entries from DB`);
+            }
         }
 
         // Initialize threading cache — avoids 3-5 DB SELECTs per email
@@ -345,18 +385,43 @@ async function main() {
                 perfStats.parseTime += parseMs;
                 if (parseMs > 5000) console.log(`✦ PERF WARNING: slow parse ${parseMs}ms for ${path.basename(emlPath)} (${eml.attachments.length} attachments)`);
 
-                // Skip duplicate emails (same message in multiple Outlook folders)
-                if (eml.messageId && seenMessageIds.has(eml.messageId)) {
-                    continue;
-                }
-                if (eml.messageId) seenMessageIds.add(eml.messageId);
-
-                // Derive folder path from PST directory structure
+                // Derive folder path from PST directory structure (needed by dedup check)
                 const relPath = path.relative(tmpDir, emlPath);
                 const folderPath = path.dirname(relPath).replace(/\\/g, '/');
                 eml._folderPath = folderPath === '.' ? '/' : '/' + folderPath;
 
+                // Content-hash dedup (see GitHub issue #61).
+                // If we've already ingested an email with this dedup_md5 AND the current
+                // copy is in a different folder, skip the insert and just append the
+                // new folder to the primary row's duplicate_folders list. This keeps
+                // reviewer visibility into where an email appeared without creating
+                // duplicate rows for Gmail-label copies / Sent+Inbox A→A pairs etc.
+                //
+                // Crucially, this does NOT dedup when dedup_md5 differs — so the Gmail
+                // draft (no real attachments) and sent copy (with attachments) — which
+                // share a Message-ID — are kept as distinct rows.
+                if (eml.dedupMd5) {
+                    const prior = seenDedupMd5s.get(eml.dedupMd5);
+                    if (prior && prior.emailId && prior.folder !== eml._folderPath) {
+                        appendDuplicateFolder(prior.emailId, eml._folderPath);
+                        perfStats.emailSkippedDupe++;
+                        if (perfStats.emailSkippedDupe <= 20 || perfStats.emailSkippedDupe % 100 === 0) {
+                            console.log(`  ✦ dedup skip: hash=${eml.dedupMd5.substring(0, 12)}… prior=${prior.folder} new=${eml._folderPath} subject="${(eml.subject || '').substring(0, 50)}"`);
+                        }
+                        continue;
+                    }
+                    // Reserve the slot now; we'll patch in emailId after insert.
+                    if (!prior) seenDedupMd5s.set(eml.dedupMd5, { folder: eml._folderPath, emailId: null });
+                }
+
                 const result = await processEmail(eml);
+
+                // Now that we know the new row's id, register it so later appearances
+                // of the same dedup_md5 can append their folder paths to it.
+                if (eml.dedupMd5 && result?.emailId) {
+                    const entry = seenDedupMd5s.get(eml.dedupMd5);
+                    if (entry && !entry.emailId) entry.emailId = result.emailId;
+                }
                 if (eml._warnings?.length > 0) {
                     for (const w of eml._warnings) {
                         errorLog.push({ type: w.type, subject: eml.subject, docId: result.emailId, raw: w.raw });
@@ -1954,10 +2019,15 @@ async function main() {
         recreateBulkIndexes(db);
     } finally {
         try { db.close(); } catch (_) {}
-        try {
-            fs.rmSync(tmpDir, { recursive: true, force: true });
-            console.log('✦ PST Import: cleaned up temp directory');
-        } catch (_) { /* best effort */ }
+        // TEMPORARILY DISABLED: keep readpst's .eml files around so we can verify
+        // the content-hash dedup + embedded-rfc822 fixes against Relativity after
+        // re-ingestion (see GitHub issue #61). Re-enable this once verified.
+        //
+        // try {
+        //     fs.rmSync(tmpDir, { recursive: true, force: true });
+        //     console.log('✦ PST Import: cleaned up temp directory');
+        // } catch (_) { /* best effort */ }
+        console.log(`✦ PST Import: temp dir preserved for verification at ${tmpDir}`);
     }
 }
 
@@ -1988,7 +2058,8 @@ async function processEmail(eml) {
             eml.serverInfo || null, eml.deliveryDate || null,
             investigation_id, custodian || null,
             eml._folderPath || null, textBody.length || 0,
-            emailDocId, recipientCount
+            emailDocId, recipientCount,
+            eml.dedupMd5 || null
         );
     });
 
@@ -2019,11 +2090,23 @@ async function processEmail(eml) {
             || att.contentType === 'application/ms-tnef';
         const isOversized = !isContainer && att.size > MAX_ATTACHMENT_SIZE;
 
-        // Hash in memory — check in-memory map instead of DB query per attachment
+        // Reuse the MD5 eml-parser already computed (attached to att.md5).
+        // Fall back to hashing here if upstream didn't provide it (e.g. legacy callers).
         const tHash = Date.now();
-        const attHash = isOversized ? null : crypto.createHash('md5').update(att.content).digest('hex');
+        const attHash = isOversized
+            ? null
+            : (att.md5 || crypto.createHash('md5').update(att.content).digest('hex'));
         perfStats.hashTime += Date.now() - tHash;
         const isDuplicate = attHash && seenHashes.has(attHash) ? 1 : 0;
+
+        // Log surfaced rfc822 attachments — confirms the postal-mime flag is firing
+        // and Phase 1.5 will have records to process (issue #61).
+        if (att.contentType === 'message/rfc822' && perfStats.embeddedMsgSurfaced < 50) {
+            perfStats.embeddedMsgSurfaced++;
+            console.log(`  ✦ embedded rfc822 on email ${emailId.substring(0, 8)}: "${att.filename}" size=${att.size}`);
+        } else if (att.contentType === 'message/rfc822') {
+            perfStats.embeddedMsgSurfaced++;
+        }
 
         // Skip file write for duplicates or oversized — reuse existing file or skip entirely
         let finalFilename = attFilename;
