@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { stripHtml, cleanId, formatAddresses, parseReceivedHeaders } from '../eml-parser.js';
+import { stripHtml, cleanId, formatAddresses, parseReceivedHeaders, parseEml } from '../eml-parser.js';
 
 describe('stripHtml', () => {
   it('returns empty for null/undefined', () => {
@@ -124,5 +124,60 @@ describe('parseReceivedHeaders', () => {
     expect(hops).toHaveLength(1);
     expect(hops[0].from).toBeUndefined();
     expect(hops[0].by).toBeUndefined();
+  });
+});
+
+describe('parseEml bcc fallback', () => {
+  it('reads x-libpst-forensic-bcc when standard bcc header is absent (libpst-extracted sent mail)', async () => {
+    // Simulate what readpst emits for a sent email: the standard bcc: line is stripped
+    // per RFC 2822, but the MAPI-stored BCC list is surfaced under the forensic header.
+    const eml = [
+      'from: Yesha Maniar <yeshamaniar@jmbaxi.com>',
+      'to: Mr. Tamal Roy <tamalr@jmbaxi.com>',
+      'cc: Aman Chandel <amanc@ict.in>',
+      'subject: test bcc fallback',
+      'date: Thu, 17 Nov 2022 10:00:00 +0000',
+      'message-id: <test-bcc@example.com>',
+      'x-libpst-forensic-bcc: Nitin Banerjee',
+      'content-type: text/plain',
+      '',
+      'body',
+    ].join('\r\n');
+    const parsed = await parseEml(Buffer.from(eml));
+    expect(parsed.bcc).toBe('Nitin Banerjee');
+  });
+
+  it('prefers the standard bcc header when present (does not overwrite)', async () => {
+    const eml = [
+      'from: a@example.com',
+      'to: b@example.com',
+      'bcc: real-bcc@example.com',
+      'subject: test',
+      'date: Thu, 17 Nov 2022 10:00:00 +0000',
+      'message-id: <test-bcc2@example.com>',
+      'x-libpst-forensic-bcc: someone-else@example.com',
+      'content-type: text/plain',
+      '',
+      'body',
+    ].join('\r\n');
+    const parsed = await parseEml(Buffer.from(eml));
+    // Standard bcc wins
+    expect(parsed.bcc).toContain('real-bcc@example.com');
+    expect(parsed.bcc).not.toContain('someone-else');
+  });
+
+  it('returns empty bcc when neither header is present', async () => {
+    const eml = [
+      'from: a@example.com',
+      'to: b@example.com',
+      'subject: no bcc',
+      'date: Thu, 17 Nov 2022 10:00:00 +0000',
+      'message-id: <no-bcc@example.com>',
+      'content-type: text/plain',
+      '',
+      'body',
+    ].join('\r\n');
+    const parsed = await parseEml(Buffer.from(eml));
+    expect(parsed.bcc).toBe('');
   });
 });
