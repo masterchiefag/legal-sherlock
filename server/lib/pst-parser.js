@@ -415,3 +415,109 @@ function parseReceivedFromHeaders(headersStr) {
 
     return hops;
 }
+
+/**
+ * Walk the PST and yield the raw multipart/signed MIME payload for every
+ * IPM.Note.SMIME.MultipartSigned message.
+ *
+ * Background (GitHub issue #79): S/MIME-signed emails land in the PST with
+ * `messageClass = IPM.Note.SMIME.MultipartSigned` and a single "attachment"
+ * that wraps the entire signed MIME body (real body + real attachments + the
+ * .p7s signature). Outlook clients render the inner body seamlessly. readpst's
+ * `-e` extraction strips this wrapper — the .eml Sherlock ingests has the
+ * plaintext body, but all real attachments are gone. pst-extractor reports
+ * `numberOfAttachments = 1` but `attachSize` is `undefined`, which tricked our
+ * earlier diagnostics into thinking the attachment was empty.
+ *
+ * The trick: `attachment.fileInputStream` yields the actual bytes (typically
+ * 100 KB–5 MB), which are a STANDARD multipart/signed MIME body that
+ * postal-mime can parse directly. The caller feeds our blob into postal-mime
+ * and inserts the recovered attachments as children of the existing email.
+ *
+ * @param {string} filePath - Absolute path to the .pst file
+ * @returns {Array<{
+ *   messageId: string | null,  // lowercased, brackets stripped (matches our message_id column)
+ *   folderPath: string,
+ *   subject: string,
+ *   mapiClass: string,
+ *   blob: Buffer | null,      // raw multipart/signed bytes; null if read failed
+ *   blobSize: number,
+ * }>}
+ */
+export function extractSignedSmimeBlobs(filePath) {
+    const pstFile = new PSTFile(filePath);
+    const out = [];
+
+    function walkFolder(folder, folderPath) {
+        if (folder.contentCount > 0) {
+            let msg = folder.getNextChild();
+            while (msg) {
+                if (msg instanceof PSTMessage) {
+                    try {
+                        const cls = msg.messageClass || '';
+                        if (cls.toUpperCase().includes('SMIME.MULTIPARTSIGNED')) {
+                            const rec = readSignedBlob(msg, folderPath);
+                            if (rec) out.push(rec);
+                        }
+                    } catch (err) {
+                        console.warn(`[pst-parser] extractSignedSmimeBlobs: failed on one message: ${err.message}`);
+                    }
+                }
+                msg = folder.getNextChild();
+            }
+        }
+        if (folder.hasSubfolders) {
+            for (const sub of folder.getSubFolders()) {
+                const nextPath = folderPath ? `${folderPath}/${sub.displayName}` : (sub.displayName || '');
+                walkFolder(sub, nextPath);
+            }
+        }
+    }
+
+    walkFolder(pstFile.getRootFolder(), '');
+    return out;
+}
+
+/**
+ * Helper for extractSignedSmimeBlobs(): read attachment 0's fileInputStream
+ * into a Buffer. Returns null if the message has no attachment or the stream
+ * fails to yield bytes.
+ */
+function readSignedBlob(msg, folderPath) {
+    let mid = msg.internetMessageId || '';
+    mid = mid.replace(/^</, '').replace(/>$/, '').trim().toLowerCase();
+
+    // For MultipartSigned, the signed MIME body lives on attachment 0.
+    // Shape: numberOfAttachments=1, attachSize=undefined, mimeTag='multipart/signed'.
+    if (!msg.numberOfAttachments || msg.numberOfAttachments < 1) return null;
+    let a;
+    try { a = msg.getAttachment(0); } catch (_) { return null; }
+    if (!a) return null;
+
+    let stream;
+    try { stream = a.fileInputStream; } catch (_) { return null; }
+    if (!stream) return null;
+
+    const chunks = [];
+    const readBuf = Buffer.alloc(8192);
+    let total = 0;
+    try {
+        let read;
+        while ((read = stream.read(readBuf)) > 0) {
+            chunks.push(Buffer.from(readBuf.subarray(0, read)));
+            total += read;
+        }
+    } catch (_) { return null; }
+
+    if (total === 0) return null;
+    const blob = Buffer.concat(chunks, total);
+
+    return {
+        messageId: mid || null,
+        folderPath: folderPath || '',
+        subject: msg.subject || '',
+        mapiClass: msg.messageClass || '',
+        blob,
+        blobSize: total,
+    };
+}
