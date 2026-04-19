@@ -106,6 +106,24 @@ const insertAttachment = db.prepare(`
         ?, ?, ?, ?, ?)
 `);
 
+// MAPI non-email items: calendar / task / note / contact.
+// doc_type is passed in (one of 'calendar', 'task', 'note', 'contact');
+// event_start_at, event_end_at, event_location are populated for calendar
+// and (start/end only) for task rows; note/contact leave them NULL.
+const insertMapiNonEmail = db.prepare(`
+    INSERT INTO documents (
+        id, filename, original_name, mime_type, size_bytes, text_content, status,
+        doc_type, message_id, email_from, email_to, email_cc, email_bcc,
+        email_subject, email_date, email_headers_raw,
+        investigation_id, custodian, folder_path, text_content_size,
+        event_start_at, event_end_at, event_location, mapi_class
+    ) VALUES (?, ?, ?, ?, ?, ?, 'ready',
+        ?, ?, ?, ?, ?, ?,
+        ?, ?, NULL,
+        ?, ?, ?, ?,
+        ?, ?, ?, ?)
+`);
+
 const updateProgress = db.prepare(
     "UPDATE import_jobs SET total_emails = ?, total_attachments = ?, phase = ? WHERE id = ?"
 );
@@ -556,6 +574,80 @@ async function main() {
             }
         } else {
             console.log('✦ PST Import Phase 1.2: skipped (extractionOnly resume / source missing / non-PST input)');
+        }
+
+        // ═══════════════════════════════════════════
+        // Phase 1.3: Ingest MAPI non-email items (GitHub issue #65 Phase 2)
+        //
+        // readpst's `-e` mode only emits IPM.Note (and SMIME) as .eml files.
+        // Calendar appointments (IPM.Appointment), tasks (IPM.Task), sticky
+        // notes (IPM.StickyNote), contacts (IPM.Contact), and meeting requests
+        // (IPM.Schedule.Meeting.*) are silently dropped. Relativity includes
+        // them as "Email" record types in its export — roughly 4,500 rows on
+        // the Yesha PST, concentrated in CN range 45,000-49,553.
+        //
+        // We read these directly from MAPI via pst-extractor and insert them
+        // as documents with doc_type 'calendar' / 'task' / 'note' / 'contact'.
+        // The worker's existing email path is unchanged; this is purely additive.
+        //
+        // Skipped under the same conditions as Phase 1.2 (extractionOnly,
+        // source missing, non-PST input).
+        // ═══════════════════════════════════════════
+        if (!extractionOnly && fs.existsSync(filepath) && filepath.toLowerCase().endsWith('.pst')) {
+            console.log('✦ PST Import Phase 1.3: Ingesting MAPI non-email items (calendar / task / note / contact)...');
+            db.prepare("UPDATE import_jobs SET phase = 'mapi_non_email' WHERE id = ?").run(jobId);
+            const t0 = Date.now();
+            let records = [];
+            try {
+                const { extractNonEmailMapi } = await import('../lib/pst-parser.js');
+                records = extractNonEmailMapi(filepath);
+                console.log(`  ✦ Phase 1.3: extracted ${records.length.toLocaleString()} MAPI non-email items in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+            } catch (err) {
+                console.warn(`  ✦ Phase 1.3 SKIPPED — pst-extractor failed: ${err.message}`);
+            }
+
+            if (records.length > 0) {
+                const byType = { calendar: 0, task: 0, note: 0, contact: 0 };
+                const errors = [];
+                const tx = db.transaction(() => {
+                    for (const r of records) {
+                        try {
+                            const id = uuidv4();
+                            // Synthesize filename + original_name — no file on disk for these, it's
+                            // metadata-only. filename column must be non-null per schema.
+                            const synthName = `${r.docType}:${r.subject?.substring(0, 60) || '(no subject)'}`;
+                            const displayDate = r.eventStartAt || r.clientSubmitTime || null;
+                            const mime = ({
+                                calendar: 'application/x-ms-appointment',
+                                task: 'application/x-ms-task',
+                                note: 'application/x-ms-stickynote',
+                                contact: 'application/x-ms-contact',
+                            })[r.docType] || 'application/octet-stream';
+                            const bodyText = r.body || '';
+                            insertMapiNonEmail.run(
+                                id, id, synthName, mime, Buffer.byteLength(bodyText, 'utf8'), bodyText,
+                                r.docType, r.messageId || null, r.from || '', r.to || '', r.cc || '', r.bcc || '',
+                                r.subject || '(no subject)', displayDate,
+                                investigation_id, custodian || null, r.folderPath || null, bodyText.length || 0,
+                                r.eventStartAt, r.eventEndAt, r.eventLocation, r.mapiClass || null,
+                            );
+                            byType[r.docType] = (byType[r.docType] || 0) + 1;
+                        } catch (err) {
+                            errors.push(`${r.mapiClass || 'unknown'}: ${err.message}`);
+                        }
+                    }
+                });
+                try {
+                    tx();
+                } catch (err) {
+                    console.error(`  ✦ Phase 1.3 TX FAILED: ${err.message}`);
+                }
+
+                const summary = `calendar=${byType.calendar.toLocaleString()} task=${byType.task.toLocaleString()} note=${byType.note.toLocaleString()} contact=${byType.contact.toLocaleString()}`;
+                console.log(`✦ Phase 1.3 complete in ${((Date.now() - t0) / 1000).toFixed(1)}s: ${summary}${errors.length ? ` (${errors.length} errors — first: ${errors[0].substring(0, 80)})` : ''}`);
+            }
+        } else {
+            console.log('✦ PST Import Phase 1.3: skipped (extractionOnly resume / source missing / non-PST input)');
         }
 
         // ═══════════════════════════════════════════

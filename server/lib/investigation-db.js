@@ -262,6 +262,12 @@ function initSchema(db) {
             -- JSON array of additional folder paths where the same content hash appeared.
             -- Populated on the primary row when a dedup-skip fires.
             duplicate_folders TEXT,
+            -- MAPI non-email classes (GitHub issue #65 Phase 2): calendar / task / note / contact.
+            -- Only populated when doc_type is one of 'calendar' / 'task' / 'note' / 'contact'.
+            event_start_at TEXT,     -- ISO: appointment start / task start
+            event_end_at TEXT,       -- ISO: appointment end / task due
+            event_location TEXT,     -- appointment location
+            mapi_class TEXT,         -- raw PR_MESSAGE_CLASS for forensic fidelity
             -- Custodian / investigation
             custodian TEXT,
             investigation_id TEXT,
@@ -513,6 +519,27 @@ function runMigrations(db) {
     }
     if (!columnExists(db, 'documents', 'duplicate_folders')) {
         db.exec(`ALTER TABLE documents ADD COLUMN duplicate_folders TEXT`);
+    }
+
+    // MAPI calendar / task / note / contact support (GitHub issue #65 Phase 2).
+    // readpst does not emit non-IPM.Note MAPI items (calendar appointments,
+    // tasks, sticky notes, contacts) as .eml files — they're silently dropped.
+    // We read them directly from MAPI via pst-extractor and store them as
+    // documents with doc_type 'calendar' / 'task' / 'note' / 'contact' plus
+    // the four columns below. All nullable; emails keep them NULL.
+    if (!columnExists(db, 'documents', 'event_start_at')) {
+        db.exec(`ALTER TABLE documents ADD COLUMN event_start_at TEXT`);  // ISO
+    }
+    if (!columnExists(db, 'documents', 'event_end_at')) {
+        db.exec(`ALTER TABLE documents ADD COLUMN event_end_at TEXT`);    // ISO
+    }
+    if (!columnExists(db, 'documents', 'event_location')) {
+        db.exec(`ALTER TABLE documents ADD COLUMN event_location TEXT`);
+    }
+    if (!columnExists(db, 'documents', 'mapi_class')) {
+        // Raw PR_MESSAGE_CLASS for forensic fidelity — e.g. 'IPM.Appointment',
+        // 'IPM.Task', 'IPM.StickyNote', 'IPM.Schedule.Meeting.Request'
+        db.exec(`ALTER TABLE documents ADD COLUMN mapi_class TEXT`);
     }
 
     // Ensure FTS exists and is healthy

@@ -232,6 +232,151 @@ function extractEmailData(msg) {
 }
 
 /**
+ * Classify a MAPI PR_MESSAGE_CLASS string into the Sherlock doc_type bucket.
+ * Used by pst-worker Phase 1.3 to ingest non-IPM.Note items that readpst drops.
+ *
+ * Returns one of: 'email' | 'calendar' | 'task' | 'note' | 'contact' | 'other'.
+ * 'email' is reported for anything we already ingest via the readpst/.eml path,
+ * so Phase 1.3 knows to skip it (Phase 1 has the better version).
+ *
+ * @param {string} messageClass - Raw PR_MESSAGE_CLASS like 'IPM.Appointment'
+ * @returns {'email'|'calendar'|'task'|'note'|'contact'|'other'}
+ */
+export function classifyMapiMessage(messageClass) {
+    if (!messageClass || typeof messageClass !== 'string') return 'other';
+    const c = messageClass.toUpperCase();
+    // Regular mail — already covered by readpst.
+    if (c === 'IPM.NOTE' || c.startsWith('IPM.NOTE.SMIME') || c === 'IPM' || c === '') return 'email';
+    // Calendar + meeting requests (meeting requests ARE a kind of mail in MAPI,
+    // but readpst handles IPM.Note better, so only pure appointments here).
+    if (c === 'IPM.APPOINTMENT' || c.startsWith('IPM.APPOINTMENT.')) return 'calendar';
+    if (c.startsWith('IPM.SCHEDULE.MEETING')) return 'calendar';
+    // Tasks
+    if (c === 'IPM.TASK' || c.startsWith('IPM.TASK.') || c.startsWith('IPM.TASKREQUEST')) return 'task';
+    // Notes / sticky notes / journal
+    if (c === 'IPM.STICKYNOTE' || c.startsWith('IPM.STICKYNOTE.')) return 'note';
+    if (c === 'IPM.ACTIVITY' || c.startsWith('IPM.ACTIVITY.')) return 'note';
+    // Contacts / address-book entries
+    if (c === 'IPM.CONTACT' || c.startsWith('IPM.CONTACT.') || c === 'IPM.DISTLIST') return 'contact';
+    return 'other';
+}
+
+/**
+ * Walk the PST and yield MAPI items whose message-class ISN'T a regular email.
+ * Returns an array of records — each suitable for insertion as a Sherlock
+ * 'calendar' / 'task' / 'note' / 'contact' document. See classifyMapiMessage()
+ * for the class → doc_type mapping.
+ *
+ * Recipients, attendees, and body are pulled via the same API the existing
+ * extractEmailData() uses. Attachments are not extracted here — they're
+ * handled elsewhere if needed (most non-email MAPI items have none).
+ *
+ * @param {string} filePath - Absolute path to the .pst file
+ * @returns {Array<{
+ *   docType: 'calendar'|'task'|'note'|'contact',
+ *   mapiClass: string,
+ *   messageId: string | null,
+ *   subject: string,
+ *   body: string,
+ *   from: string,         // "Name <email>" or "email" or ""
+ *   to: string, cc: string, bcc: string,
+ *   folderPath: string,
+ *   clientSubmitTime: string | null,
+ *   eventStartAt: string | null,
+ *   eventEndAt: string | null,
+ *   eventLocation: string | null,
+ * }>}
+ */
+export function extractNonEmailMapi(filePath) {
+    const pstFile = new PSTFile(filePath);
+    const out = [];
+
+    function walkFolder(folder, folderPath) {
+        if (folder.contentCount > 0) {
+            let msg = folder.getNextChild();
+            while (msg) {
+                if (msg instanceof PSTMessage) {
+                    try {
+                        const bucket = classifyMapiMessage(msg.messageClass || '');
+                        if (bucket !== 'email' && bucket !== 'other') {
+                            out.push(mapiToRecord(msg, bucket, folderPath));
+                        }
+                    } catch (err) {
+                        console.warn(`[pst-parser] extractNonEmailMapi: failed on one message: ${err.message}`);
+                    }
+                }
+                msg = folder.getNextChild();
+            }
+        }
+        if (folder.hasSubfolders) {
+            for (const sub of folder.getSubFolders()) {
+                const nextPath = folderPath ? `${folderPath}/${sub.displayName}` : (sub.displayName || '');
+                walkFolder(sub, nextPath);
+            }
+        }
+    }
+
+    walkFolder(pstFile.getRootFolder(), '');
+    return out;
+}
+
+function mapiToRecord(msg, docType, folderPath) {
+    // Message-ID (rarely populated on non-mail items, but try anyway)
+    let messageId = msg.internetMessageId || '';
+    if (messageId) messageId = messageId.replace(/^</, '').replace(/>$/, '').trim();
+
+    // Sender — applies to meeting requests + mail; calendar-only items may lack
+    const from = msg.senderName
+        ? (msg.senderEmailAddress
+            ? `${msg.senderName} <${msg.senderEmailAddress}>`
+            : msg.senderName)
+        : msg.senderEmailAddress || '';
+
+    // Dates. pst-extractor exposes various date fields depending on class.
+    // Appointment start/end live on the msg for IPM.Appointment; task start/due
+    // share the same property names on IPM.Task. We read defensively.
+    let clientSubmitTime = null;
+    try {
+        if (msg.clientSubmitTime) clientSubmitTime = msg.clientSubmitTime.toISOString();
+    } catch (_) { /* not set */ }
+
+    let eventStartAt = null;
+    try {
+        // Appointment: appointmentStartWhole; Task: taskStartDate (field names per pst-extractor)
+        const s = msg.appointmentStartWhole || msg.startDate || msg.taskStartDate;
+        if (s && typeof s.toISOString === 'function') eventStartAt = s.toISOString();
+    } catch (_) { /* defensive */ }
+
+    let eventEndAt = null;
+    try {
+        const e = msg.appointmentEndWhole || msg.endDate || msg.taskDueDate;
+        if (e && typeof e.toISOString === 'function') eventEndAt = e.toISOString();
+    } catch (_) { /* defensive */ }
+
+    let eventLocation = null;
+    try {
+        eventLocation = msg.location || msg.appointmentLocation || null;
+    } catch (_) { /* defensive */ }
+
+    return {
+        docType,
+        mapiClass: msg.messageClass || '',
+        messageId: messageId || null,
+        subject: msg.subject || '(no subject)',
+        body: msg.body || '',
+        from,
+        to: msg.displayTo || '',
+        cc: msg.displayCC || '',
+        bcc: msg.displayBCC || '',
+        folderPath,
+        clientSubmitTime,
+        eventStartAt,
+        eventEndAt,
+        eventLocation,
+    };
+}
+
+/**
  * Parse Received headers from raw transport headers string.
  * Returns array of hop objects: { from, by, with, date, ip }
  */
