@@ -27,6 +27,7 @@ import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
 import { resolveThreadId, backfillThread } from '../lib/threading.js';
 import { getSetting } from '../lib/settings.js';
+import { resolveFileExtension } from '../lib/file-extension.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -103,25 +104,25 @@ const insertEmail = db.prepare(`
         email_from, email_to, email_cc, email_subject, email_date,
         email_bcc, email_headers_raw, email_received_chain,
         email_originating_ip, email_auth_results, email_server_info, email_delivery_date,
-        investigation_id, custodian, folder_path, text_content_size, doc_identifier, recipient_count
-    ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        investigation_id, custodian, folder_path, text_content_size, doc_identifier, recipient_count, file_extension
+    ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'eml')
 `);
 
 const insertAttachment = db.prepare(`
     INSERT INTO documents (
         id, filename, original_name, mime_type, size_bytes, text_content, status,
         doc_type, parent_id, thread_id,
-        content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+        content_hash, is_duplicate, investigation_id, custodian, doc_identifier, file_extension
     ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
-        ?, ?, ?, ?, ?)
+        ?, ?, ?, ?, ?, ?)
 `);
 
 const insertFile = db.prepare(`
     INSERT INTO documents (
         id, filename, original_name, mime_type, size_bytes, text_content, text_content_size, status,
         doc_type, content_hash, is_duplicate, investigation_id, custodian, doc_identifier,
-        doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', 'file', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords, file_extension
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'ready', 'file', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 // Batched transaction wrapper
@@ -291,12 +292,15 @@ async function processEmlEntry(zipPath, entry) {
             const finalFilename = isDuplicate ? seenHashes.get(attHash) : attFilename;
             const attDocId = attIdentifier(emailDocId, attIdx);
 
+            const attMime = att.contentType || 'application/octet-stream';
+            const attOrigName = att.filename || 'attachment';
             batchBuffer.push(() => {
                 insertAttachment.run(
-                    attId, finalFilename, att.filename || 'attachment',
-                    att.contentType || 'application/octet-stream', att.size || att.content.length,
+                    attId, finalFilename, attOrigName,
+                    attMime, att.size || att.content.length,
                     emailId, threadId,
-                    attHash, isDuplicate, investigation_id, custodian || null, attDocId
+                    attHash, isDuplicate, investigation_id, custodian || null, attDocId,
+                    resolveFileExtension(attOrigName, attMime, finalFilename)
                 );
             });
 
@@ -362,7 +366,8 @@ async function processFileEntry(zipPath, entry) {
                 fileId, diskFilename, originalName,
                 mime, entry.size, text || null, text ? text.length : 0,
                 contentHash, isDuplicate, investigation_id, custodian || null, fileDocId,
-                meta.author, meta.title, meta.createdAt, meta.modifiedAt, meta.creatorTool, meta.keywords
+                meta.author, meta.title, meta.createdAt, meta.modifiedAt, meta.creatorTool, meta.keywords,
+                resolveFileExtension(originalName, mime, diskFilename)
             );
         });
 

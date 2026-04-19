@@ -17,6 +17,7 @@ import { listZipContents, extractFileFromZip, detectPdfEmbeddedFiles, extractPdf
 import { disableFtsTriggers, enableFtsTriggers, rebuildFtsIndex, dropBulkIndexes, recreateBulkIndexes, refreshInvestigationCounts, walCheckpoint, backfillDuplicateText, replicateChildrenToDuplicates } from '../lib/worker-helpers.js';
 import { resolveThreadId, backfillThread, updateCacheOnly, resolveThreadIdFromCache, initCache } from '../lib/threading-cached.js';
 import { getSetting } from '../lib/settings.js';
+import { resolveFileExtension } from '../lib/file-extension.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -91,8 +92,8 @@ const insertEmail = db.prepare(`
         email_bcc, email_headers_raw, email_received_chain,
         email_originating_ip, email_auth_results, email_server_info, email_delivery_date,
         investigation_id, custodian, folder_path, text_content_size, doc_identifier, recipient_count,
-        dedup_md5
-    ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        dedup_md5, has_html_body, inline_images_meta, file_extension
+    ) VALUES (?, ?, ?, ?, ?, ?, 'ready', 'email', ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 `);
 
 const insertAttachment = db.prepare(`
@@ -100,10 +101,10 @@ const insertAttachment = db.prepare(`
         id, filename, original_name, mime_type, size_bytes, text_content, status,
         doc_type, parent_id, thread_id,
         doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
-        content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+        content_hash, is_duplicate, investigation_id, custodian, doc_identifier, file_extension
     ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
         ?, ?, ?, ?, ?, ?,
-        ?, ?, ?, ?, ?)
+        ?, ?, ?, ?, ?, ?)
 `);
 
 // MAPI non-email items: calendar / task / note / contact.
@@ -213,6 +214,8 @@ const perfStats = {
     attSkippedSize: 0,
     emailSkippedDupe: 0,  // content-hash dedup (same dedup_md5 in different folder)
     embeddedMsgSurfaced: 0, // rfc822 attachments seen (issue #61)
+    attSkippedInline: 0,    // inline CID images skipped from attachments table (html render)
+    htmlBodiesWritten: 0,   // number of HTML sidecar bodies written to disk
     largestAttMs: 0,
     largestAttName: '',
 };
@@ -220,7 +223,7 @@ const perfStats = {
 function logPerfSummary() {
     const total = perfStats.parseTime + perfStats.threadTime + perfStats.hashTime + perfStats.writeTime + perfStats.dbFlushTime;
     const pct = (ms) => total > 0 ? ((ms / total) * 100).toFixed(1) + '%' : '0%';
-    console.log(`✦ PERF [${perfStats.emailCount} emails] parse=${(perfStats.parseTime/1000).toFixed(1)}s(${pct(perfStats.parseTime)}) thread=${(perfStats.threadTime/1000).toFixed(1)}s(${pct(perfStats.threadTime)}) hash=${(perfStats.hashTime/1000).toFixed(1)}s(${pct(perfStats.hashTime)}) write=${(perfStats.writeTime/1000).toFixed(1)}s(${pct(perfStats.writeTime)}) dbFlush=${(perfStats.dbFlushTime/1000).toFixed(1)}s(${pct(perfStats.dbFlushTime)}) | email dedup skips: ${perfStats.emailSkippedDupe} | att: ${perfStats.attWritten} written, ${perfStats.attSkippedDupe} dupe-skip, ${perfStats.attSkippedSize} size-skip | rfc822: ${perfStats.embeddedMsgSurfaced} embedded msgs surfaced`);
+    console.log(`✦ PERF [${perfStats.emailCount} emails] parse=${(perfStats.parseTime/1000).toFixed(1)}s(${pct(perfStats.parseTime)}) thread=${(perfStats.threadTime/1000).toFixed(1)}s(${pct(perfStats.threadTime)}) hash=${(perfStats.hashTime/1000).toFixed(1)}s(${pct(perfStats.hashTime)}) write=${(perfStats.writeTime/1000).toFixed(1)}s(${pct(perfStats.writeTime)}) dbFlush=${(perfStats.dbFlushTime/1000).toFixed(1)}s(${pct(perfStats.dbFlushTime)}) | email dedup skips: ${perfStats.emailSkippedDupe} | att: ${perfStats.attWritten} written, ${perfStats.attSkippedDupe} dupe-skip, ${perfStats.attSkippedSize} size-skip, ${perfStats.attSkippedInline} inline-skip | rfc822: ${perfStats.embeddedMsgSurfaced} embedded | html: ${perfStats.htmlBodiesWritten} bodies`);
     if (perfStats.largestAttName) console.log(`✦ PERF slowest write: ${perfStats.largestAttName} (${perfStats.largestAttMs}ms)`);
 }
 
@@ -722,10 +725,10 @@ async function main() {
                 id, filename, original_name, mime_type, size_bytes, text_content, status,
                 doc_type, parent_id, thread_id,
                 doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
-                content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+                content_hash, is_duplicate, investigation_id, custodian, doc_identifier, file_extension
             ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
                 ?, ?, ?, ?, ?, ?,
-                ?, ?, ?, ?, ?)
+                ?, ?, ?, ?, ?, ?)
         `);
 
         const updateMsgText = db.prepare(
@@ -828,7 +831,7 @@ async function main() {
                             msgDoc.id, threadId,
                             null, null, null, null, null, null,
                             attHash, isDuplicate, investigation_id, msgDoc.custodian || custodian || null,
-                            docIdentifier
+                            docIdentifier, resolveFileExtension(att.filename, att.contentType, finalFilename)
                         );
                     });
 
@@ -932,10 +935,10 @@ async function main() {
                     id, filename, original_name, mime_type, size_bytes, text_content, status,
                     doc_type, parent_id, thread_id,
                     doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
-                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier, file_extension
                 ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
                     ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?)
             `);
 
             const zipBatchBuffer = [];
@@ -1025,7 +1028,7 @@ async function main() {
                                     null, null, null, null, null, null,
                                     contentHash, isDuplicate, investigation_id,
                                     zip.custodian || custodian || null,
-                                    docIdentifier
+                                    docIdentifier, resolveFileExtension(originalName, mime, diskFilename)
                                 );
                             });
 
@@ -1112,10 +1115,10 @@ async function main() {
                     id, filename, original_name, mime_type, size_bytes, text_content, status,
                     doc_type, parent_id, thread_id,
                     doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
-                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier, file_extension
                 ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
                     ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?)
             `);
 
             const rarBatchBuffer = [];
@@ -1168,15 +1171,16 @@ async function main() {
                                 ? `${rarDoc.doc_identifier}_${String(childIdx).padStart(3, '0')}`
                                 : null;
 
+                            const rarMime = containerMimeFromExt(ext);
                             rarBatchBuffer.push(() => {
                                 insertRarChild.run(
                                     fileId, diskFilename, file.name,
-                                    containerMimeFromExt(ext), fileBuffer.length,
+                                    rarMime, fileBuffer.length,
                                     rarDoc.id, threadId,
                                     null, null, null, null, null, null,
                                     contentHash, isDuplicate, investigation_id,
                                     rarDoc.custodian || custodian || null,
-                                    docIdentifier
+                                    docIdentifier, resolveFileExtension(file.name, rarMime, diskFilename)
                                 );
                             });
 
@@ -1253,10 +1257,10 @@ async function main() {
                     id, filename, original_name, mime_type, size_bytes, text_content, status,
                     doc_type, parent_id, thread_id,
                     doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
-                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier, file_extension
                 ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
                     ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?)
             `);
 
             const pdfBatchBuffer = [];
@@ -1344,7 +1348,7 @@ async function main() {
                                     null, null, null, null, null, null,
                                     contentHash, isDuplicate, investigation_id,
                                     pdf.custodian || custodian || null,
-                                    docIdentifier
+                                    docIdentifier, resolveFileExtension(file.name, mime, diskFilename)
                                 );
                             });
 
@@ -1446,10 +1450,10 @@ async function main() {
                     id, filename, original_name, mime_type, size_bytes, text_content, status,
                     doc_type, parent_id, thread_id,
                     doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
-                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier, file_extension
                 ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
                     ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?)
             `);
 
             const tnefBatchBuffer = [];
@@ -1520,7 +1524,7 @@ async function main() {
                                     null, null, null, null, null, null,
                                     contentHash, isDuplicate, investigation_id,
                                     tnefDoc.custodian || custodian || null,
-                                    docIdentifier
+                                    docIdentifier, resolveFileExtension(file.name, mime, diskFilename)
                                 );
                             });
 
@@ -1595,10 +1599,10 @@ async function main() {
                     id, filename, original_name, mime_type, size_bytes, text_content, status,
                     doc_type, parent_id, thread_id,
                     doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
-                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier
+                    content_hash, is_duplicate, investigation_id, custodian, doc_identifier, file_extension
                 ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
                     ?, ?, ?, ?, ?, ?,
-                    ?, ?, ?, ?, ?)
+                    ?, ?, ?, ?, ?, ?)
             `);
 
             const recurseBatchBuffer = [];
@@ -1749,7 +1753,7 @@ async function main() {
                                     null, null, null, null, null, null,
                                     contentHash, isDuplicate, investigation_id,
                                     container.custodian || custodian || null,
-                                    docIdentifier
+                                    docIdentifier, resolveFileExtension(file.name, mime, diskFilename)
                                 );
                             });
 
@@ -1840,7 +1844,7 @@ async function main() {
                                     null, null, null, null, null, null,
                                     contentHash, isDuplicate, investigation_id,
                                     pdf.custodian || custodian || null,
-                                    docIdentifier
+                                    docIdentifier, resolveFileExtension(file.name, mime, diskFilename)
                                 );
                             });
 
@@ -2213,6 +2217,11 @@ async function main() {
     }
 }
 
+// Regex to escape special chars for use in RegExp constructor
+function escapeRegex(str) {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
 async function processEmail(eml) {
     const emailId = uuidv4();
     const emailFilename = `${emailId}.eml`;
@@ -2230,6 +2239,92 @@ async function processEmail(eml) {
     const countAddrs = (s) => s ? s.split(',').filter(a => a.trim()).length : 0;
     const recipientCount = countAddrs(eml.to) + countAddrs(eml.cc) + countAddrs(eml.bcc);
 
+    // ─── Identify inline/CID images ──────────────────────────────────────────
+    // Build a set of attachments that are inline (CID-referenced in HTML body).
+    // These get written to html/{emailId}/ on disk but NOT inserted as DB rows.
+    const inlineSet = new Set(); // indexes into eml.attachments
+    const inlineAttachments = []; // collected for writing to disk
+    const htmlBody = eml.htmlBody || '';
+
+    if (eml.attachments.length > 0) {
+        // Build CID map: contentId → attachment index
+        const cidMap = new Map();
+        eml.attachments.forEach((att, idx) => {
+            if (att.contentId) cidMap.set(att.contentId, idx);
+        });
+
+        // Find CID references actually used in HTML
+        if (htmlBody) {
+            const cidRefs = htmlBody.match(/cid:([^"'\s>]+)/gi) || [];
+            for (const ref of cidRefs) {
+                const cid = ref.slice(4).replace(/^</, '').replace(/>$/, ''); // strip "cid:" prefix + brackets
+                if (cidMap.has(cid)) {
+                    inlineSet.add(cidMap.get(cid));
+                }
+            }
+        }
+
+        // Also flag image00N attachments that postal-mime marks as inline/related
+        eml.attachments.forEach((att, idx) => {
+            if (inlineSet.has(idx)) return; // already flagged via CID
+            const isInlineSignal = att.disposition === 'inline' || att.related || !!att.contentId;
+            const isImagePattern = /^image\d{3,4}\.\w+$/i.test(att.filename);
+            if (isInlineSignal && isImagePattern) {
+                inlineSet.add(idx);
+            }
+        });
+
+        // Collect inline attachments for disk write
+        for (const idx of inlineSet) {
+            inlineAttachments.push(eml.attachments[idx]);
+        }
+    }
+
+    // ─── Write HTML sidecar + inline images to disk ──────────────────────────
+    let hasHtmlBody = 0;
+    let inlineMeta = null;
+    const writePromises = [];
+
+    if (htmlBody && htmlBody.length > 50) {
+        hasHtmlBody = 1;
+        perfStats.htmlBodiesWritten++;
+
+        // Rewrite CID references to relative paths: cid:xxx → {emailId}/filename
+        let rewrittenHtml = htmlBody;
+        for (const att of inlineAttachments) {
+            if (att.contentId) {
+                rewrittenHtml = rewrittenHtml.replace(
+                    new RegExp(`cid:${escapeRegex(att.contentId)}`, 'gi'),
+                    `${emailId}/${att.filename}`
+                );
+            }
+        }
+
+        // Ensure html/ directory exists (mkdir -p is idempotent)
+        const htmlDir = path.join(UPLOADS_DIR, investigation_id, 'html');
+        await fsp.mkdir(htmlDir, { recursive: true });
+
+        // Write HTML file
+        const htmlPath = path.join(htmlDir, `${emailId}.html`);
+        writePromises.push(fsp.writeFile(htmlPath, rewrittenHtml));
+
+        // Write inline image files to html/{emailId}/
+        if (inlineAttachments.length > 0) {
+            const imgDir = path.join(htmlDir, emailId);
+            await fsp.mkdir(imgDir, { recursive: true });
+            for (const att of inlineAttachments) {
+                writePromises.push(fsp.writeFile(path.join(imgDir, att.filename), att.content));
+            }
+
+            inlineMeta = JSON.stringify({
+                count: inlineAttachments.length,
+                totalSize: inlineAttachments.reduce((sum, a) => sum + a.size, 0),
+                images: inlineAttachments.map(a => ({ name: a.filename, size: a.size, type: a.contentType })),
+            });
+        }
+    }
+
+    // ─── Insert email row ────────────────────────────────────────────────────
     batchBuffer.push(() => {
         insertEmail.run(
             emailId, emailFilename, `${originalname} — ${subject}`, 'message/rfc822', sizeBytes, textBody,
@@ -2241,7 +2336,8 @@ async function processEmail(eml) {
             investigation_id, custodian || null,
             eml._folderPath || null, textBody.length || 0,
             emailDocId, recipientCount,
-            eml.dedupMd5 || null
+            eml.dedupMd5 || null,
+            hasHtmlBody, inlineMeta, 'eml'
         );
     });
 
@@ -2250,11 +2346,18 @@ async function processEmail(eml) {
     // Instead, just update the in-memory cache and do a single backfill pass at the end.
     updateCacheOnly(threadId, eml.messageId, eml.inReplyTo, eml.references);
 
-    // Write attachments async, hash in-memory for dedup
-    const writePromises = [];
+    // ─── Write attachments (skip inline images) ─────────────────────────────
     let attIdx = 0;
 
-    for (const att of eml.attachments) {
+    for (let i = 0; i < eml.attachments.length; i++) {
+        const att = eml.attachments[i];
+
+        // Skip inline images — already written to html/{emailId}/ folder
+        if (inlineSet.has(i)) {
+            perfStats.attSkippedInline++;
+            continue;
+        }
+
         attIdx++;
         const attId = uuidv4();
         const attExt = path.extname(att.filename) || '.bin';
@@ -2317,6 +2420,7 @@ async function processEmail(eml) {
             ? `[File too large: ${(att.size / 1e6).toFixed(0)}MB — raw file not saved to conserve disk space]`
             : null;
         const attDocIdentifier = attIdentifier(emailDocId, attIdx);
+        const attFileExt = resolveFileExtension(att.filename, att.contentType, dbFilename);
         batchBuffer.push(() => {
             insertAttachment.run(
                 attId, dbFilename, att.filename,
@@ -2324,7 +2428,7 @@ async function processEmail(eml) {
                 emailId, threadId,
                 oversizeNote, null, null, null, null, null,
                 attHash, isDuplicate, investigation_id, custodian || null,
-                attDocIdentifier
+                attDocIdentifier, attFileExt
             );
         });
 

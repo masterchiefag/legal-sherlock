@@ -150,6 +150,61 @@ describe('getInvestigationDb', () => {
     const nullExt = db.prepare("SELECT file_ext(NULL) AS ext").get();
     expect(nullExt.ext).toBe('unknown');
   });
+
+  it('should handle filenames with no extension (readpst paren-stripping)', () => {
+    const id = makeTestId();
+    const { db } = getInvestigationDb(id);
+
+    // Filename with trailing space (paren-stripped, lost extension)
+    const stripped = db.prepare("SELECT file_ext('NSDL-Fees Calculator Tool ') AS ext").get();
+    expect(stripped.ext).toBe('unknown');
+
+    // Filename with double spaces (paren-stripped, extension survived)
+    const doubleSpace = db.prepare("SELECT file_ext('R.S. No. 206  - Industrial N.A. land.docx') AS ext").get();
+    expect(doubleSpace.ext).toBe('.docx');
+
+    // Disk filename can serve as fallback
+    const fallback = db.prepare(`
+      SELECT CASE WHEN file_ext('NSDL-Fees Calculator Tool ') != 'unknown' THEN file_ext('NSDL-Fees Calculator Tool ')
+                  ELSE file_ext('abc-123.xlsx')
+             END as ext
+    `).get();
+    expect(fallback.ext).toBe('.xlsx');
+  });
+
+  it('should have file_extension column in documents table', () => {
+    const id = makeTestId();
+    const { db } = getInvestigationDb(id);
+
+    // Column exists with correct default
+    db.prepare(`
+      INSERT INTO documents (id, filename, original_name) VALUES ('test-ext-1', 'f.txt', 'test.txt')
+    `).run();
+    const row = db.prepare("SELECT file_extension FROM documents WHERE id = 'test-ext-1'").get();
+    expect(row.file_extension).toBe('');
+  });
+
+  it('should support filtering/grouping by file_extension', () => {
+    const id = makeTestId();
+    const { db } = getInvestigationDb(id);
+
+    db.prepare(`INSERT INTO documents (id, filename, original_name, file_extension, doc_type) VALUES ('fe1', 'a.pdf', 'a.pdf', 'pdf', 'attachment')`).run();
+    db.prepare(`INSERT INTO documents (id, filename, original_name, file_extension, doc_type) VALUES ('fe2', 'b.pdf', 'b.pdf', 'pdf', 'attachment')`).run();
+    db.prepare(`INSERT INTO documents (id, filename, original_name, file_extension, doc_type) VALUES ('fe3', 'c.xlsx', 'c.xlsx', 'xlsx', 'attachment')`).run();
+    db.prepare(`INSERT INTO documents (id, filename, original_name, file_extension, doc_type) VALUES ('fe4', 'noext', 'noext', '', 'attachment')`).run();
+
+    const grouped = db.prepare(`
+      SELECT CASE WHEN file_extension != '' THEN file_extension ELSE 'unknown' END as ext,
+             COUNT(*) as count
+      FROM documents WHERE doc_type = 'attachment'
+      GROUP BY ext ORDER BY count DESC
+    `).all();
+
+    expect(grouped[0]).toEqual({ ext: 'pdf', count: 2 });
+    expect(grouped.length).toBe(3);
+    const extNames = grouped.map(g => g.ext).sort();
+    expect(extNames).toEqual(['pdf', 'unknown', 'xlsx']);
+  });
 });
 
 // ─── openWorkerDb ────────────────────────────────────────────────────────────

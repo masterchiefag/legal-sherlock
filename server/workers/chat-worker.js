@@ -11,6 +11,7 @@ import { promisify } from 'util';
 import { refreshInvestigationCounts, backfillDuplicateText } from '../lib/worker-helpers.js';
 import { openWorkerDb } from '../lib/investigation-db.js';
 import { getSetting } from '../lib/settings.js';
+import { resolveFileExtension } from '../lib/file-extension.js';
 
 const execFileAsync = promisify(execFile);
 
@@ -500,9 +501,9 @@ async function main() {
             INSERT INTO documents (
                 id, filename, original_name, mime_type, size_bytes, text_content, status,
                 doc_type, parent_id, thread_id, email_date,
-                content_hash, is_duplicate, investigation_id, custodian, doc_identifier, recipient_count
+                content_hash, is_duplicate, investigation_id, custodian, doc_identifier, recipient_count, file_extension
             ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?, ?,
-                ?, ?, ?, ?, ?, 0)
+                ?, ?, ?, ?, ?, 0, ?)
         `);
 
         const flushTranscript = async () => {
@@ -601,7 +602,8 @@ async function main() {
                                 sessionThreadId,    // thread_id
                                 msgDate ? msgDate.toISOString() : currentDayDate.toISOString(),
                                 contentHash, isDuplicate,
-                                investigation_id, custodian || null, attDocIdentifier
+                                investigation_id, custodian || null, attDocIdentifier,
+                                resolveFileExtension(originalName, mime, attFilename)
                             );
                             totalAttachments++;
                         } catch (e) {
