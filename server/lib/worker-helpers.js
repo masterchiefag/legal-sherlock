@@ -300,80 +300,190 @@ export function replicateChildrenToDuplicates(db, investigationId, options = {})
     const perPass = [];
     let totalInserted = 0;
 
-    // One INSERT statement, parameterized by investigation_id + depth — safe to run
-    // repeatedly because of the NOT EXISTS clause that makes it idempotent.
+    // Performance-critical: on Yesha-scale DBs (~60k duplicate attachments,
+    // ~10k canonical grandchildren), the naive "one big JOIN + NOT EXISTS in
+    // one statement" plan is O(N²) and never finishes. We break it into three
+    // cheap steps:
     //
-    // For each (dup_parent, canonical_child) pair where canonical_child's grandparent
-    // (= dup_parent's content-hash-twin) is is_duplicate=0, create a new row under
-    // dup_parent that mirrors canonical_child — filename shared (disk file reused),
-    // is_duplicate=1 flagged, doc_identifier derived from dup_parent.
+    //   (1) Build a temp table `repl_pairs (dup_id, canonical_id, …)` using the
+    //       indexed content_hash join. Small — bounded by #duplicates.
+    //   (2) Pre-compute `existing_keys (parent_id, content_hash, original_name)`
+    //       from real documents so the idempotency check is a single
+    //       indexed-equality lookup instead of a correlated NOT EXISTS.
+    //   (3) INSERT … SELECT joining (1) with child rows, LEFT JOIN-ing (2) and
+    //       filtering existing.id IS NULL. Numbers the cloned rows via a
+    //       ROW_NUMBER() window so we don't re-count peers per row.
     //
-    // We don't use a CTE with recursion because SQLite's recursive CTEs don't
-    // compose well with INSERT and we can't easily detect "no new rows" from
-    // within one statement. A JS-driven fixed-point loop is simpler + clearer.
+    // Each pass rebuilds (1) and (2) because newly-inserted rows in pass N
+    // become canonicals for grandchildren in pass N+1.
+    //
     // NOTE: column list deliberately excludes file_extension + has_html_body +
     // inline_images_meta — those are added by the still-open feat/html-email-
     // rendering branch and not present on main's schema yet. If/when that branch
     // merges, add them to this INSERT (they're nullable so omitting won't break
     // DBs that have them — the column just gets NULL for cloned rows).
-    const replicate = db.prepare(`
-        INSERT INTO documents (
-            id, filename, original_name, mime_type, size_bytes, text_content, status,
-            doc_type, parent_id, thread_id,
-            content_hash, is_duplicate, investigation_id, custodian,
-            doc_identifier, text_content_size
-        )
-        SELECT
-            lower(hex(randomblob(16))),
-            child.filename,
-            child.original_name,
-            child.mime_type,
-            child.size_bytes,
-            child.text_content,
-            child.status,
-            child.doc_type,
-            dup.id,
-            COALESCE(dup.thread_id, child.thread_id),
-            child.content_hash,
-            1,
-            dup.investigation_id,
-            COALESCE(dup.custodian, child.custodian),
-            CASE
-              WHEN dup.doc_identifier IS NULL THEN NULL
-              ELSE dup.doc_identifier || '_' || printf(
-                '%03d',
-                (SELECT COUNT(*) FROM documents x WHERE x.parent_id = dup.id) + 1 +
-                  (SELECT COUNT(*) FROM documents peer
-                   WHERE peer.parent_id = canonical.id
-                     AND peer.id < child.id)
-              )
-            END,
-            child.text_content_size
-        FROM documents dup
-        JOIN documents canonical
-          ON canonical.content_hash = dup.content_hash
-         AND canonical.is_duplicate = 0
-         AND canonical.doc_type = dup.doc_type
-         AND canonical.investigation_id = dup.investigation_id
-         AND canonical.id <> dup.id
-        JOIN documents child
-          ON child.parent_id = canonical.id
-        WHERE dup.is_duplicate = 1
-          AND dup.investigation_id = ?
-          AND NOT EXISTS (
-            SELECT 1 FROM documents existing
-            WHERE existing.parent_id = dup.id
-              AND existing.content_hash = child.content_hash
-              AND existing.original_name = child.original_name
-          )
-    `);
+
+    // Helper that runs one full pass inside a transaction.
+    //
+    // Implementation note: we drive the dup→canonical pairing in JS rather than
+    // as a single big JOIN.  SQLite's optimizer on a direct JOIN picks
+    // idx_docs_inv_doctype_dup (inv + doctype + is_duplicate) over
+    // idx_documents_content_hash, which turns the join into O(dups × canonicals)
+    // and runs for >15 min on Yesha-scale (60k dups × 30k canonicals).  Two JS
+    // queries + a JS Map avoid the optimizer mis-step entirely.
+    const runPass = () => {
+        db.exec(`
+            DROP TABLE IF EXISTS repl_pairs;
+            DROP TABLE IF EXISTS repl_existing;
+        `);
+
+        // (1a) Pull canonicals into a JS Map keyed by content_hash.  One fast
+        //      indexed scan.  Canonicals that have zero children contribute
+        //      nothing to the insert, so filter here.
+        const canonicalsWithKids = db.prepare(`
+            SELECT c.id AS cid, c.content_hash, c.doc_type
+            FROM documents c
+            WHERE c.is_duplicate = 0
+              AND c.investigation_id = ?
+              AND c.content_hash IS NOT NULL
+              AND EXISTS (SELECT 1 FROM documents k WHERE k.parent_id = c.id)
+        `).all(investigationId);
+        if (canonicalsWithKids.length === 0) return 0;
+
+        // key is content_hash||doc_type so we never pair an attachment with an
+        // email etc.  Value is an array of canonical IDs (same content_hash +
+        // doc_type can recur when different investigations share, but we already
+        // filtered by investigation above).
+        const canonByKey = new Map();
+        for (const c of canonicalsWithKids) {
+            const key = `${c.content_hash}||${c.doc_type}`;
+            if (!canonByKey.has(key)) canonByKey.set(key, []);
+            canonByKey.get(key).push(c.cid);
+        }
+
+        // (1b) Pull duplicates in the target investigation with their identity
+        //      fields.  Also an indexed scan.
+        const dups = db.prepare(`
+            SELECT d.id AS did, d.content_hash, d.doc_type, d.doc_identifier,
+                   d.thread_id, d.custodian, d.investigation_id
+            FROM documents d
+            WHERE d.is_duplicate = 1
+              AND d.investigation_id = ?
+              AND d.content_hash IS NOT NULL
+        `).all(investigationId);
+        if (dups.length === 0) return 0;
+
+        // (1c) Build the pair list in JS and bulk-insert into a temp table.  The
+        //      dup_existing_kids count is needed downstream so the doc_identifier
+        //      suffix (`_NNN`) starts after whatever children the dup may already
+        //      have from a prior partial run.  One indexed lookup per pair — fast.
+        const countExistingKids = db.prepare(
+            `SELECT COUNT(*) AS n FROM documents WHERE parent_id = ?`
+        );
+        db.exec(`
+            CREATE TEMP TABLE repl_pairs (
+                dup_id TEXT,
+                canonical_id TEXT,
+                dup_identifier TEXT,
+                dup_thread_id TEXT,
+                dup_custodian TEXT,
+                inv_id TEXT,
+                dup_existing_kids INTEGER
+            )
+        `);
+        const insertPair = db.prepare(`
+            INSERT INTO repl_pairs (dup_id, canonical_id, dup_identifier, dup_thread_id, dup_custodian, inv_id, dup_existing_kids)
+            VALUES (?, ?, ?, ?, ?, ?, ?)
+        `);
+        let pairCount = 0;
+        const kidCountCache = new Map();  // dup_id → cached count (dup rarely has duplicate pairs)
+        for (const d of dups) {
+            const key = `${d.content_hash}||${d.doc_type}`;
+            const matches = canonByKey.get(key);
+            if (!matches) continue;
+            let dupKids = kidCountCache.get(d.did);
+            if (dupKids === undefined) {
+                dupKids = countExistingKids.get(d.did).n;
+                kidCountCache.set(d.did, dupKids);
+            }
+            for (const canonId of matches) {
+                if (canonId === d.did) continue;  // skip self-reference
+                insertPair.run(d.did, canonId, d.doc_identifier, d.thread_id, d.custodian, d.investigation_id, dupKids);
+                pairCount++;
+            }
+        }
+        if (pairCount === 0) return 0;
+        db.exec(`CREATE INDEX repl_pairs_dup_idx ON repl_pairs(dup_id)`);
+        db.exec(`CREATE INDEX repl_pairs_canonical_idx ON repl_pairs(canonical_id)`);
+
+        // (2) Existing (parent_id, content_hash, original_name) tuples for fast
+        //     idempotency LEFT JOIN.  Only covers rows whose parent is one of
+        //     the target dup_ids we're about to clone under.
+        db.prepare(`
+            CREATE TEMP TABLE repl_existing AS
+            SELECT parent_id, content_hash, original_name
+            FROM documents
+            WHERE parent_id IN (SELECT dup_id FROM repl_pairs)
+              AND content_hash IS NOT NULL
+        `).run();
+        db.exec(`CREATE INDEX repl_existing_idx ON repl_existing(parent_id, content_hash, original_name)`);
+
+        // (3) The main INSERT.  ROW_NUMBER() assigns each cloned row a sequential
+        //     number within its (dup_id) group, added to dup_existing_kids so
+        //     doc_identifier suffixes never collide with pre-existing children.
+        const info = db.prepare(`
+            INSERT INTO documents (
+                id, filename, original_name, mime_type, size_bytes, text_content, status,
+                doc_type, parent_id, thread_id,
+                content_hash, is_duplicate, investigation_id, custodian,
+                doc_identifier, text_content_size
+            )
+            SELECT
+                lower(hex(randomblob(16))),
+                child.filename,
+                child.original_name,
+                child.mime_type,
+                child.size_bytes,
+                child.text_content,
+                child.status,
+                child.doc_type,
+                p.dup_id,
+                COALESCE(p.dup_thread_id, child.thread_id),
+                child.content_hash,
+                1,
+                p.inv_id,
+                COALESCE(p.dup_custodian, child.custodian),
+                CASE
+                  WHEN p.dup_identifier IS NULL THEN NULL
+                  ELSE p.dup_identifier || '_' || printf(
+                    '%03d',
+                    p.dup_existing_kids + ROW_NUMBER() OVER (PARTITION BY p.dup_id ORDER BY child.id)
+                  )
+                END,
+                child.text_content_size
+            FROM repl_pairs p
+            JOIN documents child
+              ON child.parent_id = p.canonical_id
+            LEFT JOIN repl_existing e
+              ON e.parent_id = p.dup_id
+             AND e.content_hash = child.content_hash
+             AND e.original_name = child.original_name
+            WHERE e.parent_id IS NULL
+        `).run();
+
+        // Drop the temp tables so a subsequent pass rebuilds from fresh state.
+        db.exec(`
+            DROP TABLE IF EXISTS repl_existing;
+            DROP TABLE IF EXISTS repl_pairs;
+        `);
+        return info.changes;
+    };
 
     for (let pass = 1; pass <= maxPasses; pass++) {
         const t = Date.now();
         let inserted;
         try {
-            const info = db.transaction(() => replicate.run(investigationId))();
-            inserted = info.changes;
+            inserted = db.transaction(runPass)();
         } catch (err) {
             console.error(`✦ Worker: replicateChildrenToDuplicates pass ${pass} failed —`, err.message);
             break;
