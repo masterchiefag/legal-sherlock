@@ -97,7 +97,78 @@ function computeDedupMd5({ fromAddr, to, cc, bcc, subject, date, textBody, attac
     return crypto.createHash('md5').update(parts.join('\n'), 'utf8').digest('hex');
 }
 
-export { stripHtml, cleanId, formatAddresses, parseReceivedHeaders, computeDedupMd5, canonicalAddresses };
+/**
+ * Mimic postal-mime's stripComments() (mime-node.js:100-148): remove unescaped
+ * parenthesized content when not inside a quoted string. Used only for comparison —
+ * we never apply this to output, just to identify when postal-mime's filename
+ * decoder stripped legitimate parens.
+ */
+function simulatePostalMimeStripComments(s) {
+    let out = '';
+    let depth = 0;
+    let inQuote = false;
+    let escaped = false;
+    for (let i = 0; i < s.length; i++) {
+        const c = s.charAt(i);
+        if (escaped) { if (depth === 0) out += c; escaped = false; continue; }
+        if (c === '\\') { escaped = true; if (depth === 0) out += c; continue; }
+        if (c === '"' && depth === 0) { inQuote = !inQuote; out += c; continue; }
+        if (!inQuote) {
+            if (c === '(') { depth++; continue; }
+            if (c === ')' && depth > 0) { depth--; continue; }
+        }
+        if (depth === 0) out += c;
+    }
+    return out;
+}
+
+/**
+ * Extract every quoted `filename="..."` occurrence from raw .eml bytes.
+ * These are RFC 2183 filename parameters that survive postal-mime's comment
+ * stripping because they're inside a quoted-string (per its own logic).
+ */
+function extractRawQuotedFilenames(raw) {
+    // Treat as binary-safe text; we only care about ASCII filename-param bytes
+    const text = Buffer.isBuffer(raw) ? raw.toString('latin1') : String(raw);
+    const out = [];
+    const re = /filename\s*=\s*"([^"\r\n]+)"/gi;
+    let m;
+    while ((m = re.exec(text)) !== null) {
+        out.push(m[1]);
+    }
+    return out;
+}
+
+/**
+ * Work around postal-mime filename-stripping bug (issue #68):
+ * postal-mime calls stripComments() on Content-Disposition headers, which
+ * strips literal `(...)` from the RFC 2231 encoded `filename*=utf-8''…` form
+ * where the parens are unquoted. When both `filename*=…` and `filename="…"`
+ * are present, postal-mime prefers the encoded form → we get a damaged name
+ * like `"Foo .pdf"` instead of `"Foo (Bar).pdf"`.
+ *
+ * Recovery: for each postal-mime attachment, find a raw quoted `filename="..."`
+ * whose stripComments() equivalent matches postal-mime's output. If found, the
+ * raw one is the real filename.
+ *
+ * @param {string} pmFilename — postal-mime's returned filename (potentially damaged)
+ * @param {string[]} rawQuotedNames — all filename="..." values from raw .eml
+ * @returns {string} — pmFilename if no damage detected, else the recovered raw name
+ */
+function recoverFilenameIfStripped(pmFilename, rawQuotedNames) {
+    if (!pmFilename) return pmFilename;
+    // Fast path: if postal-mime's output already appears in raw verbatim, no damage
+    if (rawQuotedNames.includes(pmFilename)) return pmFilename;
+    // Search for a raw name that — when we apply postal-mime's own stripper —
+    // collapses to pmFilename. That's the one that got damaged.
+    for (const raw of rawQuotedNames) {
+        if (raw === pmFilename) return raw;
+        if (simulatePostalMimeStripComments(raw) === pmFilename) return raw;
+    }
+    return pmFilename;
+}
+
+export { stripHtml, cleanId, formatAddresses, parseReceivedHeaders, computeDedupMd5, canonicalAddresses, recoverFilenameIfStripped, simulatePostalMimeStripComments, extractRawQuotedFilenames };
 
 export async function parseEml(filePathOrBuffer) {
     const raw = Buffer.isBuffer(filePathOrBuffer) ? filePathOrBuffer : fs.readFileSync(filePathOrBuffer);
@@ -165,6 +236,9 @@ export async function parseEml(filePathOrBuffer) {
     // dedup) AND locally in the dedup_md5 canonical form. Also synthesize a filename for
     // unnamed message/rfc822 parts so Phase 1.5's `LIKE '%.msg' OR LIKE '%.eml'` query
     // matches the .eml on disk and picks them up for child-attachment extraction.
+    // Filenames also get run through recoverFilenameIfStripped() to undo postal-mime's
+    // paren-stripping bug (issue #68) — ~4% of attachments in PST-sourced mail.
+    const rawQuotedFilenames = extractRawQuotedFilenames(raw);
     const rawAttachments = parsed.attachments || [];
     const attachments = rawAttachments.map((att, idx) => {
         const content = Buffer.from(att.content);
@@ -177,6 +251,9 @@ export async function parseEml(filePathOrBuffer) {
             } else {
                 filename = `attachment_${idx + 1}`;
             }
+        } else {
+            // Undo postal-mime's paren-stripping for RFC 2231-encoded filenames (issue #68)
+            filename = recoverFilenameIfStripped(filename, rawQuotedFilenames);
         }
         return {
             filename,
