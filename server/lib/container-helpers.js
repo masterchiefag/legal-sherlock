@@ -161,8 +161,22 @@ export async function listZipContents(zipPath) {
 }
 
 /**
+ * Default timeout for the `unzip -p` fallback.  GitHub issue #72: on certain
+ * pathological ZIP archives (e.g. entries with apostrophes in filenames) the
+ * `unzip` CLI can hang indefinitely.  During the Yesha PST re-ingest this
+ * wedged the worker thread for over an hour before we noticed.  60 s per
+ * extraction is generous — healthy invocations complete in milliseconds.
+ */
+export const UNZIP_FALLBACK_TIMEOUT_MS = 60_000;
+
+/**
  * Extract a single file from a ZIP archive to memory.
  * Primary: jszip (UTF-8 safe for internal filenames). Fallback: `unzip -p`.
+ *
+ * The `unzip -p` fallback is wrapped in a timeout (see
+ * UNZIP_FALLBACK_TIMEOUT_MS) so that a hung subprocess can't stall the
+ * worker indefinitely.  On timeout the child is SIGKILLed and the Promise
+ * rejects with a clear message; callers can catch + skip the offending file.
  *
  * When callers extract many files from the same archive (common case), the
  * jszip instance gets rebuilt per-call — load once via `tryLoadJsZip` and
@@ -170,9 +184,12 @@ export async function listZipContents(zipPath) {
  *
  * @param {string} zipPath - Absolute path to the ZIP file
  * @param {string} internalPath - Path of the file inside the ZIP
+ * @param {{timeoutMs?: number}} [options] - override the unzip-fallback timeout
  * @returns {Promise<Buffer>} File content as Buffer
  */
-export async function extractFileFromZip(zipPath, internalPath) {
+export async function extractFileFromZip(zipPath, internalPath, options = {}) {
+    const timeoutMs = options.timeoutMs ?? UNZIP_FALLBACK_TIMEOUT_MS;
+
     // Primary: jszip
     const zip = await tryLoadJsZip(zipPath);
     if (zip) {
@@ -188,20 +205,35 @@ export async function extractFileFromZip(zipPath, internalPath) {
         // unzip; might be a character-encoding mismatch on the path.
     }
 
-    // Fallback: unzip -p
+    // Fallback: unzip -p, bounded by a SIGKILL-on-timeout watchdog.
     return new Promise((resolve, reject) => {
         const chunks = [];
         const child = spawn('unzip', ['-p', zipPath, internalPath]);
+        let settled = false;
+        const settle = (fn) => {
+            if (settled) return;
+            settled = true;
+            clearTimeout(timer);
+            fn();
+        };
+        const timer = setTimeout(() => {
+            settle(() => {
+                try { child.kill('SIGKILL'); } catch (_) { /* already dead */ }
+                reject(new Error(`unzip -p timed out after ${timeoutMs}ms for ${internalPath} in ${path.basename(zipPath)}`));
+            });
+        }, timeoutMs);
         child.stdout.on('data', (chunk) => chunks.push(chunk));
         child.stderr.on('data', () => {}); // suppress warnings
         child.on('close', (code) => {
-            if (code === 0 || code === 1) { // code 1 = minor warnings, still valid
-                resolve(Buffer.concat(chunks));
-            } else {
-                reject(new Error(`unzip exited with code ${code} for ${internalPath}`));
-            }
+            settle(() => {
+                if (code === 0 || code === 1) { // code 1 = minor warnings, still valid
+                    resolve(Buffer.concat(chunks));
+                } else {
+                    reject(new Error(`unzip exited with code ${code} for ${internalPath}`));
+                }
+            });
         });
-        child.on('error', reject);
+        child.on('error', (err) => settle(() => reject(err)));
     });
 }
 
