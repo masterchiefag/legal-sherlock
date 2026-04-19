@@ -14,7 +14,7 @@ import { extractText, extractMetadata } from '../lib/extract.js';
 import { parseEml } from '../lib/eml-parser.js';
 import { parseMsg } from '../lib/msg-parser.js';
 import { listZipContents, extractFileFromZip, detectPdfEmbeddedFiles, extractPdfEmbeddedFiles, extractTnefContents, extractArchive, cleanupTmpDir, SKIP_EXTS as CONTAINER_SKIP_EXTS, mimeFromExt as containerMimeFromExt } from '../lib/container-helpers.js';
-import { disableFtsTriggers, enableFtsTriggers, rebuildFtsIndex, dropBulkIndexes, recreateBulkIndexes, refreshInvestigationCounts, walCheckpoint, backfillDuplicateText } from '../lib/worker-helpers.js';
+import { disableFtsTriggers, enableFtsTriggers, rebuildFtsIndex, dropBulkIndexes, recreateBulkIndexes, refreshInvestigationCounts, walCheckpoint, backfillDuplicateText, replicateChildrenToDuplicates } from '../lib/worker-helpers.js';
 import { resolveThreadId, backfillThread, updateCacheOnly, resolveThreadIdFromCache, initCache } from '../lib/threading-cached.js';
 import { getSetting } from '../lib/settings.js';
 
@@ -2118,7 +2118,7 @@ async function main() {
         const memBefore = process.memoryUsage();
         console.log(`✦ Finalization: heapUsed=${(memBefore.heapUsed / 1024 / 1024).toFixed(0)}MB, rss=${(memBefore.rss / 1024 / 1024).toFixed(0)}MB`);
 
-        console.log('✦ Finalization [1/5]: marking job completed...');
+        console.log('✦ Finalization [1/6]: marking job completed...');
         db.prepare(`
             UPDATE import_jobs
             SET status = 'completed',
@@ -2134,25 +2134,41 @@ async function main() {
                 completed_at = datetime('now')
             WHERE id = ?
         `).run(totalEmails, totalAttachments, JSON.stringify(errorLog), ocrCount, ocrSuccess, ocrFailed, ocrTotalTimeMs, jobId);
-        console.log('✦ Finalization [1/5]: done — job marked as completed');
+        console.log('✦ Finalization [1/6]: done — job marked as completed');
 
-        console.log('✦ Finalization [2/5]: refreshing investigation counts...');
+        // GitHub issue #73: replicate extracted children across duplicate parents.
+        // The dedup-by-content_hash strategy across the extraction phases (1.5/1.6/
+        // 1.7/1.9) means a PDF attached to N emails gets its inner PDFs / ZIP
+        // contents extracted only for the first email. Rel stores the full tree
+        // per email. Clone the canonical's children under every is_duplicate=1
+        // twin so row counts and reviewer UX match Rel — reuses disk filenames,
+        // adds DB rows only (no new bytes written).
+        //
+        // Runs before FTS rebuild so the cloned rows' text_content gets indexed.
+        // FTS triggers are still off from the bulk-import phase, so the inserts
+        // here don't thrash the virtual table per row.
+        console.log('✦ Finalization [2/6]: replicating extracted children across duplicate parents (issue #73)...');
+        const replRes = replicateChildrenToDuplicates(db, investigation_id);
+        totalAttachments += replRes.totalInserted;
+        console.log(`✦ Finalization [2/6]: done — ${replRes.totalInserted.toLocaleString()} rows across ${replRes.passes} pass(es) in ${replRes.elapsed.toFixed(1)}s`);
+
+        console.log('✦ Finalization [3/6]: refreshing investigation counts...');
         refreshInvestigationCounts(mainDb, db, investigation_id);
-        console.log('✦ Finalization [2/5]: done');
+        console.log('✦ Finalization [3/6]: done');
 
-        console.log('✦ Finalization [3/5]: re-enabling FTS triggers...');
+        console.log('✦ Finalization [4/6]: re-enabling FTS triggers...');
         enableFtsTriggers(db);
-        console.log('✦ Finalization [3/5]: done');
+        console.log('✦ Finalization [4/6]: done');
 
-        console.log('✦ Finalization [4/5]: rebuilding FTS index...');
+        console.log('✦ Finalization [5/6]: rebuilding FTS index...');
         const ftsStart = Date.now();
         rebuildFtsIndex(db);
         const memAfter = process.memoryUsage();
-        console.log(`✦ Finalization [4/5]: done in ${((Date.now() - ftsStart) / 1000).toFixed(1)}s — heapUsed=${(memAfter.heapUsed / 1024 / 1024).toFixed(0)}MB, rss=${(memAfter.rss / 1024 / 1024).toFixed(0)}MB`);
+        console.log(`✦ Finalization [5/6]: done in ${((Date.now() - ftsStart) / 1000).toFixed(1)}s — heapUsed=${(memAfter.heapUsed / 1024 / 1024).toFixed(0)}MB, rss=${(memAfter.rss / 1024 / 1024).toFixed(0)}MB`);
 
-        console.log('✦ Finalization [5/5]: WAL checkpoint...');
+        console.log('✦ Finalization [6/6]: WAL checkpoint...');
         walCheckpoint(db);
-        console.log('✦ Finalization [5/5]: done — all finalization complete');
+        console.log('✦ Finalization [6/6]: done — all finalization complete');
 
         // Auto-cleanup: delete source PST/OST file after successful import (skip for local path imports)
         if (preserveSource) {
