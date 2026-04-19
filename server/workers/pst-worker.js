@@ -1630,7 +1630,12 @@ async function main() {
                            OR LOWER(original_name) LIKE '%.msg' OR mime_type = 'application/vnd.ms-outlook'
                            OR LOWER(original_name) LIKE '%.eml' OR mime_type = 'message/rfc822'
                            OR LOWER(original_name) LIKE '%winmail%' OR LOWER(original_name) = 'noname.dat'
-                           OR mime_type = 'application/ms-tnef' OR mime_type = 'application/vnd.ms-tnef')
+                           OR mime_type = 'application/ms-tnef' OR mime_type = 'application/vnd.ms-tnef'
+                           -- GitHub issue #80: PDFs nested inside MSG / ZIP / rfc822 containers
+                           -- don't get picked up by Phase 1.7's initial scan (which runs BEFORE
+                           -- Phase 1.9's nested extraction). Include them here so any PDF that
+                           -- becomes visible during recursion is checked for portfolio contents.
+                           OR LOWER(original_name) LIKE '%.pdf' OR mime_type = 'application/pdf')
                 `).all(investigation_id).filter(doc => !processedContainerIds.has(doc.id));
 
                 if (newContainers.length === 0) {
@@ -1704,6 +1709,25 @@ async function main() {
                                     extractedFiles.push({ name: att.filename, buffer: att.content });
                                 }
                             } catch (_) { /* skip parse errors */ }
+                        } else if (ext === '.pdf' || container.mime_type === 'application/pdf') {
+                            // PDF portfolio (GitHub issue #80). Phase 1.7's initial scan
+                            // only finds PDFs attached directly to an email. When Phase 1.5
+                            // or 1.6 later extracts a PDF that IS itself a portfolio (e.g.
+                            // the Form ADT-1 signed bundle nested inside an MSG), we need
+                            // this Phase 1.9 pass to pick it up. `detectPdfEmbeddedFiles`
+                            // just runs `pdfdetach -list` on the catalog — fast, no false
+                            // positives. If the count is 0 we skip the actual extract.
+                            try {
+                                const names = await detectPdfEmbeddedFiles(containerPath);
+                                if (names.length > 0) {
+                                    const result = await extractPdfEmbeddedFiles(containerPath);
+                                    tmpDir = result.tmpDir;
+                                    for (const file of result.files) {
+                                        const buf = await fsp.readFile(file.path);
+                                        extractedFiles.push({ name: file.name, buffer: buf });
+                                    }
+                                }
+                            } catch (_) { /* skip extraction errors */ }
                         } else if (on.includes('winmail') || on === 'noname.dat' ||
                                    container.mime_type === 'application/ms-tnef' || container.mime_type === 'application/vnd.ms-tnef') {
                             // TNEF container
