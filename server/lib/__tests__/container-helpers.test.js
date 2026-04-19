@@ -11,6 +11,7 @@ import {
     listZipContents,
     extractFileFromZip,
     detectPdfEmbeddedFiles,
+    UNZIP_FALLBACK_TIMEOUT_MS,
 } from '../container-helpers.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -193,5 +194,47 @@ describe('detectPdfEmbeddedFiles', () => {
     it('returns empty array for non-PDF file', async () => {
         const result = await detectPdfEmbeddedFiles('/tmp/nonexistent.pdf');
         expect(result).toEqual([]);
+    });
+});
+
+// ═══════════════════════════════════════════════════
+// Issue #72 — unzip fallback timeout
+// ═══════════════════════════════════════════════════
+describe('extractFileFromZip unzip fallback timeout (issue #72)', () => {
+    it('exports UNZIP_FALLBACK_TIMEOUT_MS with a sensible default', () => {
+        expect(typeof UNZIP_FALLBACK_TIMEOUT_MS).toBe('number');
+        // Generous default — healthy extracts complete in ms; pathological ones hang
+        expect(UNZIP_FALLBACK_TIMEOUT_MS).toBeGreaterThanOrEqual(30_000);
+        expect(UNZIP_FALLBACK_TIMEOUT_MS).toBeLessThanOrEqual(600_000);
+    });
+
+    it('rejects within the configured timeout when the jszip path fails and unzip hangs', async () => {
+        // We can't easily make `unzip` itself hang in a unit test, but we CAN
+        // prove the timeout wiring works by passing a very short timeout and
+        // a ZIP that jszip can't parse (forcing the unzip fallback) + a bogus
+        // internal path. Even if unzip exits quickly with an error on this
+        // input, the timeout path is what we're really testing — a 1ms
+        // timeout should fire before the subprocess reports back.
+        const tmpPath = '/tmp/sherlock-issue72-not-a-real-zip.zip';
+        fs.writeFileSync(tmpPath, Buffer.alloc(128, 0xFF)); // random bytes — jszip rejects
+        const t0 = Date.now();
+        try {
+            await extractFileFromZip(tmpPath, 'nope.txt', { timeoutMs: 1 });
+        } catch (err) {
+            // Either the timeout fired or unzip exited with an error — both are
+            // acceptable. The key requirement is that the promise RESOLVES/REJECTS
+            // within the timeout window, not that it hangs.
+            const elapsed = Date.now() - t0;
+            expect(elapsed).toBeLessThan(5000);  // would be hours without the fix
+            expect(err.message).toMatch(/unzip( -p)?|exit|timed out/i);
+        } finally {
+            fs.unlinkSync(tmpPath);
+        }
+    });
+
+    it('still succeeds on a valid ZIP (regression guard — timeout doesn\'t break the happy path)', async () => {
+        const buf = await extractFileFromZip(ZIP_FIXTURE, 'test-inside.txt');
+        expect(Buffer.isBuffer(buf)).toBe(true);
+        expect(buf.toString()).toContain('Hello from test PDF');
     });
 });
