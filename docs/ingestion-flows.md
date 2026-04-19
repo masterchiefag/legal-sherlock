@@ -98,6 +98,20 @@ The upload handler inspects each file's extension and dispatches accordingly:
 5. Attachment dedup: MD5 hash checked in-memory first, then against DB
 6. Attachments > 100MB (`MAX_ATTACHMENT_SIZE`) are skipped (not written to disk)
 
+**Phase 1.4 -- S/MIME multipart/signed unwrap** (GitHub issue #79)
+
+S/MIME-signed emails land in the PST with `messageClass = IPM.Note.SMIME.MultipartSigned` and a single "attachment" that wraps the entire signed MIME body (real body + real file attachments + `.p7s` signature). `readpst -e` strips this wrapper — the `.eml` that Sherlock ingests has only the plaintext body, all real attachments are gone. `pst-extractor` reports `numberOfAttachments = 1` but `attachSize` is `undefined`, which makes the attachment look empty at first glance; the actual bytes live on `attachment.fileInputStream` (typically 100 KB – 5 MB of standard multipart/signed MIME).
+
+1. Walk the PST via `pst-extractor`. For every message whose `messageClass.toUpperCase()` contains `SMIME.MULTIPARTSIGNED`:
+2. Read attachment 0's `fileInputStream` into a Buffer
+3. Parse with `postal-mime` using `forceRfc822Attachments: true` (so any forwarded RFC822 sub-parts surface for Phase 1.5 to recurse into)
+4. Skip `application/pkcs7-signature` (the `.p7s` itself) and `disposition=inline + contentId` attachments (inline images handled by the HTML email rendering path)
+5. Insert the remaining real attachments as children of the existing email row (matched by `message_id`)
+
+Encrypted S/MIME (`application/pkcs7-mime; smime-type=enveloped-data`) is out of scope — decrypting needs a private key.
+
+Impact on Yesha PST: **198 emails with recoverable attachments → 330 new attachment rows (72 PDFs, 187 DOCX, 41 XLSX, 30 others)**.
+
 **Phase 1.5 -- Embedded MSG extraction**
 
 Forwarded/attached Outlook emails are stored as opaque `.msg` files by readpst. This phase parses them to extract their document attachments, which would otherwise be invisible. See [pst-parsing-nuances.md](./pst-parsing-nuances.md) for full details.

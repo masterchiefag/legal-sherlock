@@ -163,6 +163,7 @@ Notable document columns: `doc_type` (file/email/attachment/chat/calendar/task/n
   - **Phase 1** — parse .eml files output by readpst, insert emails + attachments
   - **Phase 1.2** — correct email dates from MAPI via `pst-extractor` (readpst fabricates dates for some classes; GitHub issue #65 / #70)
   - **Phase 1.3** — ingest MAPI non-email items: calendar, task, note, contact (readpst's `-e` drops them; GitHub issue #65 Phase 2)
+  - **Phase 1.4** — unwrap `IPM.Note.SMIME.MultipartSigned` envelopes: pull attachment 0's `fileInputStream` via `pst-extractor`, parse through `postal-mime`, insert real attachments as children of the matching email row (GitHub issue #79)
   - **Phase 1.5** — parse embedded MSG attachments via `@kenjiuno/msgreader` (forwarded messages as `message/rfc822`)
   - **Phase 1.6** — extract ZIP archive contents and insert as child attachments
   - **Phase 1.7** — detect + extract PDF portfolios via `pdfdetach` (PDF packages carrying embedded files)
