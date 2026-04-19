@@ -10,6 +10,7 @@ import {
   refreshInvestigationCounts,
   walCheckpoint,
   backfillDuplicateText,
+  replicateChildrenToDuplicates,
 } from '../worker-helpers.js';
 
 /**
@@ -43,7 +44,15 @@ function createSchema(db) {
       content_hash TEXT,
       is_duplicate INTEGER DEFAULT 0,
       ocr_applied INTEGER DEFAULT 0,
-      ocr_time_ms INTEGER
+      ocr_time_ms INTEGER,
+      -- Columns added so replicateChildrenToDuplicates INSERT can populate them
+      filename TEXT,
+      mime_type TEXT,
+      size_bytes INTEGER,
+      parent_id TEXT,
+      custodian TEXT,
+      doc_identifier TEXT,
+      file_extension TEXT
     );
 
     CREATE VIRTUAL TABLE documents_fts USING fts5(
@@ -382,6 +391,155 @@ describe('worker-helpers', () => {
       expect(db.prepare('SELECT text_content FROM documents WHERE id = ?').get('dupe-0').text_content).toBe('bulk text');
       expect(db.prepare('SELECT text_content FROM documents WHERE id = ?').get('dupe-999').text_content).toBe('bulk text');
       expect(db.prepare('SELECT text_content FROM documents WHERE id = ?').get('dupe-1199').text_content).toBe('bulk text');
+    });
+  });
+
+  // ────────────────────────────────────────────────────────────────────────
+  // GitHub issue #73 — replicate extracted children across duplicate parents
+  // ────────────────────────────────────────────────────────────────────────
+  describe('replicateChildrenToDuplicates', () => {
+    const INV = 'inv-repl';
+
+    beforeEach(() => {
+      db.prepare('INSERT INTO investigations (id, name, short_code) VALUES (?, ?, ?)').run(INV, 'Replication Test', 'RPL');
+      // Disable FTS triggers for bulk-insert style scenario
+      disableFtsTriggers(db);
+    });
+
+    const insertAtt = (id, { hash, isDup = 0, parent_id = null, filename = null, originalName = null, doc_identifier = null, text = null, mime = 'application/pdf' }) => {
+      db.prepare(`
+        INSERT INTO documents (id, investigation_id, doc_type, original_name, filename, mime_type, size_bytes,
+                               content_hash, is_duplicate, parent_id, doc_identifier, text_content, text_content_size, status)
+        VALUES (?, ?, 'attachment', ?, ?, ?, 100, ?, ?, ?, ?, ?, ?, 'ready')
+      `).run(id, INV, originalName || `${id}.pdf`, filename || `shared/${hash}.pdf`, mime, hash, isDup, parent_id, doc_identifier, text, text ? text.length : 0);
+    };
+
+    it('clones children from canonical parent to duplicate twin', () => {
+      // canonical A with 2 extracted kids
+      insertAtt('canon-A', { hash: 'hash-A', doc_identifier: 'CAS_XXX_00001_001' });
+      insertAtt('k1', { hash: 'k1h', parent_id: 'canon-A', originalName: 'Annex1.pdf' });
+      insertAtt('k2', { hash: 'k2h', parent_id: 'canon-A', originalName: 'Annex2.pdf' });
+      // duplicate of A with same content_hash — no kids yet
+      insertAtt('dup-A', { hash: 'hash-A', isDup: 1, doc_identifier: 'CAS_XXX_00002_005' });
+
+      const res = replicateChildrenToDuplicates(db, INV);
+
+      expect(res.totalInserted).toBe(2);
+      // Verify dup-A now has 2 kids pointing to the same disk filenames
+      const kids = db.prepare('SELECT original_name, filename, is_duplicate FROM documents WHERE parent_id = ?').all('dup-A');
+      expect(kids).toHaveLength(2);
+      const names = kids.map(k => k.original_name).sort();
+      expect(names).toEqual(['Annex1.pdf', 'Annex2.pdf']);
+      // All cloned rows reuse the original disk filename
+      expect(kids.every(k => k.filename.startsWith('shared/'))).toBe(true);
+      // All cloned rows are marked is_duplicate=1
+      expect(kids.every(k => k.is_duplicate === 1)).toBe(true);
+    });
+
+    it('is idempotent — running twice does not double-insert', () => {
+      insertAtt('canon-B', { hash: 'hash-B', doc_identifier: 'CAS_YYY_00001_001' });
+      insertAtt('kB', { hash: 'kB-hash', parent_id: 'canon-B', originalName: 'foo.pdf' });
+      insertAtt('dup-B', { hash: 'hash-B', isDup: 1, doc_identifier: 'CAS_YYY_00002_001' });
+
+      const r1 = replicateChildrenToDuplicates(db, INV);
+      const r2 = replicateChildrenToDuplicates(db, INV);
+      expect(r1.totalInserted).toBe(1);
+      expect(r2.totalInserted).toBe(0);  // NOT EXISTS clause blocks re-insert
+    });
+
+    it('handles multi-level nesting via fixed-point iteration', () => {
+      // canonical tree: dup-level parent → canonical attachment → nested child
+      // After pass 1: dup gets the canonical attachment cloned as a dup
+      // After pass 2: that cloned attachment needs its descendants (nested child) cloned
+      insertAtt('canon-L1', { hash: 'L1', doc_identifier: 'CAS_N_00001_001' });
+      insertAtt('canon-L2', { hash: 'L2', parent_id: 'canon-L1', originalName: 'Outer.pdf' });
+      insertAtt('canon-L3', { hash: 'L3', parent_id: 'canon-L2', originalName: 'Inner.pdf' });
+      insertAtt('dup-L1', { hash: 'L1', isDup: 1, doc_identifier: 'CAS_N_00002_001' });
+
+      const res = replicateChildrenToDuplicates(db, INV);
+
+      // Expected: 2 rows — one for Outer.pdf under dup-L1, then Inner.pdf under that clone
+      expect(res.totalInserted).toBe(2);
+      expect(res.passes).toBeGreaterThanOrEqual(2);
+
+      // Verify the nested structure survived
+      const outerClones = db.prepare("SELECT id FROM documents WHERE parent_id = ? AND original_name = 'Outer.pdf'").all('dup-L1');
+      expect(outerClones).toHaveLength(1);
+      const innerClones = db.prepare("SELECT id FROM documents WHERE parent_id = ? AND original_name = 'Inner.pdf'").all(outerClones[0].id);
+      expect(innerClones).toHaveLength(1);
+    });
+
+    it('does not clone across investigations', () => {
+      db.prepare('INSERT INTO investigations (id, name, short_code) VALUES (?, ?, ?)').run('inv-other', 'Other', 'OTH');
+      insertAtt('canon-X', { hash: 'hash-X' });
+      insertAtt('kX', { hash: 'kX-h', parent_id: 'canon-X', originalName: 'x.pdf' });
+      // Insert a duplicate in a DIFFERENT investigation
+      db.prepare(`
+        INSERT INTO documents (id, investigation_id, doc_type, original_name, filename, mime_type, size_bytes, content_hash, is_duplicate, status)
+        VALUES ('dup-other', 'inv-other', 'attachment', 'canon-X.pdf', 'shared/hash-X.pdf', 'application/pdf', 100, 'hash-X', 1, 'ready')
+      `).run();
+
+      const res = replicateChildrenToDuplicates(db, INV);
+      expect(res.totalInserted).toBe(0);  // no duplicate in INV
+      expect(db.prepare("SELECT COUNT(*) AS n FROM documents WHERE parent_id = 'dup-other'").get().n).toBe(0);
+    });
+
+    it('handles a canonical with no children gracefully', () => {
+      insertAtt('canon-empty', { hash: 'hash-empty' });
+      insertAtt('dup-empty', { hash: 'hash-empty', isDup: 1 });
+
+      const res = replicateChildrenToDuplicates(db, INV);
+      expect(res.totalInserted).toBe(0);
+    });
+
+    it('returns zero when there are no duplicates at all', () => {
+      insertAtt('only-canon', { hash: 'hh' });
+      insertAtt('only-kid', { hash: 'kk', parent_id: 'only-canon' });
+
+      const res = replicateChildrenToDuplicates(db, INV);
+      expect(res.totalInserted).toBe(0);
+    });
+
+    it('skips cloning when target already has a child with matching content_hash + original_name (robust against partial prior runs)', () => {
+      insertAtt('canon-P', { hash: 'hP' });
+      insertAtt('kP', { hash: 'kPh', parent_id: 'canon-P', originalName: 'partial.pdf' });
+      insertAtt('dup-P', { hash: 'hP', isDup: 1 });
+      // Pre-insert a kid already under dup-P with same identity
+      db.prepare(`
+        INSERT INTO documents (id, investigation_id, doc_type, original_name, filename, mime_type, size_bytes, content_hash, is_duplicate, parent_id, status)
+        VALUES ('pre-k', ?, 'attachment', 'partial.pdf', 'shared/kPh.pdf', 'application/pdf', 100, 'kPh', 1, 'dup-P', 'ready')
+      `).run(INV);
+
+      const res = replicateChildrenToDuplicates(db, INV);
+      expect(res.totalInserted).toBe(0);
+      const kids = db.prepare('SELECT COUNT(*) AS n FROM documents WHERE parent_id = ?').get('dup-P').n;
+      expect(kids).toBe(1);  // only the pre-existing one
+    });
+
+    it('derives doc_identifier from the duplicate parent', () => {
+      insertAtt('canon-D', { hash: 'D', doc_identifier: 'CAS_XXX_00099_001' });
+      insertAtt('kD', { hash: 'kDh', parent_id: 'canon-D', originalName: 'doc.pdf' });
+      insertAtt('dup-D', { hash: 'D', isDup: 1, doc_identifier: 'CAS_XXX_00100_002' });
+
+      replicateChildrenToDuplicates(db, INV);
+
+      const clone = db.prepare('SELECT doc_identifier FROM documents WHERE parent_id = ?').get('dup-D');
+      expect(clone.doc_identifier).toMatch(/^CAS_XXX_00100_002_\d{3}$/);
+    });
+
+    it('stops early when a pass inserts zero new rows', () => {
+      // Canonical with 3 kids, two dups with no existing clones
+      insertAtt('canon-Q', { hash: 'Q' });
+      for (let i = 1; i <= 3; i++) insertAtt(`kq${i}`, { hash: `kqh${i}`, parent_id: 'canon-Q', originalName: `q${i}.pdf` });
+      insertAtt('dup-Q1', { hash: 'Q', isDup: 1 });
+      insertAtt('dup-Q2', { hash: 'Q', isDup: 1 });
+
+      const res = replicateChildrenToDuplicates(db, INV);
+      // Pass 1: 3+3 = 6 rows inserted (2 dups × 3 kids)
+      // Pass 2: 0 rows (no new nesting) — stops
+      expect(res.totalInserted).toBe(6);
+      expect(res.passes).toBe(2);
+      expect(res.perPass).toEqual([6, 0]);
     });
   });
 });

@@ -266,6 +266,126 @@ export function backfillDuplicateText(db, investigationId, options = {}) {
     return { backfilled, elapsed };
 }
 
+// ─── Replicate extracted children across duplicate parents ──────────────────
+
+/**
+ * For every `is_duplicate=1` attachment that shares a `content_hash` with a
+ * canonical `is_duplicate=0` row, clone the canonical's descendants under the
+ * duplicate — reusing the disk `filename` (no new bytes written, just new
+ * `documents` rows).  This closes the Rel-parity gap described in GitHub
+ * issue #73: Sherlock's extraction phases (1.5 MSG, 1.6 ZIP, 1.7 PDF portfolio,
+ * 1.9 recursive) skip duplicates, so a PDF attached to 10 emails only gets its
+ * inner children extracted for the first email.  Relativity shows all 10 trees.
+ *
+ * Walks the tree iteratively via a fixed-point loop — each pass discovers new
+ * dup→canonical pairs (children cloned in pass N become canonicals themselves
+ * for grand-descendants in pass N+1).  Stops when a pass inserts zero rows.
+ *
+ * Idempotent: skips cloning when the target parent already has a child with
+ * that (content_hash, original_name) pair, so re-running never duplicates.
+ *
+ * Recommended call order in finalization: AFTER all extraction phases finish
+ * and BEFORE `refreshInvestigationCounts` / `enableFtsTriggers` /
+ * `rebuildFtsIndex`.  FTS triggers should still be off at call time so the
+ * inserts don't incur per-row trigger overhead.
+ *
+ * @param {import('better-sqlite3').Database} db
+ * @param {string} investigationId
+ * @param {{maxPasses?: number}} [options] — safety cap on iteration depth (default 8)
+ * @returns {{totalInserted: number, passes: number, perPass: number[], elapsed: number}}
+ */
+export function replicateChildrenToDuplicates(db, investigationId, options = {}) {
+    const { maxPasses = 8 } = options;
+    const t0 = Date.now();
+    const perPass = [];
+    let totalInserted = 0;
+
+    // One INSERT statement, parameterized by investigation_id + depth — safe to run
+    // repeatedly because of the NOT EXISTS clause that makes it idempotent.
+    //
+    // For each (dup_parent, canonical_child) pair where canonical_child's grandparent
+    // (= dup_parent's content-hash-twin) is is_duplicate=0, create a new row under
+    // dup_parent that mirrors canonical_child — filename shared (disk file reused),
+    // is_duplicate=1 flagged, doc_identifier derived from dup_parent.
+    //
+    // We don't use a CTE with recursion because SQLite's recursive CTEs don't
+    // compose well with INSERT and we can't easily detect "no new rows" from
+    // within one statement. A JS-driven fixed-point loop is simpler + clearer.
+    const replicate = db.prepare(`
+        INSERT INTO documents (
+            id, filename, original_name, mime_type, size_bytes, text_content, status,
+            doc_type, parent_id, thread_id,
+            content_hash, is_duplicate, investigation_id, custodian,
+            doc_identifier, text_content_size, file_extension
+        )
+        SELECT
+            lower(hex(randomblob(16))),
+            child.filename,
+            child.original_name,
+            child.mime_type,
+            child.size_bytes,
+            child.text_content,
+            child.status,
+            child.doc_type,
+            dup.id,
+            COALESCE(dup.thread_id, child.thread_id),
+            child.content_hash,
+            1,
+            dup.investigation_id,
+            COALESCE(dup.custodian, child.custodian),
+            CASE
+              WHEN dup.doc_identifier IS NULL THEN NULL
+              ELSE dup.doc_identifier || '_' || printf(
+                '%03d',
+                (SELECT COUNT(*) FROM documents x WHERE x.parent_id = dup.id) + 1 +
+                  (SELECT COUNT(*) FROM documents peer
+                   WHERE peer.parent_id = canonical.id
+                     AND peer.id < child.id)
+              )
+            END,
+            child.text_content_size,
+            child.file_extension
+        FROM documents dup
+        JOIN documents canonical
+          ON canonical.content_hash = dup.content_hash
+         AND canonical.is_duplicate = 0
+         AND canonical.doc_type = dup.doc_type
+         AND canonical.investigation_id = dup.investigation_id
+         AND canonical.id <> dup.id
+        JOIN documents child
+          ON child.parent_id = canonical.id
+        WHERE dup.is_duplicate = 1
+          AND dup.investigation_id = ?
+          AND NOT EXISTS (
+            SELECT 1 FROM documents existing
+            WHERE existing.parent_id = dup.id
+              AND existing.content_hash = child.content_hash
+              AND existing.original_name = child.original_name
+          )
+    `);
+
+    for (let pass = 1; pass <= maxPasses; pass++) {
+        const t = Date.now();
+        let inserted;
+        try {
+            const info = db.transaction(() => replicate.run(investigationId))();
+            inserted = info.changes;
+        } catch (err) {
+            console.error(`✦ Worker: replicateChildrenToDuplicates pass ${pass} failed —`, err.message);
+            break;
+        }
+        perPass.push(inserted);
+        totalInserted += inserted;
+        const elapsed = ((Date.now() - t) / 1000).toFixed(1);
+        console.log(`✦ Worker: replication pass ${pass}: inserted ${inserted.toLocaleString()} rows in ${elapsed}s`);
+        if (inserted === 0) break;
+    }
+
+    const elapsed = (Date.now() - t0) / 1000;
+    console.log(`✦ Worker: replication complete — ${totalInserted.toLocaleString()} rows across ${perPass.length} passes in ${elapsed.toFixed(1)}s`);
+    return { totalInserted, passes: perPass.length, perPass, elapsed };
+}
+
 // ─── WAL checkpoint ──────────────────────────────────────────────────────────
 
 /**
