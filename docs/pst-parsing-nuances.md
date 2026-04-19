@@ -130,6 +130,62 @@ The `pst-attachment-audit.js` script (in `server/scripts/`) can compare PST atta
 - **PDF portfolios**: Extracted in Phase 1.7 (~2,500 PDFs in Yesha case). Second biggest gap.
 - **TNEF/winmail.dat**: Extracted in Phase 1.8 (~5 docs). Small but handled for completeness.
 - **Calendar attachments (.ics)**: Sherlock stores these but doesn't extract text from them.
+- **S/MIME signed envelopes**: Unwrapped in Phase 1.4 via `pst-extractor` `fileInputStream` → `postal-mime` (~330 attachments / 72 PDFs in Yesha case). readpst drops these silently (see the S/MIME section below).
+
+---
+
+## S/MIME Multipart/Signed Unwrap (Phase 1.4 — GitHub issue #79)
+
+S/MIME-signed emails arrive in the PST with `messageClass = IPM.Note.SMIME.MultipartSigned` and a SINGLE MAPI attachment that is the entire signed MIME body. Outlook clients render the inner content seamlessly, so reviewers never see the wrapping. `readpst -e`, however, strips the wrapper and emits an `.eml` with only the plaintext body — **every real attachment behind the signature is lost**.
+
+### The trap
+
+`pst-extractor` reports `numberOfAttachments = 1` but `attachment.attachSize` returns `undefined`. Earlier diagnostic scripts used `a.attachSize || 0` and wrongly concluded the attachment was empty, so we dismissed the whole class as "not recoverable."
+
+The real data is behind `attachment.fileInputStream`:
+
+```js
+const a = msg.getAttachment(0);           // attachSize === undefined
+const stream = a.fileInputStream;          // this yields the real bytes
+// read stream fully → Buffer of standard multipart/signed MIME body
+// feed into postal-mime → real attachments come out the other side
+```
+
+Typical blob size: 100 KB – 5 MB. The content is a standard multipart/signed MIME body that starts with:
+
+```
+MIME-Version: 1.0
+Content-Type: multipart/signed; micalg=sha-256;
+    protocol="application/pkcs7-signature";
+    boundary="MimeBoundary..."
+Content-Transfer-Encoding: 7BIT
+```
+
+Inside: text body, HTML body, real attachments, `smime.p7s` signature.
+
+### Implementation
+
+- `extractSignedSmimeBlobs(pstPath)` in `server/lib/pst-parser.js` — walks the PST and yields `{ messageId, folderPath, subject, mapiClass, blob, blobSize }` for every signed message.
+- `server/workers/pst-worker.js` Phase 1.4 — for each blob: match the existing email row by `message_id`, parse the blob via `postal-mime` (with `forceRfc822Attachments: true`), skip the `.p7s` signature + inline CID images, insert the rest as children. Runs after Phase 1.3 and before Phase 1.5 so any forwarded RFC822 sub-parts surfaced here become candidates for MSG recursion.
+- `server/scripts/backfill-smime-multipartsigned.mjs` — applies the same logic to an existing investigation without a full re-ingest. Idempotent (dedup by attachment content-hash against children already on the email).
+
+### Out of scope
+
+- **Encrypted S/MIME** (`application/pkcs7-mime; smime-type=enveloped-data`): requires a private key. Future work — for now these are logged and skipped.
+- **Backfill recursion into newly-surfaced ZIPs / MSGs**: a fresh re-ingest runs Phase 1.9 naturally and recovers deeply nested content. The backfill script only handles direct attachments — PDFs hiding inside a newly-surfaced ZIP still need a separate ZIP-extraction pass.
+
+### Impact (Yesha Maniar 30 GB PST)
+
+| Metric | Count |
+|---|---:|
+| Signed emails walked | 428 |
+| Emails with recoverable non-signature attachments | 198 |
+| Attachments inserted | 330 |
+| &nbsp;&nbsp;PDFs | 72 |
+| &nbsp;&nbsp;DOCX | 187 |
+| &nbsp;&nbsp;XLSX | 41 |
+| &nbsp;&nbsp;DOC / ZIP / rfc822 / ics / img | 30 |
+| Of the 61 residual "missing PDFs" vs Rel | 31 recovered directly, 28 behind newly-surfaced ZIPs (recovered on fresh re-ingest via Phase 1.9), 2 truly Rel-side artifacts |
 
 ---
 
@@ -183,9 +239,10 @@ Comparison against Relativity export (81,580 rows):
 | ZIP flattening | ~2,500-3,000 | 1.6 | Implemented |
 | PDF portfolios | ~2,506 | 1.7 | Implemented |
 | MSG/EML containers | ~282 | 1.5 | Implemented |
+| S/MIME signed unwrap | ~330 (72 PDFs) | 1.4 | Implemented |
 | TNEF/winmail.dat | ~5 | 1.8 | Implemented |
 | Nested containers | ~100-500 | 1.9 | Implemented |
-| **Total** | **~5,100-6,000** | | |
+| **Total** | **~5,400-6,300** | | |
 
 This should close the gap from ~76K to ~81-82K documents, aligning closely with Relativity's 81,580.
 
