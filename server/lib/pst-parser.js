@@ -45,6 +45,70 @@ export function parsePst(filePath) {
 }
 
 /**
+ * Lightweight PST walk: collects only identity + authoritative date fields,
+ * no body or attachment reads. Used by pst-worker Phase 1.2 to correct
+ * readpst's unreliable RFC822 Date: header against MAPI's PR_CLIENT_SUBMIT_TIME.
+ *
+ * See GitHub issue #65. On Yesha's 30 GB PST this walk completes in ~8 min;
+ * a full parsePst() read would take ~30 min because of attachment extraction.
+ *
+ * @param {string} filePath - Absolute path to the .pst file
+ * @returns {Array<{messageId: string | null, clientSubmitTime: string | null,
+ *                   messageDeliveryTime: string | null, messageClass: string,
+ *                   folderPath: string, subject: string, senderEmail: string}>}
+ */
+export function collectAuthoritativeDates(filePath) {
+    const pstFile = new PSTFile(filePath);
+    const results = [];
+
+    function walkFolder(folder, folderPath) {
+        if (folder.contentCount > 0) {
+            let msg = folder.getNextChild();
+            while (msg) {
+                if (msg instanceof PSTMessage) {
+                    try {
+                        let mid = msg.internetMessageId || '';
+                        mid = mid.replace(/^</, '').replace(/>$/, '').trim().toLowerCase();
+
+                        let clientSubmit = null;
+                        try {
+                            if (msg.clientSubmitTime) clientSubmit = msg.clientSubmitTime.toISOString();
+                        } catch (_) { /* not set on this message */ }
+
+                        let delivery = null;
+                        try {
+                            if (msg.messageDeliveryTime) delivery = msg.messageDeliveryTime.toISOString();
+                        } catch (_) { /* not set */ }
+
+                        results.push({
+                            messageId: mid || null,
+                            clientSubmitTime: clientSubmit,
+                            messageDeliveryTime: delivery,
+                            messageClass: msg.messageClass || '',
+                            folderPath,
+                            subject: msg.subject || '',
+                            senderEmail: (msg.senderEmailAddress || '').toLowerCase(),
+                        });
+                    } catch (err) {
+                        console.warn(`[pst-parser] collectAuthoritativeDates: failed on one message: ${err.message}`);
+                    }
+                }
+                msg = folder.getNextChild();
+            }
+        }
+        if (folder.hasSubfolders) {
+            for (const sub of folder.getSubFolders()) {
+                const nextPath = folderPath ? `${folderPath}/${sub.displayName}` : (sub.displayName || '');
+                walkFolder(sub, nextPath);
+            }
+        }
+    }
+
+    walkFolder(pstFile.getRootFolder(), '');
+    return results;
+}
+
+/**
  * Extract structured data from a single PSTMessage, including transport metadata.
  */
 function extractEmailData(msg) {
