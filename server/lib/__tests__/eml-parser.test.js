@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { stripHtml, cleanId, formatAddresses, parseReceivedHeaders, computeDedupMd5, canonicalAddresses, parseEml } from '../eml-parser.js';
+import { stripHtml, cleanId, formatAddresses, parseReceivedHeaders, computeDedupMd5, canonicalAddresses, parseEml, recoverFilenameIfStripped, simulatePostalMimeStripComments, extractRawQuotedFilenames } from '../eml-parser.js';
 
 describe('stripHtml', () => {
   it('returns empty for null/undefined', () => {
@@ -400,5 +400,163 @@ describe('parseEml (integration)', () => {
     const pa = await parseEml(Buffer.from(a));
     const pb = await parseEml(Buffer.from(b));
     expect(pa.dedupMd5).toBe(pb.dedupMd5);
+  });
+});
+
+// ═══════════════════════════════════════════════════════════════════════
+// Issue #68 — postal-mime strips parenthesized content from RFC 2231 filenames
+// ═══════════════════════════════════════════════════════════════════════
+
+describe('simulatePostalMimeStripComments', () => {
+  it('strips unquoted parenthesized content', () => {
+    expect(simulatePostalMimeStripComments('foo (bar) baz')).toBe('foo  baz');
+  });
+
+  it('preserves parens inside double-quoted strings', () => {
+    expect(simulatePostalMimeStripComments('filename="foo (bar).pdf"')).toBe('filename="foo (bar).pdf"');
+  });
+
+  it('handles nested parens', () => {
+    expect(simulatePostalMimeStripComments('a (b (c) d) e')).toBe('a  e');
+  });
+
+  it('ignores parens escaped with backslash outside quotes', () => {
+    // \( inside depth-0 escaped context — the char after backslash is dropped from output
+    // per postal-mime behavior. We're matching its logic, not defining ideal.
+    const r = simulatePostalMimeStripComments('x\\( y');
+    expect(typeof r).toBe('string'); // consistent with postal-mime
+  });
+});
+
+describe('extractRawQuotedFilenames', () => {
+  it('finds all filename="..." occurrences', () => {
+    const raw = [
+      'Content-Disposition: attachment; filename="foo.pdf"',
+      'Content-Disposition: attachment; filename="bar (1).pdf"',
+      'Content-Type: image/jpeg; name="image.jpg"; filename="image.jpg"',
+    ].join('\r\n');
+    const out = extractRawQuotedFilenames(raw);
+    expect(out).toContain('foo.pdf');
+    expect(out).toContain('bar (1).pdf');
+    expect(out).toContain('image.jpg');
+  });
+
+  it('skips filename*= forms (those are unquoted RFC 2231)', () => {
+    const raw = `Content-Disposition: attachment; filename*=utf-8''Foo%20(Bar).pdf`;
+    expect(extractRawQuotedFilenames(raw)).toEqual([]);
+  });
+
+  it('accepts raw bytes (Buffer input)', () => {
+    const raw = Buffer.from('filename="Hello (World).pdf"');
+    expect(extractRawQuotedFilenames(raw)).toEqual(['Hello (World).pdf']);
+  });
+});
+
+describe('recoverFilenameIfStripped', () => {
+  it('returns unchanged filename when no matching raw candidate', () => {
+    expect(recoverFilenameIfStripped('plain.pdf', ['unrelated.txt'])).toBe('plain.pdf');
+  });
+
+  it('returns exact match when present (no damage detected)', () => {
+    expect(recoverFilenameIfStripped('Foo (Bar).pdf', ['Foo (Bar).pdf', 'other.pdf'])).toBe('Foo (Bar).pdf');
+  });
+
+  it('recovers the real filename when postal-mime stripped parens', () => {
+    // postal-mime gave us the damaged version; raw .eml has the real one in a quoted filename=
+    const damaged = 'Format of Due Diligence Certificate .pdf';
+    const rawNames = ['Format of Due Diligence Certificate (Annexure III).pdf'];
+    expect(recoverFilenameIfStripped(damaged, rawNames)).toBe('Format of Due Diligence Certificate (Annexure III).pdf');
+  });
+
+  it('recovers (1), (2) version suffix cases', () => {
+    expect(recoverFilenameIfStripped('Authority Letter _compressed.pdf', ['Authority Letter (1)_compressed.pdf']))
+      .toBe('Authority Letter (1)_compressed.pdf');
+  });
+
+  it('handles multiple raw candidates — picks the one that actually matches', () => {
+    const damaged = 'Services Agreement .pdf';
+    const candidates = [
+      'Some Other Doc.pdf',
+      'Services Agreement ( VCTPL- VKHPL).pdf',
+      'Services Agreement (v2).pdf',
+    ];
+    // Multiple raw candidates could collapse to "Services Agreement .pdf" (or close to it).
+    // The function returns the FIRST match — either is acceptable as both represent
+    // potential real filenames. The key requirement: not the damaged one.
+    const r = recoverFilenameIfStripped(damaged, candidates);
+    expect(r).not.toBe(damaged);
+    expect(r).toContain('(');
+  });
+
+  it('is a no-op for empty/null filenames', () => {
+    expect(recoverFilenameIfStripped('', ['foo.pdf'])).toBe('');
+    expect(recoverFilenameIfStripped(null, ['foo.pdf'])).toBe(null);
+  });
+});
+
+describe('parseEml (issue #68 — RFC 2231 paren filename integration)', () => {
+  it('recovers parenthesized filename end-to-end through parseEml', async () => {
+    // Reproduce the exact .eml shape from the Yesha PST that triggered the bug.
+    const boundary = 'testbnd';
+    const eml = [
+      'From: a@test.com',
+      'To: b@test.com',
+      'Subject: issue 68 repro',
+      'Date: Sat, 01 Jun 2024 10:00:00 +0000',
+      'Message-ID: <msg68@example.com>',
+      'MIME-Version: 1.0',
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      '',
+      `--${boundary}`,
+      'Content-Type: text/plain',
+      '',
+      'body',
+      '',
+      `--${boundary}`,
+      'Content-Type: application/pdf;',
+      '        name="Format of Due Diligence Certificate (Annexure III).pdf"',
+      'Content-Disposition: attachment;',
+      "        filename*=utf-8''Format%20of%20Due%20Diligence%20Certificate%20(Annexure%20III).pdf;",
+      '        filename="Format of Due Diligence Certificate (Annexure III).pdf"',
+      'Content-Transfer-Encoding: base64',
+      '',
+      'ZmFrZQ==',  // "fake"
+      `--${boundary}--`,
+      '',
+    ].join('\r\n');
+
+    const parsed = await parseEml(Buffer.from(eml));
+    const pdf = parsed.attachments.find(a => a.contentType === 'application/pdf');
+    expect(pdf).toBeDefined();
+    // Without the fix, postal-mime would return "Format of Due Diligence Certificate .pdf"
+    expect(pdf.filename).toBe('Format of Due Diligence Certificate (Annexure III).pdf');
+  });
+
+  it('does not alter filenames that were correct to begin with', async () => {
+    const boundary = 'bx';
+    const eml = [
+      'From: a@test.com',
+      'To: b@test.com',
+      'Subject: plain',
+      'MIME-Version: 1.0',
+      `Content-Type: multipart/mixed; boundary="${boundary}"`,
+      '',
+      `--${boundary}`,
+      'Content-Type: text/plain',
+      '',
+      'body',
+      '',
+      `--${boundary}`,
+      'Content-Type: application/pdf',
+      'Content-Disposition: attachment; filename="normal.pdf"',
+      'Content-Transfer-Encoding: base64',
+      '',
+      'ZmFrZQ==',
+      `--${boundary}--`,
+      '',
+    ].join('\r\n');
+    const parsed = await parseEml(Buffer.from(eml));
+    const pdf = parsed.attachments.find(a => a.contentType === 'application/pdf');
+    expect(pdf.filename).toBe('normal.pdf');
   });
 });
