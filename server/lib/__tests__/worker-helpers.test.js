@@ -51,8 +51,7 @@ function createSchema(db) {
       size_bytes INTEGER,
       parent_id TEXT,
       custodian TEXT,
-      doc_identifier TEXT,
-      file_extension TEXT
+      doc_identifier TEXT
     );
 
     CREATE VIRTUAL TABLE documents_fts USING fts5(

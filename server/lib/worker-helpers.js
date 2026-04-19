@@ -311,12 +311,17 @@ export function replicateChildrenToDuplicates(db, investigationId, options = {})
     // We don't use a CTE with recursion because SQLite's recursive CTEs don't
     // compose well with INSERT and we can't easily detect "no new rows" from
     // within one statement. A JS-driven fixed-point loop is simpler + clearer.
+    // NOTE: column list deliberately excludes file_extension + has_html_body +
+    // inline_images_meta — those are added by the still-open feat/html-email-
+    // rendering branch and not present on main's schema yet. If/when that branch
+    // merges, add them to this INSERT (they're nullable so omitting won't break
+    // DBs that have them — the column just gets NULL for cloned rows).
     const replicate = db.prepare(`
         INSERT INTO documents (
             id, filename, original_name, mime_type, size_bytes, text_content, status,
             doc_type, parent_id, thread_id,
             content_hash, is_duplicate, investigation_id, custodian,
-            doc_identifier, text_content_size, file_extension
+            doc_identifier, text_content_size
         )
         SELECT
             lower(hex(randomblob(16))),
@@ -343,8 +348,7 @@ export function replicateChildrenToDuplicates(db, investigationId, options = {})
                      AND peer.id < child.id)
               )
             END,
-            child.text_content_size,
-            child.file_extension
+            child.text_content_size
         FROM documents dup
         JOIN documents canonical
           ON canonical.content_hash = dup.content_hash
