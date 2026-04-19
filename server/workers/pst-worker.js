@@ -485,6 +485,80 @@ async function main() {
         walCheckpoint(db);
 
         // ═══════════════════════════════════════════
+        // Phase 1.2: PST date-authority pass (GitHub issue #65)
+        //
+        // readpst's RFC 822 `Date:` output is unreliable on Gmail-exported PSTs:
+        // it emits wall-clock UTC with a non-UTC offset suffix (+0530 for IST),
+        // so postal-mime interprets the time as local and subtracts the offset —
+        // ~half of Yesha Maniar's Sent Items landed 5h30m off. Relativity uses
+        // MAPI's PR_CLIENT_SUBMIT_TIME directly and gets the right answer.
+        //
+        // pst-extractor exposes PR_CLIENT_SUBMIT_TIME via msg.clientSubmitTime
+        // (already UTC). We open the PST again, walk folders (metadata only —
+        // no attachment reads, fast), build a msg-id → authoritative-date map,
+        // and UPDATE any email_date value that disagrees. Also lets us detect
+        // the Gmail draft/sent Message-ID collision (issue #64) as a side
+        // benefit: when readpst wrote the wrong Message-ID on a sent copy,
+        // the authoritative msg-id comes from MAPI.
+        //
+        // Skipped when: (a) extractionOnly resume (source PST deleted), or
+        // (b) source file no longer present, or (c) not a .pst extension
+        // (e.g. raw .eml uploads go through a different path).
+        // ═══════════════════════════════════════════
+        if (!extractionOnly && fs.existsSync(filepath) && filepath.toLowerCase().endsWith('.pst')) {
+            console.log('✦ PST Import Phase 1.2: Re-reading authoritative dates from PST via pst-extractor...');
+            db.prepare("UPDATE import_jobs SET phase = 'date_authority' WHERE id = ?").run(jobId);
+            const t0 = Date.now();
+            const authByMsgid = new Map();
+            let walkedCount = 0;
+            try {
+                const { collectAuthoritativeDates } = await import('../lib/pst-parser.js');
+                const records = collectAuthoritativeDates(filepath);
+                walkedCount = records.length;
+                for (const r of records) {
+                    if (r.messageId) authByMsgid.set(r.messageId, r);
+                }
+                console.log(`  ✦ Phase 1.2: walked ${walkedCount.toLocaleString()} MAPI records, indexed ${authByMsgid.size.toLocaleString()} by msg-id (${((Date.now() - t0) / 1000).toFixed(1)}s)`);
+            } catch (err) {
+                console.warn(`  ✦ Phase 1.2 SKIPPED — pst-extractor failed: ${err.message}`);
+            }
+
+            if (authByMsgid.size > 0) {
+                const updateDate = db.prepare(`UPDATE documents SET email_date = ? WHERE id = ? AND doc_type = 'email'`);
+                const rows = db.prepare(`
+                    SELECT id, LOWER(message_id) AS mid, email_date
+                    FROM documents
+                    WHERE investigation_id = ? AND doc_type = 'email' AND message_id IS NOT NULL AND message_id != ''
+                `).all(investigation_id);
+
+                let updated = 0, alreadyMatch = 0, noAuth = 0, noSubmitTime = 0, offBy5h30m = 0;
+                const fiveHalfMs = (5 * 60 + 30) * 60 * 1000;
+                const tx = db.transaction(() => {
+                    for (const row of rows) {
+                        const auth = authByMsgid.get(row.mid);
+                        if (!auth) { noAuth++; continue; }
+                        if (!auth.clientSubmitTime) { noSubmitTime++; continue; }
+                        if (auth.clientSubmitTime === row.email_date) { alreadyMatch++; continue; }
+                        // Track the specific libpst-5:30 pattern for diagnostics
+                        const prev = new Date(row.email_date || 0).getTime();
+                        const authTs = new Date(auth.clientSubmitTime).getTime();
+                        if (!Number.isNaN(prev) && !Number.isNaN(authTs) && Math.abs(authTs - prev - fiveHalfMs) < 60000) {
+                            offBy5h30m++;
+                        }
+                        updateDate.run(auth.clientSubmitTime, row.id);
+                        updated++;
+                    }
+                });
+                tx();
+
+                const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+                console.log(`✦ Phase 1.2 complete in ${elapsed}s — ${rows.length.toLocaleString()} emails inspected: ${updated.toLocaleString()} dates corrected (${offBy5h30m.toLocaleString()} matched the 5h30m libpst-timezone pattern), ${alreadyMatch.toLocaleString()} already correct, ${noAuth.toLocaleString()} no MAPI record, ${noSubmitTime.toLocaleString()} had no PR_CLIENT_SUBMIT_TIME`);
+            }
+        } else {
+            console.log('✦ PST Import Phase 1.2: skipped (extractionOnly resume / source missing / non-PST input)');
+        }
+
+        // ═══════════════════════════════════════════
         // Phase 1.5: Extract embedded MSG attachments
         // readpst -e stores forwarded/attached emails as opaque .msg files.
         // These contain document attachments (PDFs, DOCX, etc.) invisible
