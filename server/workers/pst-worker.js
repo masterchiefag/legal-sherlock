@@ -654,6 +654,220 @@ async function main() {
         }
 
         // ═══════════════════════════════════════════
+        // Phase 1.4: S/MIME multipart/signed unwrap (GitHub issue #79)
+        //
+        // S/MIME-signed emails land in the PST with
+        //   messageClass = IPM.Note.SMIME.MultipartSigned
+        // and a SINGLE "attachment" that wraps the entire signed MIME body
+        // (real body + real file attachments + .p7s signature). pst-extractor
+        // reports numberOfAttachments=1 but attachSize=undefined, so earlier
+        // investigations dismissed these as empty. The actual content is
+        // behind attachment.fileInputStream — which we pull here and feed
+        // into postal-mime like any other MIME message.
+        //
+        // Runs AFTER Phase 1 (so we can look up the existing email row by
+        // message_id to attach children under) and BEFORE Phase 1.5 (so any
+        // message/rfc822 sub-parts we surface become candidates for MSG
+        // recursion in 1.5 → 1.9).
+        //
+        // Skipped under the same conditions as Phase 1.2/1.3 (extractionOnly,
+        // source missing, non-PST input).
+        // ═══════════════════════════════════════════
+        if (!extractionOnly && fs.existsSync(filepath) && filepath.toLowerCase().endsWith('.pst')) {
+            console.log('✦ PST Import Phase 1.4: Unwrapping S/MIME multipart/signed envelopes...');
+            db.prepare("UPDATE import_jobs SET phase = 'smime_unwrap' WHERE id = ?").run(jobId);
+            const t0 = Date.now();
+
+            let smimeRecords = [];
+            try {
+                const { extractSignedSmimeBlobs } = await import('../lib/pst-parser.js');
+                smimeRecords = extractSignedSmimeBlobs(filepath);
+                console.log(`  ✦ Phase 1.4: pst-extractor yielded ${smimeRecords.length.toLocaleString()} signed-envelope blobs in ${((Date.now() - t0) / 1000).toFixed(1)}s`);
+            } catch (err) {
+                console.warn(`  ✦ Phase 1.4 SKIPPED — pst-extractor walk failed: ${err.message}`);
+            }
+
+            if (smimeRecords.length > 0) {
+                // Same insert shape Phase 1.5/1.6 use. parent_id here is the
+                // existing email row (matched by message_id) rather than an
+                // intermediate attachment row.
+                const insertSmimeChild = db.prepare(`
+                    INSERT INTO documents (
+                        id, filename, original_name, mime_type, size_bytes, text_content, status,
+                        doc_type, parent_id, thread_id,
+                        doc_author, doc_title, doc_created_at, doc_modified_at, doc_creator_tool, doc_keywords,
+                        content_hash, is_duplicate, investigation_id, custodian, doc_identifier, file_extension
+                    ) VALUES (?, ?, ?, ?, ?, NULL, 'processing', 'attachment', ?, ?,
+                        NULL, NULL, NULL, NULL, NULL, NULL,
+                        ?, ?, ?, ?, ?, ?)
+                `);
+
+                const findEmailByMsgid = db.prepare(
+                    "SELECT id, doc_identifier, thread_id, custodian FROM documents WHERE investigation_id = ? AND doc_type = 'email' AND LOWER(message_id) = LOWER(?) LIMIT 1"
+                );
+
+                let blobsParsed = 0;
+                let emailsNotFound = 0;
+                let attsInserted = 0;
+                let attsDuped = 0;
+                let attsSkippedSig = 0;
+                let attsSkippedInline = 0;
+                let blobParseErrors = 0;
+                const attsByExt = {};
+                const smimeBatchBuffer = [];
+
+                const flushSmimeBatch = db.transaction((ops) => { for (const op of ops) op(); });
+
+                for (let si = 0; si < smimeRecords.length; si++) {
+                    const rec = smimeRecords[si];
+
+                    if (!rec.messageId) {
+                        // No internet message-id on this signed mail — can't
+                        // match to our email row. Very rare; log for diagnostics.
+                        if (emailsNotFound <= 5) {
+                            console.log(`  ✦ Phase 1.4: skipping signed blob with no msg-id — subject="${rec.subject.substring(0, 60)}" folder=${rec.folderPath}`);
+                        }
+                        emailsNotFound++;
+                        continue;
+                    }
+
+                    const emailRow = findEmailByMsgid.get(investigation_id, rec.messageId);
+                    if (!emailRow) {
+                        emailsNotFound++;
+                        if (emailsNotFound <= 5) {
+                            console.log(`  ✦ Phase 1.4: msg-id not in DB: ${rec.messageId.substring(0, 60)} — subject="${rec.subject.substring(0, 60)}"`);
+                        }
+                        continue;
+                    }
+
+                    // Parse the signed MIME body with postal-mime. forceRfc822Attachments
+                    // matches the flag used in eml-parser.js so any forwarded-email
+                    // sub-parts surface for Phase 1.5 to recurse into.
+                    let parsed;
+                    try {
+                        const PostalMime = (await import('postal-mime')).default;
+                        parsed = await new PostalMime().parse(rec.blob, { forceRfc822Attachments: true });
+                    } catch (err) {
+                        blobParseErrors++;
+                        if (blobParseErrors <= 10) {
+                            console.warn(`  ✦ Phase 1.4 postal-mime failed on ${rec.messageId}: ${err.message}`);
+                        }
+                        errorLog.push({ phase: 'smime_unwrap', docId: emailRow.id, filename: rec.subject, error: err.message });
+                        continue;
+                    }
+
+                    blobsParsed++;
+
+                    // Verbose logging for first 5 so we can eyeball what's being surfaced
+                    if (blobsParsed <= 5) {
+                        const names = (parsed.attachments || []).slice(0, 8).map(a => a.filename || '(no name)').join(', ');
+                        console.log(`  ✦ Phase 1.4 [${blobsParsed}]: "${rec.subject.substring(0, 60)}" → ${parsed.attachments.length} attachments: ${names}`);
+                    }
+
+                    let childIdx = 0;
+                    for (const att of (parsed.attachments || [])) {
+                        // Skip the S/MIME signature itself — it's a cryptographic
+                        // artifact, not user content. Rel counts them too but
+                        // they're not what drives the PDF gap.
+                        if (att.mimeType === 'application/pkcs7-signature') {
+                            attsSkippedSig++;
+                            continue;
+                        }
+                        // Skip inline CID images — these get handled by the HTML
+                        // email rendering path (has_html_body + inline_images_meta)
+                        // if we add that in a follow-up. For now: not user content
+                        // for the reviewer, and the HTML body (which references
+                        // them) is already stored via the Phase 1 eml-parser path.
+                        if (att.disposition === 'inline' && att.contentId) {
+                            attsSkippedInline++;
+                            continue;
+                        }
+
+                        childIdx++;
+                        const filename = att.filename || `smime_attachment_${childIdx}.bin`;
+                        const ext = path.extname(filename) || '.bin';
+                        attsByExt[ext.toLowerCase().slice(1) || 'nobin'] = (attsByExt[ext.toLowerCase().slice(1) || 'nobin'] || 0) + 1;
+
+                        const content = Buffer.from(att.content);
+                        if (content.length > MAX_ATTACHMENT_SIZE) {
+                            // Match existing behaviour — too-large attachments are skipped.
+                            perfStats.attSkippedSize++;
+                            continue;
+                        }
+
+                        const attId = uuidv4();
+                        const attBasename = `${attId}${ext}`;
+                        const attFilename = `${investigation_id}/${attBasename}`;
+                        const attPath = path.join(UPLOADS_DIR, attFilename);
+
+                        const attHash = crypto.createHash('md5').update(content).digest('hex');
+                        const isDuplicate = seenHashes.has(attHash) ? 1 : 0;
+
+                        let finalFilename = attFilename;
+                        if (isDuplicate) {
+                            finalFilename = seenHashes.get(attHash);
+                            attsDuped++;
+                        } else {
+                            seenHashes.set(attHash, attFilename);
+                            await fsp.writeFile(attPath, content);
+                        }
+
+                        const docIdentifier = emailRow.doc_identifier
+                            ? `${emailRow.doc_identifier}_${String(childIdx).padStart(3, '0')}`
+                            : null;
+
+                        smimeBatchBuffer.push(() => {
+                            insertSmimeChild.run(
+                                attId, finalFilename, filename,
+                                att.mimeType || 'application/octet-stream', content.length,
+                                emailRow.id, emailRow.thread_id || null,
+                                attHash, isDuplicate, investigation_id, emailRow.custodian || custodian || null,
+                                docIdentifier, resolveFileExtension(filename, att.mimeType, finalFilename)
+                            );
+                        });
+
+                        attsInserted++;
+                        totalAttachments++;
+                    }
+
+                    if (smimeBatchBuffer.length >= DB_BATCH_SIZE) {
+                        try {
+                            flushSmimeBatch(smimeBatchBuffer);
+                            smimeBatchBuffer.length = 0;
+                        } catch (err) {
+                            console.error(`✦ Phase 1.4 FLUSH ERROR: ${err.message}`);
+                            smimeBatchBuffer.length = 0;
+                        }
+                    }
+
+                    if ((si + 1) % 100 === 0 || si === smimeRecords.length - 1) {
+                        console.log(`  ✦ Phase 1.4: ${si + 1}/${smimeRecords.length} blobs — ${attsInserted} atts inserted (${attsDuped} dupes, ${attsSkippedSig} sigs skipped, ${attsSkippedInline} inline skipped, ${blobParseErrors} parse errors, ${emailsNotFound} email-not-found)`);
+                    }
+                }
+
+                // Final flush
+                if (smimeBatchBuffer.length > 0) {
+                    try {
+                        flushSmimeBatch(smimeBatchBuffer);
+                        smimeBatchBuffer.length = 0;
+                    } catch (err) {
+                        console.error(`✦ Phase 1.4 final FLUSH ERROR: ${err.message}`);
+                    }
+                }
+
+                const elapsed = ((Date.now() - t0) / 1000).toFixed(1);
+                console.log(`✦ Phase 1.4 complete in ${elapsed}s: ${blobsParsed}/${smimeRecords.length} blobs parsed, ${attsInserted} attachments inserted (${attsDuped} dupes, ${attsSkippedSig} sigs skipped, ${attsSkippedInline} inline skipped), ${emailsNotFound} emails not found in DB, ${blobParseErrors} blob parse errors`);
+                if (Object.keys(attsByExt).length > 0) {
+                    const sorted = Object.entries(attsByExt).sort((a, b) => b[1] - a[1]);
+                    console.log(`✦ Phase 1.4 surfaced attachment types:`);
+                    for (const [e, c] of sorted.slice(0, 15)) console.log(`    .${e}: ${c}`);
+                }
+            }
+        } else {
+            console.log('✦ PST Import Phase 1.4: skipped (extractionOnly resume / source missing / non-PST input)');
+        }
+
+        // ═══════════════════════════════════════════
         // Phase 1.5: Extract embedded MSG attachments
         // readpst -e stores forwarded/attached emails as opaque .msg files.
         // These contain document attachments (PDFs, DOCX, etc.) invisible
