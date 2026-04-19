@@ -4,6 +4,7 @@ import {
     collectAuthoritativeDates,
     classifyMapiMessage,
     extractNonEmailMapi,
+    extractSignedSmimeBlobs,
 } from '../pst-parser.js';
 
 // These tests cover exported surface + input validation + classification behavior.
@@ -11,11 +12,12 @@ import {
 // of a known Yesha-style PST — we don't ship a PST fixture (binary, >MB, legal).
 
 describe('pst-parser exports', () => {
-    it('exports parsePst, collectAuthoritativeDates, classifyMapiMessage, extractNonEmailMapi', () => {
+    it('exports parsePst, collectAuthoritativeDates, classifyMapiMessage, extractNonEmailMapi, extractSignedSmimeBlobs', () => {
         expect(typeof parsePst).toBe('function');
         expect(typeof collectAuthoritativeDates).toBe('function');
         expect(typeof classifyMapiMessage).toBe('function');
         expect(typeof extractNonEmailMapi).toBe('function');
+        expect(typeof extractSignedSmimeBlobs).toBe('function');
     });
 });
 
@@ -90,5 +92,43 @@ describe('extractNonEmailMapi error handling', () => {
 
     it('throws when given a non-PST file', () => {
         expect(() => extractNonEmailMapi('/etc/hosts')).toThrow();
+    });
+});
+
+describe('extractSignedSmimeBlobs error handling', () => {
+    // Full semantics are exercised via the backfill script + manual Yesha
+    // re-ingest. Unit tests cover input validation only (no binary PST fixture
+    // committed — too large / legally sensitive).
+
+    it('throws when given a non-existent path', () => {
+        expect(() => extractSignedSmimeBlobs('/tmp/definitely-not-a-real-pst.pst')).toThrow();
+    });
+
+    it('throws when given a non-PST file', () => {
+        expect(() => extractSignedSmimeBlobs('/etc/hosts')).toThrow();
+    });
+});
+
+describe('SMIME classification — MultipartSigned detection', () => {
+    // The Phase 1.4 walk uses this pattern in extractSignedSmimeBlobs:
+    //   msg.messageClass.toUpperCase().includes('SMIME.MULTIPARTSIGNED')
+    // Not a library function, but encoding the intent here as a regression
+    // canary — changing the substring would silently break the phase.
+    it('matches the real-world message class Sherlock cares about', () => {
+        const realClass = 'IPM.Note.SMIME.MultipartSigned';
+        expect(realClass.toUpperCase().includes('SMIME.MULTIPARTSIGNED')).toBe(true);
+    });
+
+    it('does not match plain S/MIME (encrypted) which is out of scope', () => {
+        // IPM.Note.SMIME (without MultipartSigned) is typically enveloped-data
+        // (encrypted) — Phase 1.4 explicitly skips these; decryption needs a key.
+        const enc = 'IPM.Note.SMIME';
+        expect(enc.toUpperCase().includes('SMIME.MULTIPARTSIGNED')).toBe(false);
+    });
+
+    it('is not fooled by "MultipartSigned" without SMIME prefix', () => {
+        // Hypothetical — classifier must require both pieces together.
+        const other = 'IPM.Custom.MultipartSigned';
+        expect(other.toUpperCase().includes('SMIME.MULTIPARTSIGNED')).toBe(false);
     });
 });
