@@ -201,6 +201,16 @@ After Phase 1.5 (MSG extraction), the pipeline now extracts files from all conta
 - Deduplicates by MD5 hash against all previously seen files
 - **Impact**: ~2,500-3,000 additional documents in the Yesha case
 
+#### Backfill for unextracted ZIPs
+
+Some ZIPs can end up with zero children after Phase 1.6:
+- Phase 1.6 errored on the specific file (e.g., encrypted ZIP, corrupt central directory) and skipped it
+- The ZIP was inserted *after* Phase 1.6 ran — e.g., the Phase 1.4 S/MIME backfill surfaces new ZIP attachments post-hoc
+
+Use `server/scripts/backfill-unextracted-zips.mjs <investigation_id>` to re-run the Phase 1.6 extraction against every zero-child non-duplicate ZIP in the investigation. Safe to re-run; each invocation only touches ZIPs that still have zero children. Does NOT recurse into nested ZIPs (fresh re-ingest's Phase 1.9 handles that) and does NOT fix partial-extraction cases where a ZIP got some but not all of its entries.
+
+On the Yesha PST this backfill recovered **62 PDFs + 7 other files** across 16 ZIPs and closed the remaining Rel PDF-count gap: from 31 of 61 originally-missing PDFs down to 58 of 61 (remaining 3 = 2 Rel-side-only artifacts + 1 cosmetic naming difference).
+
 ### Phase 1.7: PDF Portfolio Extraction
 
 - Scans all non-duplicate PDF attachments with `pdfdetach -list` (fast catalog-only read)
