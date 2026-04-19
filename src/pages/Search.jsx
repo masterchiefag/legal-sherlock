@@ -215,7 +215,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
             const parsed = await res.json();
             
             // Set the translated FTS parameters into the UI state, validating enum values
-            const validDocTypes = ['email', 'chat', 'file', 'attachment'];
+            const validDocTypes = ['email', 'chat', 'file', 'attachment', 'calendar', 'task', 'note', 'contact'];
             setQuery(parsed.q || '');
             setDocType(validDocTypes.includes(parsed.docType) ? parsed.docType : '');
             setDateFrom(parsed.dateFrom || '');
@@ -479,6 +479,11 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
     const getFileExt = (doc) => {
         if (doc.doc_type === 'email') return 'EML';
         if (doc.doc_type === 'chat') return 'Chat';
+        // MAPI non-email types (GitHub issue #65 Phase 2)
+        if (doc.doc_type === 'calendar') return 'Event';
+        if (doc.doc_type === 'task') return 'Task';
+        if (doc.doc_type === 'note') return 'Note';
+        if (doc.doc_type === 'contact') return 'Contact';
         const ext = doc.original_name?.split('.').pop()?.toUpperCase();
         return ext || 'FILE';
     };
@@ -565,6 +570,10 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
     const getDocIcon = (doc) => {
         if (doc.doc_type === 'email') return '✉';
         if (doc.doc_type === 'chat') return '💬';
+        if (doc.doc_type === 'calendar') return '📅';
+        if (doc.doc_type === 'task') return '✅';
+        if (doc.doc_type === 'note') return '🗒';
+        if (doc.doc_type === 'contact') return '👤';
         const ext = doc.original_name?.split('.').pop().toLowerCase();
         if (ext === 'pdf') return '📄';
         if (ext === 'docx') return '📝';
@@ -572,7 +581,7 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
     };
 
     const getDisplayName = (doc) => {
-        if ((doc.doc_type === 'email' || doc.doc_type === 'chat') && doc.email_subject) {
+        if ((doc.doc_type === 'email' || doc.doc_type === 'chat' || doc.doc_type === 'calendar' || doc.doc_type === 'task' || doc.doc_type === 'note' || doc.doc_type === 'contact') && doc.email_subject) {
             return doc.email_subject;
         }
         return doc.doc_title || doc.original_name;
@@ -756,6 +765,10 @@ function Search({ activeInvestigationId, activeInvestigation, addToast }) {
                         <option value="chat">Chats / WhatsApp</option>
                         <option value="file">Files</option>
                         <option value="attachment">Attachments</option>
+                        <option value="calendar">Calendar events</option>
+                        <option value="task">Tasks</option>
+                        <option value="note">Sticky notes</option>
+                        <option value="contact">Contacts</option>
                     </select>
                     <select className="filter-select" value={scoreFilter} onChange={e => setScoreFilter(e.target.value)}>
                         <option value="">All Scores</option>

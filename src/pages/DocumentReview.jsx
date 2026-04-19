@@ -306,6 +306,11 @@ function DocumentReview({ addToast, user, activeInvestigationId }) {
 
     const isEmail = doc.doc_type === 'email';
     const isChat = doc.doc_type === 'chat';
+    const isCalendar = doc.doc_type === 'calendar';
+    const isTask = doc.doc_type === 'task';
+    const isNote = doc.doc_type === 'note';
+    const isContact = doc.doc_type === 'contact';
+    const isMapiNonEmail = isCalendar || isTask || isNote || isContact;
     const ext = doc.original_name?.split('.').pop().toLowerCase() || '';
     const nativeViewerExts = ['pdf', 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'svg', 'xls', 'xlsx', 'docx'];
     const hasNativeViewer = nativeViewerExts.includes(ext) && doc.status !== 'processing' && doc.filename;
@@ -366,8 +371,9 @@ function DocumentReview({ addToast, user, activeInvestigationId }) {
                     </div>
                 )}
 
-                {/* Email header bar */}
-                {isEmail && (
+                {/* Email / MAPI-non-email header bar — shares layout since
+                    calendar/task/note/contact reuse email_subject/from/to/date columns */}
+                {(isEmail || isMapiNonEmail) && (
                     <div style={{
                         padding: '16px 20px',
                         background: 'var(--bg-tertiary)',
@@ -380,14 +386,17 @@ function DocumentReview({ addToast, user, activeInvestigationId }) {
                         border: '1px solid var(--border-secondary)'
                     }}>
                         <div style={{ fontSize: '16px', fontWeight: 600, color: 'var(--text-primary)', marginBottom: '4px' }}>
+                            {(isCalendar ? '📅 ' : isTask ? '✅ ' : isNote ? '🗒 ' : isContact ? '👤 ' : '')}
                             {doc.email_subject || '(no subject)'}
                         </div>
+                        {(doc.email_from || isEmail) && (
+                            <div className="flex gap-8">
+                                <span style={{ color: 'var(--text-tertiary)', minWidth: '40px' }}>{isCalendar ? 'Organizer' : 'From'}</span>
+                                <span style={{ color: 'var(--text-secondary)' }}>{doc.email_from || '—'}</span>
+                            </div>
+                        )}
                         <div className="flex gap-8">
-                            <span style={{ color: 'var(--text-tertiary)', minWidth: '40px' }}>From</span>
-                            <span style={{ color: 'var(--text-secondary)' }}>{doc.email_from || '—'}</span>
-                        </div>
-                        <div className="flex gap-8">
-                            <span style={{ color: 'var(--text-tertiary)', minWidth: '40px' }}>To</span>
+                            <span style={{ color: 'var(--text-tertiary)', minWidth: '40px' }}>{isCalendar ? 'Attendees' : 'To'}</span>
                             <span style={{ color: 'var(--text-secondary)' }}>{doc.email_to || '—'}</span>
                         </div>
                         {doc.email_cc && (
@@ -445,6 +454,49 @@ function DocumentReview({ addToast, user, activeInvestigationId }) {
                                 {doc.email_date ? new Date(doc.email_date).toLocaleString('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'medium', hour12: true }) + ' UTC' : '—'}
                             </span>
                         </div>
+                    </div>
+                )}
+
+                {/* MAPI non-email metadata (calendar / task / note / contact) — GitHub issue #65 Phase 2 */}
+                {isMapiNonEmail && (doc.event_start_at || doc.event_end_at || doc.event_location || doc.mapi_class) && (
+                    <div style={{
+                        marginBottom: '16px',
+                        padding: '12px 16px',
+                        background: 'var(--bg-tertiary)',
+                        borderRadius: 'var(--radius-md)',
+                        border: '1px solid var(--border-secondary)',
+                    }}>
+                        <div style={{ fontSize: '11px', color: 'var(--text-tertiary)', textTransform: 'uppercase', letterSpacing: '0.05em', marginBottom: '8px' }}>
+                            {isCalendar ? 'Event details' : isTask ? 'Task details' : isNote ? 'Note' : 'Contact'}
+                        </div>
+                        {doc.event_start_at && (
+                            <div className="flex gap-8">
+                                <span style={{ color: 'var(--text-tertiary)', minWidth: '80px' }}>{isTask ? 'Starts' : 'Starts'}</span>
+                                <span style={{ color: 'var(--text-secondary)' }}>
+                                    {new Date(doc.event_start_at).toLocaleString('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'short', hour12: true }) + ' UTC'}
+                                </span>
+                            </div>
+                        )}
+                        {doc.event_end_at && (
+                            <div className="flex gap-8">
+                                <span style={{ color: 'var(--text-tertiary)', minWidth: '80px' }}>{isTask ? 'Due' : 'Ends'}</span>
+                                <span style={{ color: 'var(--text-secondary)' }}>
+                                    {new Date(doc.event_end_at).toLocaleString('en-US', { timeZone: 'UTC', dateStyle: 'medium', timeStyle: 'short', hour12: true }) + ' UTC'}
+                                </span>
+                            </div>
+                        )}
+                        {doc.event_location && (
+                            <div className="flex gap-8">
+                                <span style={{ color: 'var(--text-tertiary)', minWidth: '80px' }}>Location</span>
+                                <span style={{ color: 'var(--text-secondary)' }}>{doc.event_location}</span>
+                            </div>
+                        )}
+                        {doc.mapi_class && (
+                            <div className="flex gap-8">
+                                <span style={{ color: 'var(--text-tertiary)', minWidth: '80px' }}>MAPI class</span>
+                                <span style={{ color: 'var(--text-muted)', fontFamily: 'var(--font-mono)', fontSize: '11px' }}>{doc.mapi_class}</span>
+                            </div>
+                        )}
                     </div>
                 )}
 
